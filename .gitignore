@@ -1,4 +1,6 @@
-.deepseek/
 __pycache__/
 *.pyc
 .DS_Store
+main.py
+Agents.md
+benchmarks/experiments/plots/**
