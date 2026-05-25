@@ -8,7 +8,7 @@ class ModelConfig:
     num_layers: int = 6
     r: int = 8
     m: int = 32
-    m_O: int = 128
+    m_O: int = 64 # 128 for 30M model
     chunk_size: int = 64
     block_size: int = 1024
 

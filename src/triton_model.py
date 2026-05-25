@@ -10,43 +10,35 @@ from src.config import ModelConfig
 # ---------- Triton Kernel ----------
 
 @triton.jit
-def hybrid_inlier_kernel(
+def hybrid_inlier_fused_kernel(
     Q_O_ptr, K_O_ptr, Q_J_ptr, K_J_ptr, V_ptr, Y_O_ptr,
     omega_O_ptr,
-    S_phi_ptr, S_K_ptr, S_KV_ptr, S_V_ptr,
     Y_out_ptr,
-    inv_sqrt_m_O: tl.constexpr,
+    U, inv_sqrt_m_O: tl.constexpr,
     C: tl.constexpr, r_padded: tl.constexpr,
-    j_padded: tl.constexpr, d_head, m_O: tl.constexpr,
-    stride_qo_b, stride_qo_h, stride_qo_c, stride_qo_r,
-    stride_ko_b, stride_ko_h, stride_ko_c, stride_ko_r,
-    stride_qj_b, stride_qj_h, stride_qj_c, stride_qj_j,
-    stride_kj_b, stride_kj_h, stride_kj_c, stride_kj_j,
-    stride_v_b, stride_v_h, stride_v_c, stride_v_d,
-    stride_yo_b, stride_yo_h, stride_yo_c, stride_yo_d,
-    stride_sphi_b, stride_sphi_h, stride_sphi_m,
-    stride_sk_b, stride_sk_h, stride_sk_m, stride_sk_j,
-    stride_skv_b, stride_skv_h, stride_skv_m, stride_skv_j, stride_skv_d,
-    stride_sv_b, stride_sv_h, stride_sv_m, stride_sv_d,
-    stride_yout_b, stride_yout_h, stride_yout_c, stride_yout_d,
+    j_padded: tl.constexpr, m_O: tl.constexpr,
+    stride_qo_b, stride_qo_h, stride_qo_n, stride_qo_r,
+    stride_ko_b, stride_ko_h, stride_ko_n, stride_ko_r,
+    stride_qj_b, stride_qj_h, stride_qj_n, stride_qj_j,
+    stride_kj_b, stride_kj_h, stride_kj_n, stride_kj_j,
+    stride_v_b, stride_v_h, stride_v_n, stride_v_d,
+    stride_yo_b, stride_yo_h, stride_yo_n, stride_yo_d,
+    stride_yout_b, stride_yout_h, stride_yout_n, stride_yout_d,
     stride_om_r, stride_om_m
 ):
     pid_b = tl.program_id(0)
     pid_h = tl.program_id(1)
+    pid_d = tl.program_id(2)  # Parallelized over d_head!
 
-    # --- Pointers for current Batch and Head ---
-    qo_ptr = Q_O_ptr + pid_b * stride_qo_b + pid_h * stride_qo_h
-    ko_ptr = K_O_ptr + pid_b * stride_ko_b + pid_h * stride_ko_h
-    qj_ptr = Q_J_ptr + pid_b * stride_qj_b + pid_h * stride_qj_h
-    kj_ptr = K_J_ptr + pid_b * stride_kj_b + pid_h * stride_kj_h
-    v_ptr  = V_ptr   + pid_b * stride_v_b  + pid_h * stride_v_h
-    yo_ptr = Y_O_ptr + pid_b * stride_yo_b + pid_h * stride_yo_h
-    yout_ptr = Y_out_ptr + pid_b * stride_yout_b + pid_h * stride_yout_h
+    # --- Base Pointers for current Batch, Head, and Feature Dim ---
+    qo_base = Q_O_ptr + pid_b * stride_qo_b + pid_h * stride_qo_h
+    ko_base = K_O_ptr + pid_b * stride_ko_b + pid_h * stride_ko_h
+    qj_base = Q_J_ptr + pid_b * stride_qj_b + pid_h * stride_qj_h
+    kj_base = K_J_ptr + pid_b * stride_kj_b + pid_h * stride_kj_h
     
-    sphi_ptr = S_phi_ptr + pid_b * stride_sphi_b + pid_h * stride_sphi_h
-    sk_ptr   = S_K_ptr   + pid_b * stride_sk_b   + pid_h * stride_sk_h
-    skv_ptr  = S_KV_ptr  + pid_b * stride_skv_b  + pid_h * stride_skv_h
-    sv_ptr   = S_V_ptr   + pid_b * stride_sv_b   + pid_h * stride_sv_h
+    v_base = V_ptr + pid_b * stride_v_b + pid_h * stride_v_h + pid_d * stride_v_d
+    yo_base = Y_O_ptr + pid_b * stride_yo_b + pid_h * stride_yo_h + pid_d * stride_yo_d
+    yout_base = Y_out_ptr + pid_b * stride_yout_b + pid_h * stride_yout_h + pid_d * stride_yout_d
 
     # --- Offsets ---
     offs_c = tl.arange(0, C)
@@ -54,86 +46,99 @@ def hybrid_inlier_kernel(
     offs_m = tl.arange(0, m_O)
     offs_j = tl.arange(0, j_padded)
 
-    # --- Load Chunk Data (Float32 for stability) ---
-    Q_O = tl.load(qo_ptr + offs_c[:, None] * stride_qo_c + offs_r[None, :] * stride_qo_r).to(tl.float32)
-    K_O = tl.load(ko_ptr + offs_c[:, None] * stride_ko_c + offs_r[None, :] * stride_ko_r).to(tl.float32)
-    Q_J = tl.load(qj_ptr + offs_c[:, None] * stride_qj_c + offs_j[None, :] * stride_qj_j).to(tl.float32)
-    K_J = tl.load(kj_ptr + offs_c[:, None] * stride_kj_c + offs_j[None, :] * stride_kj_j).to(tl.float32)
+    # --- Initialize Recurrent States persistently in SRAM ---
+    # These NEVER touch global memory during the sequence loop!
+    S_phi = tl.zeros([m_O], dtype=tl.float32)
+    S_K = tl.zeros([m_O, j_padded], dtype=tl.float32)
+    S_KV_d = tl.zeros([m_O, j_padded], dtype=tl.float32)
+
+    # Pre-load omega_O
     omega_O = tl.load(omega_O_ptr + offs_r[:, None] * stride_om_r + offs_m[None, :] * stride_om_m).to(tl.float32)
 
-    # --- Compute Phi (Random Fourier Features) ---
-    Q_O_norm = tl.sum(Q_O * Q_O, axis=1)[:, None] * 0.5
-    K_O_norm = tl.sum(K_O * K_O, axis=1)[:, None] * 0.5
-
-    phi_Q_logit = tl.dot(Q_O, omega_O)
-    phi_K_logit = tl.dot(K_O, omega_O)
-
-    phi_Q = tl.exp(phi_Q_logit - Q_O_norm) * inv_sqrt_m_O
-    phi_K = tl.exp(phi_K_logit - K_O_norm) * inv_sqrt_m_O
-
-    # --- Local Exact Inlier Correction ---
-    logits_local = tl.dot(Q_O, tl.trans(K_O))
-    mask_causal = offs_c[:, None] >= offs_c[None, :]
-    logits_local = tl.where(mask_causal, logits_local, -float('inf'))
-
-    l_max = tl.max(logits_local, axis=1)
-    l_exp = tl.exp(logits_local - l_max[:, None])
-    l_sum = tl.sum(l_exp, axis=1)
-    P_local = l_exp / l_sum[:, None]
-
-    weighted_K_J = tl.dot(P_local, K_J)                # (C, j_padded)
-    e_local = tl.sum(Q_J * weighted_K_J, axis=1)       # (C,)
-
-    # Pre-compute combined coefficient matrix for local terms
-    E = tl.dot(Q_J, tl.trans(K_J))                     # (C, C)
-    P_local_E = P_local * E                            # (C, C)
-
-    # --- Past Correction via Recurrent States ---
-    S_phi = tl.load(sphi_ptr + offs_m * stride_sphi_m) # (m_O,)
-    Z_past = tl.sum(phi_Q * S_phi[None, :], axis=1)    # (C,)
-
-    attn_phi_full = tl.dot(phi_Q, tl.trans(phi_K))     # (C, C)
-    attn_phi_causal = tl.where(mask_causal, attn_phi_full, 0.0)
-    Z_local = tl.sum(attn_phi_causal, axis=1)
-    Z_total = Z_past + Z_local + 1e-8
-
-    # e_past
-    S_K = tl.load(sk_ptr + offs_m[:, None] * stride_sk_m + offs_j[None, :] * stride_sk_j)
-    W_K = tl.dot(phi_Q, S_K)                                    # (C, j_padded)
-    e_past = tl.sum(Q_J * W_K, axis=1) / Z_total                # (C,)
-    e = e_local + e_past
-
-    # --- Output and S_KV Update (Loop over d_head dynamically) ---
-    # range() creates a clean dynamic loop avoiding instruction cache explosion.
-    for d_idx in range(d_head):
-        # Dynamically load the exact required slices
-        S_KV_d = tl.load(skv_ptr + offs_m[:, None] * stride_skv_m + offs_j[None, :] * stride_skv_j + d_idx * stride_skv_d)
-        V_d = tl.load(v_ptr + offs_c * stride_v_c + d_idx * stride_v_d)       # (C,)
-        Y_O_d = tl.load(yo_ptr + offs_c * stride_yo_c + d_idx * stride_yo_d)  # (C,)
-        S_V_d = tl.load(sv_ptr + offs_m * stride_sv_m + d_idx * stride_sv_d)  # (m_O,)
-
-        # 1. Past projection logic
-        W_KV_d = tl.dot(phi_Q, S_KV_d)                                        # (C, j_padded)
-        term1_past_d = tl.sum(Q_J * W_KV_d, axis=1) / Z_total                 # (C,)
-
-        # 2. Local projection logic (calculated dynamically, avoiding huge block allocation)
-        term1_local_d = tl.sum(P_local_E * V_d[None, :], axis=1)              # (C,)
-
-        # 3. Compile output
-        y_out_d = Y_O_d * (1.0 - e) + term1_local_d + term1_past_d            # (C,)
-        tl.store(yout_ptr + offs_c * stride_yout_c + d_idx * stride_yout_d, y_out_d.to(Y_out_ptr.dtype.element_ty))
-
-        # 4. Update S_KV_d state
-        delta_S_KV_d = tl.dot(tl.trans(phi_K), K_J * V_d[:, None])            # (m_O, j_padded)
-        tl.store(skv_ptr + offs_m[:, None] * stride_skv_m + offs_j[None, :] * stride_skv_j + d_idx * stride_skv_d, S_KV_d + delta_S_KV_d)
+    # =====================================================================
+    # FUSED SEQUENCE LOOP
+    # =====================================================================
+    for u in range(U):
+        # Dynamic pointers for chunk u
+        qo_ptr = qo_base + u * C * stride_qo_n
+        ko_ptr = ko_base + u * C * stride_ko_n
+        qj_ptr = qj_base + u * C * stride_qj_n
+        kj_ptr = kj_base + u * C * stride_kj_n
         
-        # 5. Update S_V_d state inside the same loop to reuse V_d!
-        delta_S_V_d = tl.sum(phi_K * V_d[:, None], axis=0)                    # (m_O,)
-        tl.store(sv_ptr + offs_m * stride_sv_m + d_idx * stride_sv_d, S_V_d + delta_S_V_d)
+        v_ptr_c = v_base + u * C * stride_v_n
+        yo_ptr_c = yo_base + u * C * stride_yo_n
+        yout_ptr_c = yout_base + u * C * stride_yout_n
 
-    # --- Final State Updates (S_phi, S_K) ---
-    tl.store(sphi_ptr + offs_m * stride_sphi_m, S_phi + tl.sum(phi_K, axis=0))
-    tl.store(sk_ptr + offs_m[:, None] * stride_sk_m + offs_j[None, :] * stride_sk_j, S_K + tl.dot(tl.trans(phi_K), K_J))
+        # --- Load Chunk Data ---
+        Q_O = tl.load(qo_ptr + offs_c[:, None] * stride_qo_n + offs_r[None, :] * stride_qo_r)
+        K_O = tl.load(ko_ptr + offs_c[:, None] * stride_ko_n + offs_r[None, :] * stride_ko_r)
+        Q_J = tl.load(qj_ptr + offs_c[:, None] * stride_qj_n + offs_j[None, :] * stride_qj_j)
+        K_J = tl.load(kj_ptr + offs_c[:, None] * stride_kj_n + offs_j[None, :] * stride_kj_j)
+        
+        V_d = tl.load(v_ptr_c + offs_c * stride_v_n)
+        Y_O_d = tl.load(yo_ptr_c + offs_c * stride_yo_n)
+
+        native_dtype = Q_O.dtype
+
+        # --- Compute Phi ---
+        Q_O_f32 = Q_O.to(tl.float32)
+        K_O_f32 = K_O.to(tl.float32)
+
+        Q_O_norm = tl.sum(Q_O_f32 * Q_O_f32, axis=1)[:, None] * 0.5
+        K_O_norm = tl.sum(K_O_f32 * K_O_f32, axis=1)[:, None] * 0.5
+
+        phi_Q_logit = tl.dot(Q_O, omega_O.to(native_dtype))
+        phi_K_logit = tl.dot(K_O, omega_O.to(native_dtype))
+
+        phi_Q = (tl.exp(phi_Q_logit.to(tl.float32) - Q_O_norm) * inv_sqrt_m_O).to(native_dtype)
+        phi_K = (tl.exp(phi_K_logit.to(tl.float32) - K_O_norm) * inv_sqrt_m_O).to(native_dtype)
+
+        # --- Local Exact Inlier Correction ---
+        logits_local = tl.dot(Q_O, tl.trans(K_O))
+        mask_causal = offs_c[:, None] >= offs_c[None, :]
+        logits_local = tl.where(mask_causal, logits_local.to(tl.float32), -float('inf'))
+
+        l_max = tl.max(logits_local, axis=1)
+        l_exp = tl.exp(logits_local - l_max[:, None])
+        l_sum = tl.sum(l_exp, axis=1)
+        P_local_f32 = l_exp / l_sum[:, None]
+        
+        P_local = P_local_f32.to(native_dtype)
+        weighted_K_J = tl.dot(P_local, K_J)                                         
+        e_local = tl.sum(Q_J.to(tl.float32) * weighted_K_J.to(tl.float32), axis=1)  
+
+        E = tl.dot(Q_J, tl.trans(K_J))                                              
+        P_local_E = (P_local_f32 * E.to(tl.float32)).to(native_dtype)               
+
+        # --- Past Correction via Recurrent States ---
+        Z_past = tl.sum(phi_Q.to(tl.float32) * S_phi[None, :], axis=1)              
+        attn_phi_full = tl.dot(phi_Q, tl.trans(phi_K))                              
+        attn_phi_causal = tl.where(mask_causal, attn_phi_full.to(tl.float32), 0.0)
+        Z_local = tl.sum(attn_phi_causal, axis=1)
+        Z_total = Z_past + Z_local + 1e-8
+
+        # e_past
+        W_K = tl.dot(phi_Q, S_K.to(native_dtype))                                   
+        e_past = tl.sum(Q_J.to(tl.float32) * W_K.to(tl.float32), axis=1) / Z_total  
+        e = e_local + e_past
+
+        # --- Output Calculations ---
+        W_KV_d = tl.dot(phi_Q, S_KV_d.to(native_dtype))                             
+        term1_past_d = tl.sum(Q_J.to(tl.float32) * W_KV_d.to(tl.float32), axis=1) / Z_total  
+        term1_local_d = tl.sum(P_local_E.to(tl.float32) * V_d.to(tl.float32)[None, :], axis=1) 
+
+        # Compile output and store chunk slice to HBM
+        y_out_d = Y_O_d.to(tl.float32) * (1.0 - e) + term1_local_d + term1_past_d
+        tl.store(yout_ptr_c + offs_c * stride_yout_n, y_out_d.to(Y_out_ptr.dtype.element_ty))
+
+        # --- In-Place SRAM State Updates ---
+        delta_S_KV_d = tl.dot(tl.trans(phi_K), K_J * V_d[:, None])                  
+        S_KV_d += delta_S_KV_d.to(tl.float32)
+        
+        S_phi += tl.sum(phi_K.to(tl.float32), axis=0)
+        
+        delta_S_K = tl.dot(tl.trans(phi_K), K_J)                                    
+        S_K += delta_S_K.to(tl.float32)
 
 
 # ---------- Optimized Module ----------
@@ -228,7 +233,7 @@ class OutlierFactorizedLinearAttention(nn.Module):
         Q_J = Q.gather(-1, in_gather)
         K_J = K.gather(-1, in_gather)
 
-        # 1. Pad dimensions to minimum 16 for triton limits, guarantees fully aligned math
+        # 1. Pad dimensions to minimum 16 for triton limits
         r_padded = max(16, int(2 ** math.ceil(math.log2(self.r)))) if self.r > 0 else 16
         j_padded = max(16, int(2 ** math.ceil(math.log2(self.j)))) if self.j > 0 else 16
 
@@ -239,7 +244,7 @@ class OutlierFactorizedLinearAttention(nn.Module):
         Q_J = F.pad(Q_J, (0, j_padded - self.j))
         K_J = F.pad(K_J, (0, j_padded - self.j))
 
-        # 2. Global exact outlier attention via FlashAttention (scale=1.0 maps accurately to unoptimized setup)
+        # 2. Global exact outlier attention via FlashAttention
         Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=1.0)
 
         # 3. Pad sequence length to multiple of chunk_size
@@ -254,63 +259,30 @@ class OutlierFactorizedLinearAttention(nn.Module):
             Y_O = F.pad(Y_O, (0, 0, 0, pad_len))
 
         U = (N + pad_len) // C
-
-        # 4. Initialize recurrent states
         m_O = self.m_O
-        S_phi = torch.zeros(B, self.num_heads, m_O, device=x.device, dtype=torch.float32).contiguous()
-        S_K   = torch.zeros(B, self.num_heads, m_O, j_padded, device=x.device, dtype=torch.float32).contiguous()
-        S_KV  = torch.zeros(B, self.num_heads, m_O, j_padded, self.d_head, device=x.device, dtype=torch.float32).contiguous()
-        S_V   = torch.zeros(B, self.num_heads, m_O, self.d_head, device=x.device, dtype=torch.float32).contiguous()
+        inv_sqrt_m_O = float(1.0 / math.sqrt(m_O))
 
         Y_out = torch.empty_like(Y_O).contiguous()
-        grid = (B, self.num_heads)
 
-        inv_sqrt_m_O = 1.0 / math.sqrt(m_O)
-
-        for u in range(U):
-            # Pass slice views (stride correctly propagates). No .contiguous() here to avoid copy overhead/write-back loss!
-            q_o_c = Q_O[:, :, u*C:(u+1)*C, :]
-            k_o_c = K_O[:, :, u*C:(u+1)*C, :]
-            q_j_c = Q_J[:, :, u*C:(u+1)*C, :]
-            k_j_c = K_J[:, :, u*C:(u+1)*C, :]
-            v_c   = V[:, :, u*C:(u+1)*C, :]
-            y_o_c = Y_O[:, :, u*C:(u+1)*C, :]
-            y_out_c = Y_out[:, :, u*C:(u+1)*C, :]
-
-            hybrid_inlier_kernel[grid](
-                q_o_c, k_o_c, q_j_c, k_j_c, v_c, y_o_c,
-                omega_O_padded,
-                S_phi, S_K, S_KV, S_V,
-                y_out_c,
-                inv_sqrt_m_O,
-                C=C, r_padded=r_padded,
-                j_padded=j_padded, d_head=self.d_head, m_O=m_O,
-                stride_qo_b=q_o_c.stride(0), stride_qo_h=q_o_c.stride(1),
-                stride_qo_c=q_o_c.stride(2), stride_qo_r=q_o_c.stride(3),
-                stride_ko_b=k_o_c.stride(0), stride_ko_h=k_o_c.stride(1),
-                stride_ko_c=k_o_c.stride(2), stride_ko_r=k_o_c.stride(3),
-                stride_qj_b=q_j_c.stride(0), stride_qj_h=q_j_c.stride(1),
-                stride_qj_c=q_j_c.stride(2), stride_qj_j=q_j_c.stride(3),
-                stride_kj_b=k_j_c.stride(0), stride_kj_h=k_j_c.stride(1),
-                stride_kj_c=k_j_c.stride(2), stride_kj_j=k_j_c.stride(3),
-                stride_v_b=v_c.stride(0), stride_v_h=v_c.stride(1),
-                stride_v_c=v_c.stride(2), stride_v_d=v_c.stride(3),
-                stride_yo_b=y_o_c.stride(0), stride_yo_h=y_o_c.stride(1),
-                stride_yo_c=y_o_c.stride(2), stride_yo_d=y_o_c.stride(3),
-                stride_sphi_b=S_phi.stride(0), stride_sphi_h=S_phi.stride(1),
-                stride_sphi_m=S_phi.stride(2),
-                stride_sk_b=S_K.stride(0), stride_sk_h=S_K.stride(1),
-                stride_sk_m=S_K.stride(2), stride_sk_j=S_K.stride(3),
-                stride_skv_b=S_KV.stride(0), stride_skv_h=S_KV.stride(1),
-                stride_skv_m=S_KV.stride(2), stride_skv_j=S_KV.stride(3), stride_skv_d=S_KV.stride(4),
-                stride_sv_b=S_V.stride(0), stride_sv_h=S_V.stride(1),
-                stride_sv_m=S_V.stride(2), stride_sv_d=S_V.stride(3),
-                stride_yout_b=y_out_c.stride(0), stride_yout_h=y_out_c.stride(1),
-                stride_yout_c=y_out_c.stride(2), stride_yout_d=y_out_c.stride(3),
-                stride_om_r=omega_O_padded.stride(0), stride_om_m=omega_O_padded.stride(1), 
-                num_warps=4,      # default is usually 8
-                num_stages=2,      # reduce pipeline stages
-            )
+        # 4. Fire Single Fused Kernel (Grid parallelized across feature dimension)
+        grid = (B, self.num_heads, self.d_head)
+        
+        hybrid_inlier_fused_kernel[grid](
+            Q_O, K_O, Q_J, K_J, V, Y_O,
+            omega_O_padded,
+            Y_out,
+            U, inv_sqrt_m_O,
+            C=C, r_padded=r_padded, j_padded=j_padded, m_O=m_O,
+            stride_qo_b=Q_O.stride(0), stride_qo_h=Q_O.stride(1), stride_qo_n=Q_O.stride(2), stride_qo_r=Q_O.stride(3),
+            stride_ko_b=K_O.stride(0), stride_ko_h=K_O.stride(1), stride_ko_n=K_O.stride(2), stride_ko_r=K_O.stride(3),
+            stride_qj_b=Q_J.stride(0), stride_qj_h=Q_J.stride(1), stride_qj_n=Q_J.stride(2), stride_qj_j=Q_J.stride(3),
+            stride_kj_b=K_J.stride(0), stride_kj_h=K_J.stride(1), stride_kj_n=K_J.stride(2), stride_kj_j=K_J.stride(3),
+            stride_v_b=V.stride(0),   stride_v_h=V.stride(1),   stride_v_n=V.stride(2),   stride_v_d=V.stride(3),
+            stride_yo_b=Y_O.stride(0), stride_yo_h=Y_O.stride(1), stride_yo_n=Y_O.stride(2), stride_yo_d=Y_O.stride(3),
+            stride_yout_b=Y_out.stride(0), stride_yout_h=Y_out.stride(1), stride_yout_n=Y_out.stride(2), stride_yout_d=Y_out.stride(3),
+            stride_om_r=omega_O_padded.stride(0), stride_om_m=omega_O_padded.stride(1), 
+            num_warps=4, num_stages=2
+        )
 
         if pad_len > 0:
             Y_out = Y_out[:, :, :-pad_len]

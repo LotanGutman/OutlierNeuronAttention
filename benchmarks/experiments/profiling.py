@@ -17,7 +17,7 @@ def profile():
     torch.manual_seed(train_cfg.seed)
     model_cfg = ModelConfig()
     d_head = model_cfg.d_head
-    seq_lengths = [512, 1024, 2048, 4096, 8192]
+    seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144]
     
     # --- Build the hybrid (Triton) ---
     hybrid_attn = OptimizedOutlierFactorizedLinearAttention(model_cfg).to(device).eval()
