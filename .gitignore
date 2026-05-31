@@ -4,3 +4,6 @@ __pycache__/
 main.py
 Agents.md
 benchmarks/experiments/plots/**
+.vscode/**
+benchmarks/experiments/profiling.py
+data/**

@@ -11,25 +11,23 @@ from src.config import ModelConfig
 
 @triton.jit
 def hybrid_single_chunk_kernel(
-    Q_O_ptr, K_O_ptr, Q_ptr, K_ptr, V_ptr, Y_O_ptr,
-    omega_O_ptr, Y_out_ptr,
+    Q_ptr, K_ptr, V_ptr, Y_out_ptr,          # Y_out is both input and output
+    omega_O_ptr,
     S_phi_ptr, S_K_ptr, S_KV_ptr,
-    inlier_idx_ptr,
-    u, N, r, j, inv_sqrt_m_O: tl.constexpr, 
+    outlier_idx_ptr, inlier_idx_ptr,          # both sets of indices
+    u, N, r, j, inv_sqrt_m_O: tl.constexpr,
     C: tl.constexpr, r_padded: tl.constexpr,
     j_padded: tl.constexpr, m_O: tl.constexpr,
-    stride_qo_b, stride_qo_h, stride_qo_n, stride_qo_r,
-    stride_ko_b, stride_ko_h, stride_ko_n, stride_ko_r,
     stride_q_b, stride_q_h, stride_q_n, stride_q_d,
     stride_k_b, stride_k_h, stride_k_n, stride_k_d,
     stride_v_b, stride_v_h, stride_v_n, stride_v_d,
-    stride_yo_b, stride_yo_h, stride_yo_n, stride_yo_d,
     stride_yout_b, stride_yout_h, stride_yout_n, stride_yout_d,
     stride_om_r, stride_om_m,
     stride_sphi_b, stride_sphi_h, stride_sphi_m,
     stride_sk_b, stride_sk_h, stride_sk_m, stride_sk_j,
     stride_skv_b, stride_skv_h, stride_skv_d, stride_skv_m, stride_skv_j,
-    stride_idx_h
+    stride_oi_h, stride_oi_r,
+    stride_ii_h, stride_ii_j
 ):
     pid_b = tl.program_id(0)
     pid_h = tl.program_id(1)
@@ -47,12 +45,12 @@ def hybrid_single_chunk_kernel(
     mask_r = offs_r < r
     mask_j = offs_j < j
 
-    # --- Load Inlier Indices ---
-    inlier_indices = tl.load(inlier_idx_ptr + pid_h * stride_idx_h + offs_j, mask=mask_j, other=0)
+    # --- Load Indices ---
+    outlier_indices = tl.load(outlier_idx_ptr + pid_h * stride_oi_h + offs_r * stride_oi_r, mask=mask_r, other=0)
+    inlier_indices = tl.load(inlier_idx_ptr + pid_h * stride_ii_h + offs_j * stride_ii_j, mask=mask_j, other=0)
 
     # --- Base Pointers ---
     v_ptrs = V_ptr + pid_b * stride_v_b + pid_h * stride_v_h + n_idx * stride_v_n + pid_d * stride_v_d
-    yo_ptrs = Y_O_ptr + pid_b * stride_yo_b + pid_h * stride_yo_h + n_idx * stride_yo_n + pid_d * stride_yo_d
     yout_ptrs = Y_out_ptr + pid_b * stride_yout_b + pid_h * stride_yout_h + n_idx * stride_yout_n + pid_d * stride_yout_d
 
     sphi_base = S_phi_ptr + pid_b * stride_sphi_b + pid_h * stride_sphi_h
@@ -70,9 +68,8 @@ def hybrid_single_chunk_kernel(
     omega_O = tl.load(omega_O_ptr + offs_r[:, None] * stride_om_r + offs_m[None, :] * stride_om_m, mask=mask_r[:, None], other=0.0).to(tl.float32)
 
     # --- Load Chunk Data (Masked & Gathered in SRAM) ---
-    # Q_O is loaded from the pre-sliced outlier tensor
-    qo_ptrs = Q_O_ptr + pid_b * stride_qo_b + pid_h * stride_qo_h + n_idx[:, None] * stride_qo_n + offs_r[None, :] * stride_qo_r
-    ko_ptrs = K_O_ptr + pid_b * stride_ko_b + pid_h * stride_ko_h + n_idx[:, None] * stride_ko_n + offs_r[None, :] * stride_ko_r
+    qo_ptrs = Q_ptr + pid_b * stride_q_b + pid_h * stride_q_h + n_idx[:, None] * stride_q_n + outlier_indices[None, :] * stride_q_d
+    ko_ptrs = K_ptr + pid_b * stride_k_b + pid_h * stride_k_h + n_idx[:, None] * stride_k_n + outlier_indices[None, :] * stride_k_d
     
     Q_O = tl.load(qo_ptrs, mask=mask_n[:, None] & mask_r[None, :], other=0.0)
     K_O = tl.load(ko_ptrs, mask=mask_n[:, None] & mask_r[None, :], other=0.0)
@@ -85,7 +82,7 @@ def hybrid_single_chunk_kernel(
     K_J = tl.load(kj_ptrs, mask=mask_n[:, None] & mask_j[None, :], other=0.0)
     
     V_d = tl.load(v_ptrs, mask=mask_n, other=0.0)
-    Y_O_d = tl.load(yo_ptrs, mask=mask_n, other=0.0)
+    Y_O_d = tl.load(yout_ptrs, mask=mask_n, other=0.0)
 
     native_dtype = Q_O.dtype
 
@@ -223,14 +220,16 @@ class OutlierFactorizedLinearAttention(nn.Module):
         outlier_idx = self._cached_outlier_idx
         inlier_idx = self._cached_inlier_idx
 
-        # 1. We ONLY gather the outliers for the PyTorch SDPA pass. No padding!
+        # Prepare the gathered Q_O/K_O *only* for FlashAttention
         out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
-        Q_O = Q.gather(-1, out_gather)
-        K_O = K.gather(-1, out_gather)
+        Q_O_tmp = Q.gather(-1, out_gather)
+        K_O_tmp = K.gather(-1, out_gather)
 
-        # 2. Global exact outlier attention (Still O(N^2) but with vastly smaller constant)
-        Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=1.0)
-        Y_out = torch.empty_like(Y_O).contiguous()
+        # Write outlier attention output directly into Y_out
+        Y_out = F.scaled_dot_product_attention(Q_O_tmp, K_O_tmp, V, is_causal=True, scale=1.0)
+
+        # Immediately free the temporary gathers
+        del Q_O_tmp, K_O_tmp
 
         # 3. Prepare Triton constants
         r_padded = max(16, int(2 ** math.ceil(math.log2(self.r)))) if self.r > 0 else 16
@@ -250,24 +249,22 @@ class OutlierFactorizedLinearAttention(nn.Module):
         
         for u in range(U):
             hybrid_single_chunk_kernel[grid](
-                Q_O, K_O, Q, K, V, Y_O,
-                self.omega_O, Y_out,
+                Q, K, V, Y_out,
+                self.omega_O,
                 S_phi, S_K, S_KV,
-                inlier_idx,
+                outlier_idx, inlier_idx,
                 u, N, self.r, self.j, inv_sqrt_m_O,
                 C=C, r_padded=r_padded, j_padded=j_padded, m_O=m_O,
-                stride_qo_b=Q_O.stride(0), stride_qo_h=Q_O.stride(1), stride_qo_n=Q_O.stride(2), stride_qo_r=Q_O.stride(3),
-                stride_ko_b=K_O.stride(0), stride_ko_h=K_O.stride(1), stride_ko_n=K_O.stride(2), stride_ko_r=K_O.stride(3),
                 stride_q_b=Q.stride(0), stride_q_h=Q.stride(1), stride_q_n=Q.stride(2), stride_q_d=Q.stride(3),
                 stride_k_b=K.stride(0), stride_k_h=K.stride(1), stride_k_n=K.stride(2), stride_k_d=K.stride(3),
                 stride_v_b=V.stride(0), stride_v_h=V.stride(1), stride_v_n=V.stride(2), stride_v_d=V.stride(3),
-                stride_yo_b=Y_O.stride(0), stride_yo_h=Y_O.stride(1), stride_yo_n=Y_O.stride(2), stride_yo_d=Y_O.stride(3),
                 stride_yout_b=Y_out.stride(0), stride_yout_h=Y_out.stride(1), stride_yout_n=Y_out.stride(2), stride_yout_d=Y_out.stride(3),
                 stride_om_r=self.omega_O.stride(0), stride_om_m=self.omega_O.stride(1), 
                 stride_sphi_b=S_phi.stride(0), stride_sphi_h=S_phi.stride(1), stride_sphi_m=S_phi.stride(2),
                 stride_sk_b=S_K.stride(0), stride_sk_h=S_K.stride(1), stride_sk_m=S_K.stride(2), stride_sk_j=S_K.stride(3),
                 stride_skv_b=S_KV.stride(0), stride_skv_h=S_KV.stride(1), stride_skv_d=S_KV.stride(2), stride_skv_m=S_KV.stride(3), stride_skv_j=S_KV.stride(4),
-                stride_idx_h=inlier_idx.stride(0),
+                stride_oi_h=outlier_idx.stride(0), stride_oi_r=outlier_idx.stride(1),
+                stride_ii_h=inlier_idx.stride(0), stride_ii_j=inlier_idx.stride(1),
                 num_warps=4, num_stages=2
             )
 
