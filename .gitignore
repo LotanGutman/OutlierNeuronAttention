@@ -3,7 +3,6 @@ __pycache__/
 .DS_Store
 main.py
 Agents.md
-benchmarks/experiments/plots/**
+benchmarks/plots/**
 .vscode/**
-benchmarks/experiments/profiling.py
 data/**

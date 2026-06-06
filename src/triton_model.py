@@ -11,13 +11,14 @@ from src.config import ModelConfig
 
 @triton.jit
 def hybrid_single_chunk_kernel(
-    Q_ptr, K_ptr, V_ptr, Y_out_ptr,          # Y_out is both input and output
+    Q_ptr, K_ptr, V_ptr, Y_out_ptr,         # Y_out is both input and output
     omega_O_ptr,
     S_phi_ptr, S_K_ptr, S_KV_ptr,
-    outlier_idx_ptr, inlier_idx_ptr,          # both sets of indices
+    outlier_idx_ptr, inlier_idx_ptr,        # both sets of indices
     u, N, r, j, inv_sqrt_m_O: tl.constexpr,
     C: tl.constexpr, r_padded: tl.constexpr,
     j_padded: tl.constexpr, m_O: tl.constexpr,
+    inlier_scale: tl.constexpr,
     stride_q_b, stride_q_h, stride_q_n, stride_q_d,
     stride_k_b, stride_k_h, stride_k_n, stride_k_d,
     stride_v_b, stride_v_h, stride_v_n, stride_v_d,
@@ -39,7 +40,7 @@ def hybrid_single_chunk_kernel(
     offs_m = tl.arange(0, m_O)
     offs_j = tl.arange(0, j_padded)
 
-    # Sequence bounds masking (No PyTorch padding needed!)
+    # Sequence bounds masking
     n_idx = u * C + offs_c
     mask_n = n_idx < N
     mask_r = offs_r < r
@@ -67,14 +68,13 @@ def hybrid_single_chunk_kernel(
 
     omega_O = tl.load(omega_O_ptr + offs_r[:, None] * stride_om_r + offs_m[None, :] * stride_om_m, mask=mask_r[:, None], other=0.0).to(tl.float32)
 
-    # --- Load Chunk Data (Masked & Gathered in SRAM) ---
+    # --- Load Chunk Data ---
     qo_ptrs = Q_ptr + pid_b * stride_q_b + pid_h * stride_q_h + n_idx[:, None] * stride_q_n + outlier_indices[None, :] * stride_q_d
     ko_ptrs = K_ptr + pid_b * stride_k_b + pid_h * stride_k_h + n_idx[:, None] * stride_k_n + outlier_indices[None, :] * stride_k_d
     
     Q_O = tl.load(qo_ptrs, mask=mask_n[:, None] & mask_r[None, :], other=0.0)
     K_O = tl.load(ko_ptrs, mask=mask_n[:, None] & mask_r[None, :], other=0.0)
 
-    # Q_J is GATHERED directly from the raw Q tensor!
     qj_ptrs = Q_ptr + pid_b * stride_q_b + pid_h * stride_q_h + n_idx[:, None] * stride_q_n + inlier_indices[None, :] * stride_q_d
     kj_ptrs = K_ptr + pid_b * stride_k_b + pid_h * stride_k_h + n_idx[:, None] * stride_k_n + inlier_indices[None, :] * stride_k_d
     
@@ -110,27 +110,29 @@ def hybrid_single_chunk_kernel(
     P_local_f32 = l_exp / l_sum[:, None]
     
     P_local = P_local_f32.to(native_dtype)
-    weighted_K_J = tl.dot(P_local, K_J)                                         
-    e_local = tl.sum(Q_J.to(tl.float32) * weighted_K_J.to(tl.float32), axis=1)  
+    weighted_K_J = tl.dot(P_local, K_J)                                
+    e_local = tl.sum(Q_J.to(tl.float32) * weighted_K_J.to(tl.float32), axis=1) / inlier_scale
 
-    E = tl.dot(Q_J, tl.trans(K_J))                                              
-    P_local_E = (P_local_f32 * E.to(tl.float32)).to(native_dtype)               
+    E = tl.dot(Q_J, tl.trans(K_J)) / inlier_scale
+    P_local_E = (P_local_f32 * E.to(tl.float32)).to(native_dtype) 
 
     # --- Past Correction via Recurrent States ---
-    Z_past = tl.sum(phi_Q.to(tl.float32) * S_phi[None, :], axis=1)              
-    attn_phi_full = tl.dot(phi_Q, tl.trans(phi_K))                              
+    Z_past = tl.sum(phi_Q.to(tl.float32) * S_phi[None, :], axis=1) 
+    attn_phi_full = tl.dot(phi_Q, tl.trans(phi_K)) 
     attn_phi_causal = tl.where(mask_causal, attn_phi_full.to(tl.float32), 0.0)
     Z_local = tl.sum(attn_phi_causal, axis=1)
     Z_total = Z_past + Z_local + 1e-8
 
-    # e_past
-    W_K = tl.dot(phi_Q, S_K.to(native_dtype))                                   
-    e_past = tl.sum(Q_J.to(tl.float32) * W_K.to(tl.float32), axis=1) / Z_total  
+    W_K = tl.dot(phi_Q, S_K.to(native_dtype)) 
+    e_past = tl.sum(Q_J.to(tl.float32) * W_K.to(tl.float32), axis=1) / Z_total 
+    
+    # Combined e with clamping
     e = e_local + e_past
+    e = tl.maximum(tl.minimum(e, 0.95), -0.95)
 
     # --- Output Calculations ---
-    W_KV_d = tl.dot(phi_Q, S_KV_d.to(native_dtype))                             
-    term1_past_d = tl.sum(Q_J.to(tl.float32) * W_KV_d.to(tl.float32), axis=1) / Z_total  
+    W_KV_d = tl.dot(phi_Q, S_KV_d.to(native_dtype)) 
+    term1_past_d = tl.sum(Q_J.to(tl.float32) * W_KV_d.to(tl.float32), axis=1) / Z_total 
     term1_local_d = tl.sum(P_local_E.to(tl.float32) * V_d.to(tl.float32)[None, :], axis=1) 
 
     # Masked Output Write
@@ -138,21 +140,24 @@ def hybrid_single_chunk_kernel(
     tl.store(yout_ptrs, y_out_d.to(Y_out_ptr.dtype.element_ty), mask=mask_n)
 
     # --- State Updates ---
-    # Apply mask_n so padded sequence garbage doesn't corrupt our global state!
     mask_n_f32 = tl.where(mask_n, 1.0, 0.0)[:, None]
     phi_K_masked = phi_K.to(tl.float32) * mask_n_f32
     K_J_masked = K_J.to(tl.float32) * mask_n_f32
 
-    S_KV_d += tl.dot(tl.trans(phi_K_masked), K_J_masked * V_d[:, None])
+    # S_KV_d += tl.dot(tl.trans(phi_K_masked), K_J_masked * V_d[:, None])
+    # S_phi += tl.sum(phi_K_masked, axis=0)
+    # S_K += tl.dot(tl.trans(phi_K_masked), K_J_masked)
+
+    K_J_scaled = K_J_masked * (1.0 / inlier_scale)
+    S_KV_d += tl.dot(tl.trans(phi_K_masked), K_J_scaled * V_d[:, None])
     S_phi += tl.sum(phi_K_masked, axis=0)
-    S_K += tl.dot(tl.trans(phi_K_masked), K_J_masked)
+    S_K += tl.dot(tl.trans(phi_K_masked), K_J_scaled)
 
     # --- Write Back to Global Memory ---
     tl.store(ptrs_skv, S_KV_d)
     if pid_d == 0:
         tl.store(ptrs_sphi, S_phi)
         tl.store(ptrs_sk, S_K)
-
 
 # ---------- Optimized Module ----------
 
@@ -174,6 +179,8 @@ class OutlierFactorizedLinearAttention(nn.Module):
         self.W_q = nn.Linear(self.d_model, self.d_model, bias=False)
         self.W_k = nn.Linear(self.d_model, self.d_model, bias=False)
         self.W_v = nn.Linear(self.d_model, self.d_model, bias=False)
+
+        self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
         self.register_buffer('_cached_outlier_idx', None)
         self.register_buffer('_cached_inlier_idx', None)
@@ -204,34 +211,27 @@ class OutlierFactorizedLinearAttention(nn.Module):
             self._cached_outlier_idx = o
             self._cached_inlier_idx = i
 
-
     def forward(self, x):
         B, N, D = x.shape
         dtype_in = x.dtype
         scale_factor = self.d_head ** 0.25
+        inlier_scale = float(self.j ** 0.5)
 
         Q = (self.W_q(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2).contiguous()
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2).contiguous()
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2).contiguous()
 
-        # [Special cases for r==0 and r==d_head remain unchanged...]
-
         self._maybe_update_indices()
         outlier_idx = self._cached_outlier_idx
         inlier_idx = self._cached_inlier_idx
 
-        # Prepare the gathered Q_O/K_O *only* for FlashAttention
         out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
         Q_O_tmp = Q.gather(-1, out_gather)
         K_O_tmp = K.gather(-1, out_gather)
 
-        # Write outlier attention output directly into Y_out
         Y_out = F.scaled_dot_product_attention(Q_O_tmp, K_O_tmp, V, is_causal=True, scale=1.0)
-
-        # Immediately free the temporary gathers
         del Q_O_tmp, K_O_tmp
 
-        # 3. Prepare Triton constants
         r_padded = max(16, int(2 ** math.ceil(math.log2(self.r)))) if self.r > 0 else 16
         j_padded = max(16, int(2 ** math.ceil(math.log2(self.j)))) if self.j > 0 else 16
         C = self.chunk_size
@@ -239,12 +239,10 @@ class OutlierFactorizedLinearAttention(nn.Module):
         m_O = self.m_O
         inv_sqrt_m_O = float(1.0 / math.sqrt(m_O))
 
-        # 4. Initialize Persistent Global States
         S_phi = torch.zeros((B, self.num_heads, m_O), device=x.device, dtype=torch.float32)
         S_K = torch.zeros((B, self.num_heads, m_O, j_padded), device=x.device, dtype=torch.float32)
         S_KV = torch.zeros((B, self.num_heads, self.d_head, m_O, j_padded), device=x.device, dtype=torch.float32)
 
-        # 5. Fire Sequential Chunks
         grid = (B, self.num_heads, self.d_head)
         
         for u in range(U):
@@ -254,7 +252,7 @@ class OutlierFactorizedLinearAttention(nn.Module):
                 S_phi, S_K, S_KV,
                 outlier_idx, inlier_idx,
                 u, N, self.r, self.j, inv_sqrt_m_O,
-                C=C, r_padded=r_padded, j_padded=j_padded, m_O=m_O,
+                C=C, r_padded=r_padded, j_padded=j_padded, m_O=m_O, inlier_scale=inlier_scale,
                 stride_q_b=Q.stride(0), stride_q_h=Q.stride(1), stride_q_n=Q.stride(2), stride_q_d=Q.stride(3),
                 stride_k_b=K.stride(0), stride_k_h=K.stride(1), stride_k_n=K.stride(2), stride_k_d=K.stride(3),
                 stride_v_b=V.stride(0), stride_v_h=V.stride(1), stride_v_n=V.stride(2), stride_v_d=V.stride(3),
@@ -268,7 +266,10 @@ class OutlierFactorizedLinearAttention(nn.Module):
                 num_warps=4, num_stages=2
             )
 
-        return Y_out.transpose(1, 2).reshape(B, N, D).to(dtype_in)
+        Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
+        Y_out = self.out_proj(Y_out)
+
+        return Y_out.to(dtype_in)
 
 # ---------- Full Model ----------
 
@@ -288,7 +289,6 @@ class TransformerBlock(nn.Module):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
-
 
 class SubwordLM(nn.Module):
     def __init__(self, vocab_size: int, model_cfg: ModelConfig):

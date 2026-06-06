@@ -13,7 +13,7 @@ from matplotlib.ticker import FuncFormatter, ScalarFormatter
 
 CACHE_FILE = "data/experiments_cache/profiling_results.pt"
 
-def profile(warmup_steps=3, active_steps=10, force_rerun=False, train_cfg=TrainingConfig(), model_cfg=ModelConfig()):
+def run_profiling_experiment(warmup_steps=3, active_steps=10, force_rerun=False, train_cfg=TrainingConfig(), model_cfg=ModelConfig()):
     device = torch.device(train_cfg.device)
     torch.manual_seed(train_cfg.seed)
     seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288]
@@ -279,7 +279,7 @@ def plot_profile_results(cache_path=CACHE_FILE):
     ax3.xaxis.set_major_formatter(formatter_x)
     ax3.set_xticks(vl_speed)
     ax3.set_xlabel('Sequence Length ($N$)')
-    ax3.set_ylabel('Speedup (× over FlashAttention)')
+    ax3.set_ylabel(rf'Speedup ($\times$ over FlashAttention)')
     ax3.set_title('Hybrid advantage grows\nwith sequence length')
     ax3.grid(True, linestyle=':', alpha=0.6)
     

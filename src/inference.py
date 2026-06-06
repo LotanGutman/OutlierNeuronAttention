@@ -1,12 +1,14 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import tiktoken
 import os
-from src.triton_model import SubwordLM
+from src.triton_model import SubwordLM as TritonSubwordLM
+from src.torch_model import SubwordLM as TorchSubwordLM
 from src.config import ModelConfig, TrainingConfig
 
 class InferenceEngine:
-    def __init__(self, model_cfg: ModelConfig, train_cfg: TrainingConfig, checkpoint_path: str = None):
+    def __init__(self, model_cfg: ModelConfig, train_cfg: TrainingConfig, checkpoint_path: str = None, use_triton: bool = False):
         self.model_cfg = model_cfg
         self.train_cfg = train_cfg
         self.device = torch.device(train_cfg.device)
@@ -14,7 +16,10 @@ class InferenceEngine:
         self.vocab_size = self.tokenizer.n_vocab
 
         # Initialize the optimized model
-        self.model = SubwordLM(self.vocab_size, model_cfg).to(self.device)
+        if use_triton:
+            self.model = TritonSubwordLM(self.vocab_size, model_cfg).to(self.device)
+        else:
+            self.model = TorchSubwordLM(self.vocab_size, model_cfg).to(self.device)
         self.model.eval()
 
         if checkpoint_path is None:
@@ -67,27 +72,34 @@ class InferenceEngine:
         return os.path.join(dir_path, f"hybrid_attn_step_{latest}.pt")
 
     def _load_checkpoint(self, path):
-        # Load checkpoint (handling weights_only for security/compatibility)
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
         state = ckpt['model_state_dict']
         
-        # handle missing buffer keys for routing indices (cached outlier/inlier)
-        # We ensure the model has placeholders for these so load_state_dict(strict=True) works
+        # Handle missing buffers
         for key, tensor in list(state.items()):
             if '_cached_outlier_idx' in key or '_cached_inlier_idx' in key:
                 *path_parts, attr = key.split('.')
                 obj = self.model
                 for p in path_parts:
                     obj = getattr(obj, p)
-                
-                # If the buffer is None (initial state), set a placeholder
                 if getattr(obj, attr) is None:
-                    placeholder = torch.zeros_like(tensor)
-                    setattr(obj, attr, placeholder)
-                    
-        self.model.load_state_dict(state, strict=True)
-        print(f"Loaded checkpoint from {path} (iter {ckpt.get('iter', 'unknown')})")
+                    setattr(obj, attr, torch.zeros_like(tensor))
+        
+        # Load state
+        missing_keys, unexpected_keys = self.model.load_state_dict(state, strict=False)
+        
+        # there was a checkpoint that I trained without the out_proj layer, so this is a fallback to initialize it as Identity
+        if any('out_proj' in k for k in missing_keys):
+            print("--- Initializing missing out_proj weights as Identity ---")
+            with torch.no_grad():
+                for name, module in self.model.named_modules():
+                    if 'out_proj' in name and isinstance(module, nn.Linear):
+                        nn.init.eye_(module.weight)
+                        if module.bias is not None:
+                            nn.init.zeros_(module.bias)
 
+        print(f"Loaded checkpoint from {path}")
+    
     def generate(self, prompt: str = "", max_new_tokens: int = 100, temperature: float = 0.8, top_k: int = 50):
         """Generate text from a prompt. If prompt is empty, start from eot token."""
         self.model.eval()
