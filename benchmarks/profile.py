@@ -1,48 +1,48 @@
 """
-Profiling: Triton-Optimized Hybrid vs. Standard MHA (FlashAttention).
+Profiling: Triton-Optimized OFLA vs. Standard MHA (FlashAttention).
 Measures forward-pass time (ms) and peak VRAM (GB) for seq lengths 512 to 524288.
 """
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
 import numpy as np
-from src.triton_model import OutlierFactorizedLinearAttention as OptimizedOutlierFactorizedLinearAttention
+from src.triton_model import OutlierFactorizedLinearAttention
 from src.config import ModelConfig, TrainingConfig
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 
 CACHE_FILE = "data/experiments_cache/profiling_results.pt"
 
-def run_profiling_experiment(warmup_steps=3, active_steps=10, force_rerun=False, train_cfg=TrainingConfig(), model_cfg=ModelConfig()):
+class StandardMHAWrapper:
+    def __init__(self, attn_module):
+        self.d_head = attn_module.d_head
+    
+    def __call__(self, x):
+        B, N, D = x.shape
+        scale_factor = self.d_head ** 0.25
+        # x maps directly to Q, K, V since we killed the linear projections
+        Q = (x / scale_factor).view(B, N, -1, self.d_head).transpose(1, 2)
+        K = (x / scale_factor).view(B, N, -1, self.d_head).transpose(1, 2)
+        V = x.view(B, N, -1, self.d_head).transpose(1, 2)
+        Y = F.scaled_dot_product_attention(Q, K, V, is_causal=True, scale=1.0)
+        return Y.transpose(1, 2).reshape(B, N, D)
+
+def run_profiling_experiment(warmup_steps=3, active_steps=10, force_rerun=True, train_cfg=TrainingConfig(), model_cfg=ModelConfig()):
     device = torch.device(train_cfg.device)
     torch.manual_seed(train_cfg.seed)
     seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288]
     
-    hybrid_attn = OptimizedOutlierFactorizedLinearAttention(model_cfg).to(device).eval()
+    hybrid_attn = OutlierFactorizedLinearAttention(model_cfg).to(device).eval()
     
-    # --- Isolate Attention from GEMMs ---
-    # 1. Force the model to compute and cache the routing indices now
+    # Isolate Attention from GEMMs
+    # Force the model to compute and cache the routing indices now and revent it from trying to update indices during the benchmark loop
     hybrid_attn._maybe_update_indices()
-    # 2. Prevent it from trying to update indices during the benchmark loop
     hybrid_attn._refresh_steps = 999999999
-    # 3. Replace the linear layers with Identity to instantly skip the O(N * D^2) compute
-    import torch.nn as nn
+    # Replace the linear layers with Identity to instantly skip the O(N * D^2) compute (identical for MHA and OFLA)
     hybrid_attn.W_q = nn.Identity()
     hybrid_attn.W_k = nn.Identity()
     hybrid_attn.W_v = nn.Identity()
-    
-    class StandardMHAWrapper:
-        def __init__(self, attn_module):
-            self.d_head = attn_module.d_head
-        def __call__(self, x):
-            B, N, D = x.shape
-            scale_factor = self.d_head ** 0.25
-            # x maps directly to Q, K, V since we killed the linear projections
-            Q = (x / scale_factor).view(B, N, -1, self.d_head).transpose(1, 2)
-            K = (x / scale_factor).view(B, N, -1, self.d_head).transpose(1, 2)
-            V = x.view(B, N, -1, self.d_head).transpose(1, 2)
-            Y = F.scaled_dot_product_attention(Q, K, V, is_causal=True, scale=1.0)
-            return Y.transpose(1, 2).reshape(B, N, D)
             
     mha = StandardMHAWrapper(hybrid_attn)
     
@@ -289,7 +289,7 @@ def plot_profile_results(cache_path=CACHE_FILE):
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.85) 
-    plot_path = 'benchmarks/experiments/plots/profiling.pdf'
+    plot_path = 'benchmarks/plots/profiling.pdf'
     os.makedirs(os.path.dirname(plot_path), exist_ok=True)
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     print(f"\nProfile plot saved to {plot_path}")
