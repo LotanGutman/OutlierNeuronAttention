@@ -15,7 +15,6 @@ class InferenceEngine:
         self.tokenizer = tiktoken.get_encoding(train_cfg.tokenizer_name)
         self.vocab_size = self.tokenizer.n_vocab
 
-        # Initialize the optimized model
         if use_triton:
             self.model = TritonSubwordLM(self.vocab_size, model_cfg).to(self.device)
         else:
@@ -38,7 +37,6 @@ class InferenceEngine:
         # Fallback for WSL: convert C:\Users\... to /mnt/c/Users/...
         if os.name == 'posix' and len(path) > 2 and path[1] == ':':
             drive = path[0].lower()
-            # path[3:] removes "C:\" or "C:/"
             relative_path = path[3:].replace('\\', '/')
             wsl_path = f"/mnt/{drive}/{relative_path}"
             if os.path.exists(wsl_path):
@@ -55,7 +53,6 @@ class InferenceEngine:
         if not files:
             raise FileNotFoundError(f"No checkpoints found in {dir_path}.")
         
-        # Matches files like hybrid_attn_step_500.pt
         steps = []
         for f in files:
             if 'hybrid_attn_step' in f:
@@ -75,7 +72,6 @@ class InferenceEngine:
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
         state = ckpt['model_state_dict']
         
-        # Handle missing buffers
         for key, tensor in list(state.items()):
             if '_cached_outlier_idx' in key or '_cached_inlier_idx' in key:
                 *path_parts, attr = key.split('.')
@@ -85,10 +81,8 @@ class InferenceEngine:
                 if getattr(obj, attr) is None:
                     setattr(obj, attr, torch.zeros_like(tensor))
         
-        # Load state
         missing_keys, unexpected_keys = self.model.load_state_dict(state, strict=False)
         
-        # there was a checkpoint that I trained without the out_proj layer, so this is a fallback to initialize it as Identity
         if any('out_proj' in k for k in missing_keys):
             print("--- Initializing missing out_proj weights as Identity ---")
             with torch.no_grad():
@@ -117,11 +111,9 @@ class InferenceEngine:
                 x = context[:, -self.model_cfg.block_size:]
                 
                 # Use autocast for bfloat16 inference (matches training precision)
-                # Note: Triton kernel internal logic handles float32 accumulation.
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     logits, _ = self.model(x)
                 
-                # Focus on the last token's logits
                 logits = logits[:, -1, :] / temperature
                 
                 if top_k > 0:

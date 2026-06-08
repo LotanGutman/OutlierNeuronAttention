@@ -5,17 +5,15 @@ from enum import Enum
 import gc
 import math
 
-# Imports matching project structure
-from src.torch_model import OutlierFactorizedLinearAttention
+# from src.torch_model import HybridOutlierFactorizedAttention
+from src.triton_model import HybridOutlierFactorizedAttention
 from benchmarks.benchmarks_configs import RecallExperimentConfig
 from fla.layers import DeltaNet, GatedLinearAttention as GLA
 
-# ==========================================
-# 1. STANDALONE MQAR DATA GENERATOR
-# ==========================================
+
 def generate_zoology_mqar(batch_size, seq_len, vocab_size, num_kv_pairs, device):
-    key_vocab_end = vocab_size // 2        # keys: 1..64
-    val_vocab_start = vocab_size // 2 + 1  # values: 65..128
+    key_vocab_end = vocab_size // 2 # keys: 1..64
+    val_vocab_start = vocab_size // 2 + 1 # values: 65..128
     val_vocab_end = vocab_size - 1
 
     context_size = num_kv_pairs * 2
@@ -58,9 +56,6 @@ def generate_sniah(batch_size, seq_len, vocab_size, depth_pct, device):
     y[:, -1:] = needle_value
     return x, y
 
-# ==========================================
-# 2. MODEL ARCHITECTURES
-# ==========================================
 
 class StandardMHA(nn.Module):
     def __init__(self, d_model, num_heads):
@@ -94,7 +89,7 @@ class FLAWrapper(nn.Module):
 
 class AttentionType(Enum):
     MHA = "mha"
-    OFLA = "ofla"
+    HOFA = "hofa"
     DELTA = "delta"
     GLA = "gla"
 
@@ -103,8 +98,8 @@ def build_attention(attn_type, model_cfg):
     num_heads = model_cfg.num_heads
     if attn_type == AttentionType.MHA:
         return StandardMHA(d_model, num_heads)
-    if attn_type == AttentionType.OFLA:
-        return OutlierFactorizedLinearAttention(model_cfg)
+    if attn_type == AttentionType.HOFA:
+        return HybridOutlierFactorizedAttention(model_cfg)
     if attn_type == AttentionType.DELTA:
         return FLAWrapper(DeltaNet(hidden_size=d_model, num_heads=num_heads))
     if attn_type == AttentionType.GLA:
@@ -158,9 +153,6 @@ class GenericBenchmarkLM(nn.Module):
             logits = self.lm_head(x)
             return logits, None
 
-# ==========================================
-# 3. TRAINING & EVALUATION LOOP
-# ==========================================
 
 def adjust_learning_rate(optimizer, step, total_steps, base_lr, warmup_steps):
     lr = base_lr * min(1.0, step / warmup_steps)
@@ -191,7 +183,6 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
             model.eval()
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast):
-                    # Generate validation batch
                     x_val, y_val = gen_func(**gen_kwargs)
                     logits_val, _ = model(x_val, targets=y_val, return_loss=False)
                 
@@ -219,15 +210,12 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
 
     return correct / total_tokens
 
-# ==========================================
-# 4. EXPERIMENT RUNNER
-# ==========================================
 
 def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfig()):
     device = config.device
     print("--- Starting Zoology Exact-Match MQAR Sweep ---")
     
-    model_names = ["OFLA (r=8)", "MHA", "Gated DeltaNet", "GLA"]
+    model_names = ["HOFA (r=8)", "MHA", "Gated DeltaNet", "GLA"]
     
     for density in config.densities:
         for name in model_names:
@@ -236,7 +224,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
             model_cfg = config.model_config
             attn_type_map = {
                 "MHA": AttentionType.MHA,
-                "OFLA (r=8)": AttentionType.OFLA,
+                "HOFA (r=8)": AttentionType.HOFA,
                 "Gated DeltaNet": AttentionType.DELTA,
                 "GLA": AttentionType.GLA
             }

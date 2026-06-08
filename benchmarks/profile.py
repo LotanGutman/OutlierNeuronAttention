@@ -1,5 +1,5 @@
 """
-Profiling: Triton-Optimized OFLA vs. Standard MHA (FlashAttention).
+Profiling: Triton-Optimized HOFA vs. Standard MHA (FlashAttention).
 Measures forward-pass time (ms) and peak VRAM (GB) for seq lengths 512 to 524288.
 """
 import torch
@@ -8,7 +8,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
 import numpy as np
-from src.triton_model import OutlierFactorizedLinearAttention
+from src.triton_model import HybridOutlierFactorizedAttention
 from src.config import ModelConfig, TrainingConfig
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 
@@ -33,13 +33,13 @@ def run_profiling_experiment(warmup_steps=3, active_steps=10, force_rerun=True, 
     torch.manual_seed(train_cfg.seed)
     seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288]
     
-    hybrid_attn = OutlierFactorizedLinearAttention(model_cfg).to(device).eval()
+    hybrid_attn = HybridOutlierFactorizedAttention(model_cfg).to(device).eval()
     
-    # Isolate Attention from GEMMs
-    # Force the model to compute and cache the routing indices now and revent it from trying to update indices during the benchmark loop
+    # Prevent the model from updating indices during the benchmark loop
     hybrid_attn._maybe_update_indices()
     hybrid_attn._refresh_steps = 999999999
-    # Replace the linear layers with Identity to instantly skip the O(N * D^2) compute (identical for MHA and OFLA)
+    
+    # Replace the linear layers with Identity to instantly skip the O(N * D^2) compute
     hybrid_attn.W_q = nn.Identity()
     hybrid_attn.W_k = nn.Identity()
     hybrid_attn.W_v = nn.Identity()
@@ -60,12 +60,12 @@ def run_profiling_experiment(warmup_steps=3, active_steps=10, force_rerun=True, 
 
         for sl in seq_lengths:
             torch.cuda.empty_cache() # Clean slate only once per seq length
+            
             # Scale down x to prevent exponential blowup since Q=K=V now
             x = torch.randn(1, sl, model_cfg.d_model, device=device) * 0.1
             
             # --- Standard MHA ---
             try:
-                # Force compilation / initialization if any
                 _ = mha(x)
                 torch.cuda.synchronize()
                 
@@ -97,7 +97,6 @@ def run_profiling_experiment(warmup_steps=3, active_steps=10, force_rerun=True, 
                 
             # --- Triton Hybrid ---
             try:
-                # Force Triton JIT compile outside the timing and memory window
                 _ = hybrid_attn(x)
                 torch.cuda.synchronize()
                 
@@ -155,7 +154,6 @@ def plot_profile_results(cache_path=CACHE_FILE):
     if not valid_lens:
         return
 
-    # Use a high-quality serif font to match LaTeX
     plt.rcParams.update({
         'font.size': 12, 
         'font.family': 'serif',
@@ -182,7 +180,7 @@ def plot_profile_results(cache_path=CACHE_FILE):
     
     # --- Plot 1: Latency (Linear Y for the massive gap) ---
     ax1.plot(vl1, times_mha_s, label='MHA (FlashAttention)', **style_mha)
-    ax1.plot(vl2, times_hyb_s, label='OFLA (Ours)', **style_hyb)
+    ax1.plot(vl2, times_hyb_s, label='HOFA (Ours)', **style_hyb)
     ax1.set_xscale('log', base=2)
     ax1.set_yscale('linear') # Restored to linear for the big visual gap
     ax1.xaxis.set_major_formatter(formatter_x)
@@ -193,11 +191,9 @@ def plot_profile_results(cache_path=CACHE_FILE):
     ax1.set_title('Computational Scaling')
     ax1.grid(True, which="both", linestyle=':', alpha=0.6)
 
-    # --- INSET ZOOM for Plot 1 ---
-    # Position shifted right (x=0.18) to prevent Y-axis text overlap
+    # Inset zoom
     axins = ax1.inset_axes([0.18, 0.48, 0.42, 0.42]) 
     
-    # Solid background to hide main grid bleed-through
     axins.patch.set_facecolor('white')
     axins.patch.set_alpha(0.95)
     for spine in axins.spines.values(): 
@@ -208,18 +204,15 @@ def plot_profile_results(cache_path=CACHE_FILE):
     axins.set_xscale('log', base=2)
     axins.set_yscale('log', base=10) # Log-log for the zoomed area
     
-    # Limit the zoom to frame the 154k crossover
     axins.set_xlim(512, 262144)
     zoom_max_y = max(times_mha_s[valid_lens.index(262144)], times_hyb_s[valid_lens.index(262144)])
     axins.set_ylim(min(times_mha_s[0], times_hyb_s[0]) * 0.5, zoom_max_y * 1.5)
     
-    # Format inset cleanly
     axins.xaxis.set_major_formatter(formatter_x)
     axins.set_xticks([512, 16384, 262144])
     axins.tick_params(axis='both', which='major', labelsize=10)
     axins.grid(True, which="both", linestyle=':', alpha=0.4)
     
-    # Custom crisp lines instead of buggy indicate_inset_zoom box
     y_start = min(times_mha_s[0], times_hyb_s[0])
     con1 = ConnectionPatch(xyA=(512, axins.get_ylim()[0]), xyB=(512, y_start), 
                            coordsA="data", coordsB="data", 
@@ -235,7 +228,7 @@ def plot_profile_results(cache_path=CACHE_FILE):
     
     # --- Plot 2: Memory (Log Y to show parallel scaling lines) ---
     ax2.plot(valid_lens[:len(mems_mha)], mems_mha, label='MHA (FlashAttention)', **style_mha)
-    ax2.plot(valid_lens[:len(mems_hyb)], mems_hyb, label='OFLA (Ours)', **style_hyb)
+    ax2.plot(valid_lens[:len(mems_hyb)], mems_hyb, label='HOFA (Ours)', **style_hyb)
     ax2.set_xscale('log', base=2)
     ax2.set_yscale('log', base=10) 
     ax2.xaxis.set_major_formatter(formatter_x)
@@ -254,7 +247,7 @@ def plot_profile_results(cache_path=CACHE_FILE):
     ax3.plot(vl_speed, speedups, marker='^', color='#009E73', linewidth=2.5, markersize=7, label='Speedup')
     ax3.axhline(1.0, color='black', linestyle='--', linewidth=1.2, alpha=0.8)
     
-    # Calculate EXACT interpolated crossover point
+    # Calculate interpolated crossover point
     crossover_x = None
     for i in range(len(speedups) - 1):
         if speedups[i] < 1.0 and speedups[i+1] >= 1.0:
@@ -283,7 +276,6 @@ def plot_profile_results(cache_path=CACHE_FILE):
     ax3.set_title('Hybrid advantage grows\nwith sequence length')
     ax3.grid(True, linestyle=':', alpha=0.6)
     
-    # Unified Legend
     handles, labels = ax1.get_legend_handles_labels()
     fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.05), ncol=2, frameon=False, fontsize=12)
 

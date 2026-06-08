@@ -5,8 +5,7 @@ from torch.utils.checkpoint import checkpoint
 import math
 from src.config import ModelConfig
 
-# ---------- Attention ----------
-class OutlierFactorizedLinearAttention(nn.Module):
+class HybridOutlierFactorizedAttention(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
         super().__init__()
         self.d_model = model_cfg.d_model
@@ -62,13 +61,13 @@ class OutlierFactorizedLinearAttention(nn.Module):
         B, N, D = x.shape
         dtype_in = x.dtype
         scale_factor = self.d_head ** 0.25
-        inlier_scale = float(self.j ** 0.5)        # <-- new: stabilises E
+        inlier_scale = float(self.j ** 0.5) # stabilizes E
 
         Q = (self.W_q(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
-        # ---- Special case: r == 0 → pure causal linear attention ----
+        # Special case: pure causal linear attention
         if self.r == 0:
             phi_Q = torch.exp(Q @ self.omega_J.to(dtype_in) -
                               (Q ** 2).sum(dim=-1, keepdim=True) / 2.0) / math.sqrt(self.m)
@@ -83,7 +82,7 @@ class OutlierFactorizedLinearAttention(nn.Module):
             
             return Y.transpose(1, 2).reshape(B, N, D)
 
-        # ---- Special case: r == d_head → true exact softmax ----
+        # Special case: exact softmax attention (r = d_head)
         if self.r == self.d_head:
             attn = torch.einsum('bhqd,bhkd->bhqk', Q, K)
             causal_mask = torch.tril(torch.ones(N, N, device=x.device, dtype=torch.bool))
@@ -107,24 +106,24 @@ class OutlierFactorizedLinearAttention(nn.Module):
         Q_J = Q.gather(-1, in_gather)
         K_J = K.gather(-1, in_gather)
 
-        # --- 1. Outlier exact attention (global) ---
+        # Outlier exact attention
         attn_O = torch.einsum('bhqd,bhkd->bhqk', Q_O, K_O)
         causal_mask = torch.tril(torch.ones(N, N, device=x.device, dtype=torch.bool))
         attn_O = torch.where(causal_mask, attn_O,
                              torch.tensor(torch.finfo(attn_O.dtype).min,
                                           device=x.device, dtype=attn_O.dtype))
-        P_O = F.softmax(attn_O, dim=-1)          # (B, H, N, N)
-        Y_O = torch.einsum('bhqk,bhkd->bhqd', P_O, V)   # (B, H, N, d_head)
+        P_O = F.softmax(attn_O, dim=-1) # (B, H, N, N)
+        Y_O = torch.einsum('bhqk,bhkd->bhqd', P_O, V) # (B, H, N, d_head)
 
-        # --- 2. Inlier correction (global, scaled, clamped) ---
-        E = torch.einsum('bhin,bhjn->bhij', Q_J, K_J) / inlier_scale   # (B,H,N,N)
+        # Inlier correction (scaled and clamped)
+        E = torch.einsum('bhin,bhjn->bhij', Q_J, K_J) / inlier_scale
         causal_mask_full = torch.tril(torch.ones(N, N, device=x.device, dtype=torch.bool))
         E = E.masked_fill(~causal_mask_full, 0.0)
 
-        e = (P_O * E).sum(dim=-1)                # (B, H, N)
-        e = e.clamp(-0.95, 0.95)                 # safety
+        e = (P_O * E).sum(dim=-1)
+        e = e.clamp(-0.95, 0.95)
 
-        term1 = torch.einsum('bhij,bhjd->bhid', P_O * E, V)   # (B, H, N, d_head)
+        term1 = torch.einsum('bhij,bhjd->bhid', P_O * E, V)
 
         Y = Y_O * (1.0 - e.unsqueeze(-1)) + term1
         Y = Y.transpose(1, 2).reshape(B, N, D)
@@ -136,7 +135,7 @@ class TransformerBlock(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
         super().__init__()
         self.ln_1 = nn.LayerNorm(model_cfg.d_model)
-        self.attn = OutlierFactorizedLinearAttention(model_cfg)
+        self.attn = HybridOutlierFactorizedAttention(model_cfg)
         self.ln_2 = nn.LayerNorm(model_cfg.d_model)
         self.mlp = nn.Sequential(
             nn.Linear(model_cfg.d_model, 4 * model_cfg.d_model),
