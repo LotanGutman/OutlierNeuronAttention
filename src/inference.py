@@ -3,22 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 import tiktoken
 import os
-from src.triton_model import SubwordLM as TritonSubwordLM
-from src.torch_model import SubwordLM as TorchSubwordLM
+from src.HybridOutlierFactorizedAttention import SubwordLM
 from src.config import ModelConfig, TrainingConfig
 
 class InferenceEngine:
-    def __init__(self, model_cfg: ModelConfig, train_cfg: TrainingConfig, checkpoint_path: str = None, use_triton: bool = False):
+    def __init__(self, model_cfg: ModelConfig, train_cfg: TrainingConfig, checkpoint_path: str = None):
         self.model_cfg = model_cfg
         self.train_cfg = train_cfg
         self.device = torch.device(train_cfg.device)
-        self.tokenizer = tiktoken.get_encoding(train_cfg.tokenizer_name)
+        self.tokenizer = tiktoken.get_encoding(model_cfg.tokenizer_name)
         self.vocab_size = self.tokenizer.n_vocab
 
-        if use_triton:
-            self.model = TritonSubwordLM(self.vocab_size, model_cfg).to(self.device)
-        else:
-            self.model = TorchSubwordLM(self.vocab_size, model_cfg).to(self.device)
+        self.model = SubwordLM(self.vocab_size, model_cfg).to(self.device)
         self.model.eval()
 
         if checkpoint_path is None:

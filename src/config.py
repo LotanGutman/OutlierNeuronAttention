@@ -7,13 +7,11 @@ class ModelConfig:
     num_heads: int = 6
     num_layers: int = 6
     r: int = 8
-    m: int = 32
-    m_O: int = 128
-    chunk_size: int = 64
     block_size: int = 1024
-    use_inlier_scale: bool = False
-    use_clamping: bool = True
+    tokenizer_name: str = "gpt2"
+    refresh_steps: int = 100
     seed: int = 42
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
     @property
     def d_head(self) -> int:
@@ -27,7 +25,6 @@ class TrainingConfig:
     val_cache: str = "data/val_tokens.pkl"
     val_split_ratio: float = 0.9
     max_tokens: int = 50_000_000
-    tokenizer_name: str = "gpt2"
     batch_size: int = 2
     grad_accum_steps: int = 8
     max_iters: int = 5000

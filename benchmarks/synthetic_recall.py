@@ -3,11 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from enum import Enum
 import gc
-import math
+import os
+import matplotlib.pyplot as plt
+import numpy as np
 
-# from src.torch_model import HybridOutlierFactorizedAttention
-from src.triton_model import HybridOutlierFactorizedAttention
-from benchmarks.benchmarks_configs import RecallExperimentConfig
+from src.HybridOutlierFactorizedAttention import HybridOutlierFactorizedAttention
+from benchmarks.benchmarks_configs import RecallExperimentConfig, CACHE_PATH
 from fla.layers import DeltaNet, GatedLinearAttention as GLA
 
 
@@ -167,6 +168,8 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
     use_autocast = config.use_mixed_precision and device == "cuda"
     warmup_steps = int(0.1 * config.train_steps)
 
+    consecutive_perfect_acc = 0
+
     for i in range(config.train_steps):
         adjust_learning_rate(optimizer, i, config.train_steps, config.learning_rate, warmup_steps)
         optimizer.zero_grad()
@@ -193,6 +196,16 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
             model.train()
             print(f"      Step {i + 1:4d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc*100:.1f}%")
 
+            # a simple early stopping mechanism to save time on models that converge quickly
+            if val_acc == 1.0:
+                consecutive_perfect_acc += 1
+            else:
+                consecutive_perfect_acc = 0
+            
+            if consecutive_perfect_acc >= 2:
+                print("      Early stopping: achieved 100% accuracy for 2 consecutive evaluations.")
+                break
+
     print()
     model.eval()
     correct = 0
@@ -211,54 +224,98 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
     return correct / total_tokens
 
 
-def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfig()):
+def plot_results(results, save_plot=True):
+    os.makedirs("data/plots", exist_ok=True)
+    densities = sorted(list(results.keys()))
+    if not densities:
+        return
+    models = list(results[densities[0]].keys())
+    
+    x = np.arange(len(densities))
+    width = 0.8 / len(models)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for i, model in enumerate(models):
+        accs = [results[d][model] * 100 for d in densities]
+        ax.bar(x + (i - len(models)/2 + 0.5) * width, accs, width, label=model)
+        
+    ax.set_xlabel('Num KV Pairs (Density)')
+    ax.set_ylabel('Accuracy (%)')
+    ax.set_title('MQAR Synthetic Recall Task')
+    ax.set_xticks(x)
+    ax.set_xticklabels(densities)
+    ax.legend()
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    
+    plt.tight_layout()
+    if save_plot:
+        plot_path = "data/plots/recall_accuracy.png"
+        plt.savefig(plot_path)
+        print(f"Plot saved to {plot_path}")
+    plt.close()
+
+def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfig(), force_rerun=True, save_results=True):
+    cache_path = os.path.join(CACHE_PATH, config.cache_file_name)
     device = config.device
     torch.manual_seed(config.seed)
     print("--- Starting Zoology Exact-Match MQAR Sweep ---")
     
     model_names = ["HOFA (r=8)", "MHA", "Gated DeltaNet", "GLA"]
     
-    for density in config.densities:
-        for name in model_names:
-            print(f"\nTraining {name} (Density: {density})...")
-            
-            model_cfg = config.model_config
-            attn_type_map = {
-                "MHA": AttentionType.MHA,
-                "HOFA (r=8)": AttentionType.HOFA,
-                "Gated DeltaNet": AttentionType.DELTA,
-                "GLA": AttentionType.GLA
-            }
-            attn_type = attn_type_map[name]
-            
-            model = GenericBenchmarkLM(
-                config.vocab_size, 
-                model_cfg.d_model, 
-                attn_type, 
-                num_heads=model_cfg.num_heads, 
-                num_layers=model_cfg.num_layers, 
-                model_cfg=model_cfg
-            ).to(device)
-            
-            acc = train_and_eval(
-                model,
-                generate_zoology_mqar,
-                {
-                    "batch_size": config.batch_size,
-                    "seq_len": config.seq_len,
-                    "vocab_size": config.vocab_size,
-                    "num_kv_pairs": density,
-                    "device": device,
-                },
-                config,
-            )
-            print(f">>> MQAR {density} | {name} Final Accuracy: {acc*100:.1f}%")
-            
-            model.to('cpu')
-            del model
-            torch.cuda.empty_cache()
-            gc.collect()
+    if os.path.exists(cache_path) and not force_rerun:
+        print(f"Loading cached results from {cache_path}")
+        results = torch.load(cache_path)
+    else:
+        results = {d: {} for d in config.densities}
+        for density in config.densities:
+            for name in model_names:
+                print(f"\nTraining {name} (Density: {density})...")
+                
+                model_cfg = config.model_config
+                attn_type_map = {
+                    "MHA": AttentionType.MHA,
+                    "HOFA (r=8)": AttentionType.HOFA,
+                    "Gated DeltaNet": AttentionType.DELTA,
+                    "GLA": AttentionType.GLA
+                }
+                attn_type = attn_type_map[name]
+                
+                model = GenericBenchmarkLM(
+                    config.vocab_size, 
+                    model_cfg.d_model, 
+                    attn_type, 
+                    num_heads=model_cfg.num_heads, 
+                    num_layers=model_cfg.num_layers, 
+                    model_cfg=model_cfg
+                ).to(device)
+                
+                acc = train_and_eval(
+                    model,
+                    generate_zoology_mqar,
+                    {
+                        "batch_size": config.batch_size,
+                        "seq_len": config.seq_len,
+                        "vocab_size": config.vocab_size,
+                        "num_kv_pairs": density,
+                        "device": device,
+                    },
+                    config,
+                )
+                print(f">>> MQAR {density} | {name} Final Accuracy: {acc*100:.1f}%")
+                results[density][name] = acc
+                
+                model.to('cpu')
+                del model
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+        if save_results:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            torch.save(results, cache_path)
+
+    plot_results(results, save_plot=save_results)
+    return results
 
 if __name__ == "__main__":
     config = RecallExperimentConfig()
-    run_recall_experiment(config)
+    run_recall_experiment(config, force_rerun=True)

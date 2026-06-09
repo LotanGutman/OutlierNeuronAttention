@@ -8,11 +8,11 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
 import numpy as np
-from src.triton_model import HybridOutlierFactorizedAttention
+from src.HybridOutlierFactorizedAttention import HybridOutlierFactorizedAttention
 from src.config import ModelConfig, TrainingConfig
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 
-CACHE_FILE = "data/experiments_cache/profiling_results.pt"
+from benchmarks.benchmarks_configs import CACHE_PATH, ProfileExperimentConfig
 
 class StandardMHAWrapper:
     def __init__(self, attn_module):
@@ -28,16 +28,19 @@ class StandardMHAWrapper:
         Y = F.scaled_dot_product_attention(Q, K, V, is_causal=True, scale=1.0)
         return Y.transpose(1, 2).reshape(B, N, D)
 
-def run_profiling_experiment(warmup_steps=3, active_steps=10, force_rerun=True, train_cfg=TrainingConfig(), model_cfg=ModelConfig()):
-    device = torch.device(train_cfg.device)
+def run_profiling_experiment(config: ProfileExperimentConfig = ProfileExperimentConfig(), warmup_steps=3, active_steps=10, force_rerun=True, save_results=True):
+    model_cfg = config.model_config
+    train_cfg = config.train_cfg
+    cache_path = os.path.join(CACHE_PATH, config.cache_file_name)
+    device = torch.device(config.device)
     torch.manual_seed(train_cfg.seed)
     seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288]
     
+    model_cfg.refresh_steps = 999999999
     hybrid_attn = HybridOutlierFactorizedAttention(model_cfg).to(device).eval()
     
     # Prevent the model from updating indices during the benchmark loop
     hybrid_attn._maybe_update_indices()
-    hybrid_attn._refresh_steps = 999999999
     
     # Replace the linear layers with Identity to instantly skip the O(N * D^2) compute
     hybrid_attn.W_q = nn.Identity()
@@ -46,9 +49,9 @@ def run_profiling_experiment(warmup_steps=3, active_steps=10, force_rerun=True, 
             
     mha = StandardMHAWrapper(hybrid_attn)
     
-    if os.path.exists(CACHE_FILE) and not force_rerun:
-        print(f"Loading cached results from {CACHE_FILE}")
-        data = torch.load(CACHE_FILE)
+    if os.path.exists(cache_path) and not force_rerun:
+        print(f"Loading cached results from {cache_path}")
+        data = torch.load(cache_path)
         times_mha, times_hyb, mems_mha, mems_hyb, valid_lens = data
     else:
         times_mha, times_hyb = [], []
@@ -128,27 +131,29 @@ def run_profiling_experiment(warmup_steps=3, active_steps=10, force_rerun=True, 
             print(f"{sl:<8d} | {t_mha:8.3f} ms | {m_mha:.3f} GB | {t_hyb:8.3f} ms | {m_hyb:.3f} GB")
             del x
 
-        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-        torch.save((times_mha, times_hyb, mems_mha, mems_hyb, valid_lens), CACHE_FILE)
+        if save_results:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            torch.save((times_mha, times_hyb, mems_mha, mems_hyb, valid_lens), cache_path)
 
-    plot_profile_results(CACHE_FILE)
-
-
-
+    plot_profile_results(data=(times_mha, times_hyb, mems_mha, mems_hyb, valid_lens), cache_path=cache_path, save_plot=save_results)
 
 
-def plot_profile_results(cache_path=CACHE_FILE):
+
+
+
+def plot_profile_results(data=None, cache_path=None, save_plot=True):
     import numpy as np
     import os
     from matplotlib.ticker import FuncFormatter, ScalarFormatter
     import matplotlib.pyplot as plt
     from matplotlib.patches import ConnectionPatch
 
-    if not os.path.exists(cache_path):
-        print(f"Cache file {cache_path} not found.")
-        return
+    if data is None:
+        if not os.path.exists(cache_path):
+            print(f"Cache file {cache_path} not found.")
+            return
+        data = torch.load(cache_path)
 
-    data = torch.load(cache_path)
     times_mha, times_hyb, mems_mha, mems_hyb, valid_lens = data
 
     if not valid_lens:
@@ -281,10 +286,12 @@ def plot_profile_results(cache_path=CACHE_FILE):
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.85) 
-    plot_path = 'benchmarks/plots/profiling.pdf'
-    os.makedirs(os.path.dirname(plot_path), exist_ok=True)
-    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-    print(f"\nProfile plot saved to {plot_path}")
+    if save_plot:
+        plot_path = 'data/plots/profiling.pdf'
+        os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"\nProfile plot saved to {plot_path}")
+    plt.close()
 
 if __name__ == "__main__":
     profile()
