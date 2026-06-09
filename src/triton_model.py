@@ -16,6 +16,8 @@ def hybrid_single_chunk_kernel(
     C: tl.constexpr, r_padded: tl.constexpr,
     j_padded: tl.constexpr, m_O: tl.constexpr,
     inlier_scale: tl.constexpr,
+    USE_INLIER_SCALE: tl.constexpr,
+    USE_CLAMPING: tl.constexpr,
     stride_q_b, stride_q_h, stride_q_n, stride_q_d,
     stride_k_b, stride_k_h, stride_k_n, stride_k_d,
     stride_v_b, stride_v_h, stride_v_n, stride_v_d,
@@ -93,9 +95,12 @@ def hybrid_single_chunk_kernel(
     P_local     = P_local_f32.to(native_dtype)
 
     weighted_K_J = tl.dot(P_local, K_J)
-    e_local = tl.sum(Q_J.to(tl.float32) * weighted_K_J.to(tl.float32), axis=1) / inlier_scale
-
-    E = tl.dot(Q_J, tl.trans(K_J)) / inlier_scale
+    if USE_INLIER_SCALE:
+        e_local = tl.sum(Q_J.to(tl.float32) * weighted_K_J.to(tl.float32), axis=1) / inlier_scale
+        E = tl.dot(Q_J, tl.trans(K_J)) / inlier_scale
+    else:
+        e_local = tl.sum(Q_J.to(tl.float32) * weighted_K_J.to(tl.float32), axis=1)
+        E = tl.dot(Q_J, tl.trans(K_J))
     P_local_E = (P_local_f32 * E.to(tl.float32)).to(native_dtype)
 
     # past correction via recurrent states
@@ -115,14 +120,19 @@ def hybrid_single_chunk_kernel(
 
     W_K = tl.dot(phi_Q, S_K.to(native_dtype))
     e_past = tl.sum(Q_J.to(tl.float32) * W_K.to(tl.float32), axis=1) / Z_total
-    e = e_local + e_past
-    e = tl.maximum(tl.minimum(e, 0.95), -0.95)
+    e_total = e_local + e_past
+    
+    if USE_CLAMPING:
+        e_clamped = tl.where(e_total > 0.95, 0.95, e_total)
+        e_clamped = tl.where(e_clamped < -0.95, -0.95, e_clamped)
+    else:
+        e_clamped = e_total
 
     W_KV_d = tl.dot(phi_Q, S_KV_d.to(native_dtype))
     term1_past_d  = tl.sum(Q_J.to(tl.float32) * W_KV_d.to(tl.float32), axis=1) / Z_total
     term1_local_d = tl.sum(P_local_E.to(tl.float32) * V_d.to(tl.float32)[None, :], axis=1)
 
-    y_out_d = Y_O_d.to(tl.float32) * (1.0 - e) + term1_local_d + term1_past_d
+    y_out_d = Y_O_d.to(tl.float32) * (1.0 - e_clamped) + term1_local_d + term1_past_d
     tl.store(yout_ptrs, y_out_d.to(Y_out_ptr.dtype.element_ty), mask=mask_n)
 
     # update recurrent states
@@ -153,7 +163,7 @@ class HOFAFunction(torch.autograd.Function):
         outlier_idx, inlier_idx,
         C, r_padded, j_padded, m_O,
         inlier_scale, inv_sqrt_m_O,
-        N, pad_len
+        N, pad_len, use_inlier_scale, use_clamping
     ):
         B, H, N_pad, d_head = Q.shape
         assert N_pad == (N + pad_len)
@@ -180,6 +190,8 @@ class HOFAFunction(torch.autograd.Function):
                 u, N, r, j, inv_sqrt_m_O,      # <-- FIXED: only 5 scalars, no extra d_head
                 C=C, r_padded=r_padded, j_padded=j_padded, m_O=m_O,
                 inlier_scale=inlier_scale,
+                USE_INLIER_SCALE=use_inlier_scale,
+                USE_CLAMPING=use_clamping,
                 stride_q_b=Q.stride(0), stride_q_h=Q.stride(1), stride_q_n=Q.stride(2), stride_q_d=Q.stride(3),
                 stride_k_b=K.stride(0), stride_k_h=K.stride(1), stride_k_n=K.stride(2), stride_k_d=K.stride(3),
                 stride_v_b=V.stride(0), stride_v_h=V.stride(1), stride_v_n=V.stride(2), stride_v_d=V.stride(3),
@@ -209,6 +221,8 @@ class HOFAFunction(torch.autograd.Function):
         ctx.pad_len = pad_len
         ctx.U = U
         ctx.d_head = d_head
+        ctx.use_inlier_scale = use_inlier_scale
+        ctx.use_clamping = use_clamping
 
         return Y_out
 
@@ -235,6 +249,8 @@ class HOFAFunction(torch.autograd.Function):
         pad_len = ctx.pad_len
         U = ctx.U
         d_head = ctx.d_head
+        use_inlier_scale = ctx.use_inlier_scale
+        use_clamping = ctx.use_clamping
 
         B, H, N_pad, _ = Q.shape
         device = Q.device
@@ -331,9 +347,14 @@ class HOFAFunction(torch.autograd.Function):
             P_local = torch.softmax(logits_local, dim=-1)
 
             weighted_K_J = torch.matmul(P_local, K_J)
-            e_local = (Q_J * weighted_K_J).sum(dim=-1) / inlier_scale
 
-            E = torch.matmul(Q_J, K_J.transpose(-2, -1)) / inlier_scale
+            if use_inlier_scale:
+                e_local = (Q_J * weighted_K_J).sum(dim=-1) / inlier_scale
+                E = torch.matmul(Q_J, K_J.transpose(-2, -1)) / inlier_scale
+            else:
+                e_local = (Q_J * weighted_K_J).sum(dim=-1)
+                E = torch.matmul(Q_J, K_J.transpose(-2, -1))
+
             P_local_E = P_local * E
             term1_local = torch.einsum('bhij,bhjd->bhid', P_local_E, V_d)
 
@@ -347,7 +368,11 @@ class HOFAFunction(torch.autograd.Function):
             e_past_num = (Q_J * W_K).sum(dim=-1)
             e_past = e_past_num / Z_total
             e = e_local + e_past
-            e_clamped = torch.clamp(e, -0.95, 0.95)
+
+            if use_clamping:
+                e_clamped = torch.clamp(e, -0.95, 0.95)
+            else:
+                e_clamped = e
 
             W_KV = torch.einsum('bhcm,bhdmj->bhcdj', phi_Q, S_KV_prev)
             t1p_num = (Q_J.unsqueeze(-2) * W_KV).sum(dim=-1)
@@ -361,13 +386,18 @@ class HOFAFunction(torch.autograd.Function):
             grad_term1_past = grad_y_chunk
             grad_e_clamped = -(grad_y_chunk * Y_O_d).sum(dim=-1)
 
-            # Clamp backward
-            grad_e = grad_e_clamped * ((e > -0.95) & (e < 0.95)).float()
+            if use_clamping:
+                grad_e = grad_e_clamped * ((e > -0.95) & (e < 0.95)).float()
+            else:
+                grad_e = grad_e_clamped
             grad_e_local = grad_e
             grad_e_past = grad_e
 
             # e_local backward
-            grad_e_local_scaled = grad_e_local / inlier_scale
+            if use_inlier_scale:
+                grad_e_local_scaled = grad_e_local / inlier_scale
+            else:
+                grad_e_local_scaled = grad_e_local
             grad_Q_J_e_local = grad_e_local_scaled.unsqueeze(-1) * weighted_K_J
             grad_weighted_K_J = grad_e_local_scaled.unsqueeze(-1) * Q_J
 
@@ -427,10 +457,12 @@ class HOFAFunction(torch.autograd.Function):
             grad_K_J_scaled_delta_KV = torch.einsum('bhdmj,bhcm,bhcd->bhcj', grad_delta_KV, phi_K_masked, V_d_masked)
             grad_V_d_delta_KV = torch.einsum('bhdmj,bhcm,bhcj->bhcd', grad_delta_KV, phi_K_masked, K_J_scaled)
 
-            grad_phi_K += grad_phi_K_masked  # mask_v already applied, gradient flows back
-
+            grad_phi_K += grad_phi_K_masked
             grad_K_J_scaled = grad_K_J_scaled_delta_K + grad_K_J_scaled_delta_KV
-            grad_K_J_from_scaled = grad_K_J_scaled / inlier_scale
+            if use_inlier_scale:
+                grad_K_J_from_scaled = grad_K_J_scaled / inlier_scale
+            else:
+                grad_K_J_from_scaled = grad_K_J_scaled
 
             grad_V_d = grad_V_d_delta_KV
 
@@ -453,8 +485,12 @@ class HOFAFunction(torch.autograd.Function):
             grad_K_O_logits = torch.matmul(grad_logits_local.transpose(-2, -1), Q_O)
 
             # E backward -> Q_J, K_J
-            grad_Q_J_E = torch.matmul(grad_E, K_J) / inlier_scale
-            grad_K_J_E = torch.matmul(grad_E.transpose(-2, -1), Q_J) / inlier_scale
+            if use_inlier_scale:
+                grad_Q_J_E = torch.matmul(grad_E, K_J) / inlier_scale
+                grad_K_J_E = torch.matmul(grad_E.transpose(-2, -1), Q_J) / inlier_scale
+            else:
+                grad_Q_J_E = torch.matmul(grad_E, K_J)
+                grad_K_J_E = torch.matmul(grad_E.transpose(-2, -1), Q_J)
 
             # Total Q_J and K_J gradients
             grad_Q_J = grad_Q_J_e_local + grad_Q_J_past + grad_Q_J_e_past + grad_Q_J_E
@@ -524,6 +560,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.m_O       = model_cfg.m_O
         self.j         = self.d_head - self.r
         self.chunk_size = model_cfg.chunk_size
+        self.use_inlier_scale = model_cfg.use_inlier_scale
+        self.use_clamping = model_cfg.use_clamping
 
         self.register_buffer('omega_J', torch.randn(self.j, self.m))
         self.register_buffer('omega_O', torch.randn(self.r, self.m_O))
@@ -615,7 +653,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             outlier_idx, inlier_idx,
             C, r_padded, j_padded, m_O,
             inlier_scale, inv_sqrt_m_O,
-            N, pad_len
+            N, pad_len, self.use_inlier_scale, self.use_clamping
         )
 
         if pad_len > 0:

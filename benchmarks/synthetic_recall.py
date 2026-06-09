@@ -213,6 +213,7 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
 
 def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfig()):
     device = config.device
+    torch.manual_seed(config.seed)
     print("--- Starting Zoology Exact-Match MQAR Sweep ---")
     
     model_names = ["HOFA (r=8)", "MHA", "Gated DeltaNet", "GLA"]

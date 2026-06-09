@@ -8,9 +8,12 @@ class ModelConfig:
     num_layers: int = 6
     r: int = 8
     m: int = 32
-    m_O: int = 64
-    chunk_size: int = 32
+    m_O: int = 128
+    chunk_size: int = 64
     block_size: int = 1024
+    use_inlier_scale: bool = False
+    use_clamping: bool = True
+    seed: int = 42
 
     @property
     def d_head(self) -> int:

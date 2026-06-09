@@ -21,6 +21,7 @@ class RecallExperimentConfig:
     train_steps: int = 10000
     learning_rate: float = 1e-3
     weight_decay: float = 0.05
+    seed: int = 42
     
     use_mixed_precision: bool = True
     grad_clip_norm: float = 1.0

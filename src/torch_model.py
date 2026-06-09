@@ -10,12 +10,14 @@ class HybridOutlierFactorizedAttention(nn.Module):
         super().__init__()
         self.d_model = model_cfg.d_model
         self.num_heads = model_cfg.num_heads
+        self.use_inlier_scale = model_cfg.use_inlier_scale
+        self.use_clamping = model_cfg.use_clamping
         self.d_head = model_cfg.d_head
         self.r = model_cfg.r
         self.m = model_cfg.m
         self.m_O = model_cfg.m_O
         self.j = self.d_head - self.r
-        self.chunk_size = model_cfg.chunk_size   # kept for compatibility, not used in training
+        self.chunk_size = model_cfg.chunk_size
 
         self.register_buffer('omega_J', torch.randn(self.j, self.m))
         self.register_buffer('omega_O', torch.randn(self.r, self.m_O))
@@ -79,8 +81,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
             num = torch.einsum('bhnm, bhnmd -> bhnd', phi_Q, KV_cum)
             den = torch.einsum('bhnm, bhnm -> bhn', phi_Q, K_cum).unsqueeze(-1)
             Y = num / (den + 1e-8)
-            
-            return Y.transpose(1, 2).reshape(B, N, D)
+            Y = Y.transpose(1, 2).reshape(B, N, D)
+            return self.out_proj(Y).to(dtype_in)
 
         # Special case: exact softmax attention (r = d_head)
         if self.r == self.d_head:
@@ -91,8 +93,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
                                             device=x.device, dtype=attn.dtype))
             P = F.softmax(attn, dim=-1)
             Y = torch.einsum('bhqk,bhkd->bhqd', P, V)
-            
-            return Y.transpose(1, 2).reshape(B, N, D)
+            Y = Y.transpose(1, 2).reshape(B, N, D)
+            return self.out_proj(Y).to(dtype_in)
 
         self._maybe_update_indices()
         outlier_idx = self._cached_outlier_idx
@@ -116,12 +118,17 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Y_O = torch.einsum('bhqk,bhkd->bhqd', P_O, V) # (B, H, N, d_head)
 
         # Inlier correction (scaled and clamped)
-        E = torch.einsum('bhin,bhjn->bhij', Q_J, K_J) / inlier_scale
+        if self.use_inlier_scale:
+            E = torch.einsum('bhin,bhjn->bhij', Q_J, K_J) / inlier_scale
+        else:
+            E = torch.einsum('bhin,bhjn->bhij', Q_J, K_J)
+
         causal_mask_full = torch.tril(torch.ones(N, N, device=x.device, dtype=torch.bool))
         E = E.masked_fill(~causal_mask_full, 0.0)
 
         e = (P_O * E).sum(dim=-1)
-        e = e.clamp(-0.95, 0.95)
+        if self.use_clamping:
+            e = e.clamp(-0.95, 0.95)
 
         term1 = torch.einsum('bhij,bhjd->bhid', P_O * E, V)
 
