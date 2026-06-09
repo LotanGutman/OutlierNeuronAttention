@@ -20,18 +20,18 @@ class ProfileExperimentConfig:
 class RecallExperimentConfig:
     model_config: ModelConfig = field(
         default_factory=lambda: ModelConfig(
-            d_model=256, num_heads=4, num_layers=4, r=8, refresh_steps=999999
+            d_model=256, num_heads=4, num_layers=4, r=8 # , refresh_steps=999999
         )
     )
-    densities: tuple[int, ...] = (8, ) # (4, 8, 16)
+    densities: tuple[int, ...] = (4, 8, 16, 32, 64, 128)
     batch_size: int = 64
-    seq_len: int = 64
+    seq_len: int = 1024           # enough space for 128 pairs (2 x 128 = 256 tokens)
     vocab_size: int = 128
     train_steps: int = 20000
     learning_rate: float = 1e-3
     weight_decay: float = 0.05
     seed: int = 42
-    
+
     use_mixed_precision: bool = True
     grad_clip_norm: float = 1.0
     print_every: int = 500

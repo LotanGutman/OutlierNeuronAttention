@@ -113,10 +113,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Q_J = Q.gather(-1, in_gather)
         K_J = K.gather(-1, in_gather)
 
-        Q_J = F.pad(Q_J, (0, self.d_head - self.j))
-        K_J = F.pad(K_J, (0, self.d_head - self.j))
+        log_gamma_inlier = log_gamma.gather(-1, in_gather)
 
-        Y_I, _ = chunk_gla(Q_J, K_J, V, g=log_gamma, scale=1.0, output_final_state=False)
+        Y_I, _ = chunk_gla(Q_J, K_J, V, g=log_gamma_inlier, scale=1.0, output_final_state=False)
 
         Y_out = Y_O + Y_I
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
@@ -137,14 +136,14 @@ class HybridOutlierFactorizedAttention(nn.Module):
             gate_logits = self._compute_gate_logits(Q, K)
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
             if state_I is None:
-                state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
+                state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
                                       device=x.device, dtype=x.dtype)
             K_s = K.squeeze(2)
             V_s = V.squeeze(2)
             
             # --- Causal Fix: compute output with old state, then update state ---
-            Y_I = torch.einsum('bhi,bhij->bhj', Q.squeeze(2), state_I).unsqueeze(2)
-            state_I_new = gamma * state_I + torch.einsum('bhi,bhj->bhij', K_s, V_s)
+            Y_I = torch.einsum('bhj,bhjd->bhd', Q.squeeze(2), state_I).unsqueeze(2)
+            state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', K_s, V_s)
             
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in), None, state_I_new
@@ -186,18 +185,15 @@ class HybridOutlierFactorizedAttention(nn.Module):
         gate_logits = self._compute_gate_logits(Q, K)
         gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
 
-        q_J_pad = F.pad(q_J, (0, self.d_head - self.j))
-        k_J_pad = F.pad(k_J, (0, self.d_head - self.j))
-
         if state_I is None:
-            state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
+            state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
                                   device=x.device, dtype=x.dtype)
 
         # --- Causal Fix: compute Y_I using old state, then update ---
-        Y_I = torch.einsum('bhj,bhjd->bhd', q_J_pad, state_I).unsqueeze(2)  # (B,1,d_head)
+        Y_I = torch.einsum('bhj,bhjd->bhd', q_J, state_I).unsqueeze(2)  # (B,1,d_head)
         
         # Now update the state for the next token
-        state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', k_J_pad, v)
+        state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', k_J, v)
 
         Y_out = Y_O + Y_I
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)

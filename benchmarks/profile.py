@@ -65,15 +65,16 @@ def run_profiling_experiment(config: ProfileExperimentConfig = ProfileExperiment
             torch.cuda.empty_cache() # Clean slate only once per seq length
             
             # Scale down x to prevent exponential blowup since Q=K=V now
-            x = torch.randn(1, sl, model_cfg.d_model, device=device) * 0.1
+            x = torch.randn(1, sl, model_cfg.d_model, device=device, dtype=torch.bfloat16) * 0.1
             
             # --- Standard MHA ---
             try:
-                _ = mha(x)
-                torch.cuda.synchronize()
-                
-                torch.cuda.reset_peak_memory_stats()
-                with torch.no_grad():
+                with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    _ = mha(x)
+                    torch.cuda.synchronize()
+                    
+                    torch.cuda.reset_peak_memory_stats()
+                    
                     for _ in range(warmup_steps):
                         _ = mha(x)
                     torch.cuda.synchronize()
@@ -100,11 +101,12 @@ def run_profiling_experiment(config: ProfileExperimentConfig = ProfileExperiment
                 
             # --- Triton Hybrid ---
             try:
-                _ = hybrid_attn(x)
-                torch.cuda.synchronize()
-                
-                torch.cuda.reset_peak_memory_stats()
-                with torch.no_grad():
+                with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    _ = hybrid_attn(x)
+                    torch.cuda.synchronize()
+                    
+                    torch.cuda.reset_peak_memory_stats()
+                    
                     for _ in range(warmup_steps):
                         _ = hybrid_attn(x)
                     torch.cuda.synchronize()
@@ -294,4 +296,4 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     plt.close()
 
 if __name__ == "__main__":
-    profile()
+    run_profiling_experiment()
