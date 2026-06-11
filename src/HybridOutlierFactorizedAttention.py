@@ -103,23 +103,21 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # ----- outlier exact attention -----
         out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
-        Q_O = Q.gather(-1, out_gather)
-        K_O = K.gather(-1, out_gather)
         
-        # Pad to d_head to trigger FlashAttention-2
-        pad_size = self.d_head - self.r
-        Q_O_padded = F.pad(Q_O, (0, pad_size)).contiguous()
-        K_O_padded = F.pad(K_O, (0, pad_size)).contiguous()
+        # DO NOT PAD. Memory-Efficient Attention natively handles r=8 extremely fast.
+        Q_O = Q.gather(-1, out_gather).contiguous()
+        K_O = K.gather(-1, out_gather).contiguous()
         V_contig = V.contiguous()
         
-        Y_O = F.scaled_dot_product_attention(Q_O_padded, K_O_padded, V_contig, is_causal=True, scale=1.0)
+        from src.exact_attention import exact_attention_triton
+        Y_O = exact_attention_triton(Q_O, K_O, V_contig)
 
         # ----- inlier gated linear attention -----
         in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
         Q_J = Q.gather(-1, in_gather)
         K_J = K.gather(-1, in_gather)
 
-        Y_I = ChunkGLAInlier.apply(Q_J, K_J, V, gamma, self.chunk_size)
+        Y_I = ChunkGLAInlier.apply(Q_J, K_J, V_contig, gamma, self.chunk_size)
 
         Y_out = Y_O + Y_I
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)

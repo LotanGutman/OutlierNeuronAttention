@@ -34,7 +34,7 @@ def run_profiling_experiment(config: ProfileExperimentConfig = ProfileExperiment
     cache_path = os.path.join(CACHE_PATH, config.cache_file_name)
     device = torch.device(config.device)
     torch.manual_seed(train_cfg.seed)
-    seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+    seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288]
     
     model_cfg.refresh_steps = 999999999
     hybrid_attn = HybridOutlierFactorizedAttention(model_cfg).to(device).eval()
