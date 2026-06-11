@@ -105,21 +105,20 @@ class HybridOutlierFactorizedAttention(nn.Module):
         out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
         
         # DO NOT PAD. Memory-Efficient Attention natively handles r=8 extremely fast.
-        Q_O = Q.gather(-1, out_gather).contiguous()
-        K_O = K.gather(-1, out_gather).contiguous()
-        V_contig = V.contiguous()
+        Q_O = Q.gather(-1, out_gather)
+        K_O = K.gather(-1, out_gather)
         
         from src.exact_attention import exact_attention_triton
-        Y_O = exact_attention_triton(Q_O, K_O, V_contig)
+        Y_O = exact_attention_triton(Q_O, K_O, V)
 
         # ----- inlier gated linear attention -----
         in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
         Q_J = Q.gather(-1, in_gather)
         K_J = K.gather(-1, in_gather)
 
-        Y_I = ChunkGLAInlier.apply(Q_J, K_J, V_contig, gamma, self.chunk_size)
+        Y_I = ChunkGLAInlier.apply(Q_J, K_J, V, gamma, self.chunk_size)
 
-        Y_out = Y_O + Y_I
+        Y_out = Y_O.add_(Y_I)
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in)
 

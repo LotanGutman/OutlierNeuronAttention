@@ -117,10 +117,10 @@ class ChunkGLAInlier(torch.autograd.Function):
             stride_state_j = 0
             stride_state_d = 0
         
-        Q = Q.contiguous()
-        K = K.contiguous()
-        V = V.contiguous()
-        gamma = gamma.contiguous()
+        Q = Q
+        K = K
+        V = V
+        gamma = gamma
         
         grid = (B, H)
         
