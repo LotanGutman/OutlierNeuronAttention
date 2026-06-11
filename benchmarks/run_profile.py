@@ -34,7 +34,7 @@ def run_profiling_experiment(config: ProfileExperimentConfig = ProfileExperiment
     cache_path = os.path.join(CACHE_PATH, config.cache_file_name)
     device = torch.device(config.device)
     torch.manual_seed(train_cfg.seed)
-    seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288]
+    seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
     
     model_cfg.refresh_steps = 999999999
     hybrid_attn = HybridOutlierFactorizedAttention(model_cfg).to(device).eval()
@@ -211,27 +211,30 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     axins.set_xscale('log', base=2)
     axins.set_yscale('log', base=10) # Log-log for the zoomed area
     
-    axins.set_xlim(512, 262144)
-    zoom_max_y = max(times_mha_s[valid_lens.index(262144)], times_hyb_s[valid_lens.index(262144)])
-    axins.set_ylim(min(times_mha_s[0], times_hyb_s[0]) * 0.5, zoom_max_y * 1.5)
-    
-    axins.xaxis.set_major_formatter(formatter_x)
-    axins.set_xticks([512, 16384, 262144])
-    axins.tick_params(axis='both', which='major', labelsize=10)
-    axins.grid(True, which="both", linestyle=':', alpha=0.4)
-    
-    y_start = min(times_mha_s[0], times_hyb_s[0])
-    con1 = ConnectionPatch(xyA=(512, axins.get_ylim()[0]), xyB=(512, y_start), 
-                           coordsA="data", coordsB="data", 
-                           axesA=axins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
-    ax1.add_artist(con1)
-    
-    idx_end = valid_lens.index(262144)
-    y_end = max(times_mha_s[idx_end], times_hyb_s[idx_end])
-    con2 = ConnectionPatch(xyA=(262144, axins.get_ylim()[0]), xyB=(262144, y_end), 
-                           coordsA="data", coordsB="data", 
-                           axesA=axins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
-    ax1.add_artist(con2)
+    common_len = min(len(times_mha_s), len(times_hyb_s))
+    if common_len > 0:
+        zoom_seq_len = valid_lens[common_len - 1]
+        axins.set_xlim(512, zoom_seq_len)
+        zoom_max_y = max(times_mha_s[common_len - 1], times_hyb_s[common_len - 1])
+        axins.set_ylim(min(times_mha_s[0], times_hyb_s[0]) * 0.5, zoom_max_y * 1.5)
+        
+        axins.xaxis.set_major_formatter(formatter_x)
+        mid_val = 1 << (int(np.log2(zoom_seq_len) + 9) // 2)
+        axins.set_xticks([512, mid_val, zoom_seq_len])
+        axins.tick_params(axis='both', which='major', labelsize=10)
+        axins.grid(True, which="both", linestyle=':', alpha=0.4)
+        
+        y_start = min(times_mha_s[0], times_hyb_s[0])
+        con1 = ConnectionPatch(xyA=(512, axins.get_ylim()[0]), xyB=(512, y_start), 
+                               coordsA="data", coordsB="data", 
+                               axesA=axins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
+        ax1.add_artist(con1)
+        
+        y_end = max(times_mha_s[common_len - 1], times_hyb_s[common_len - 1])
+        con2 = ConnectionPatch(xyA=(zoom_seq_len, axins.get_ylim()[0]), xyB=(zoom_seq_len, y_end), 
+                               coordsA="data", coordsB="data", 
+                               axesA=axins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
+        ax1.add_artist(con2)
     
     # --- Plot 2: Memory (Log Y to show parallel scaling lines) ---
     ax2.plot(valid_lens[:len(mems_mha)], mems_mha, label='MHA (FlashAttention)', **style_mha)

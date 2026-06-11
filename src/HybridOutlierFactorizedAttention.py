@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from src.config import ModelConfig
-from fla.ops.gla import chunk_gla
+from src.chunk_gla_inlier import ChunkGLAInlier
 
 class HybridOutlierFactorizedAttention(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
@@ -12,6 +12,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.d_head    = model_cfg.d_head
         self.r         = model_cfg.r
         self.j         = self.d_head - self.r
+        self.chunk_size = getattr(model_cfg, 'chunk_size', 32)
 
         # Gate projection uses full Q,K (before routing) for stability
         self.gate_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
@@ -82,9 +83,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # ----- special cases: r = 0 or r = d_head -----
         if self.r == 0:
             gate_logits = self._compute_gate_logits(Q, K)
-            log_gamma = F.logsigmoid(-gate_logits)
-            log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
-            Y_I, _ = chunk_gla(Q, K, V, g=log_gamma, scale=1.0, output_final_state=False)
+            gamma = torch.sigmoid(-gate_logits).squeeze(-1)
+            Y_I = ChunkGLAInlier.apply(Q, K, V, gamma, self.chunk_size)
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in)
 
@@ -99,23 +99,27 @@ class HybridOutlierFactorizedAttention(nn.Module):
         inlier_idx  = self._cached_inlier_idx
 
         gate_logits = self._compute_gate_logits(Q, K)
-        log_gamma = F.logsigmoid(-gate_logits)
-        log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
+        gamma = torch.sigmoid(-gate_logits).squeeze(-1)
 
         # ----- outlier exact attention -----
         out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
         Q_O = Q.gather(-1, out_gather)
         K_O = K.gather(-1, out_gather)
-        Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=1.0)
+        
+        # Pad to d_head to trigger FlashAttention-2
+        pad_size = self.d_head - self.r
+        Q_O_padded = F.pad(Q_O, (0, pad_size)).contiguous()
+        K_O_padded = F.pad(K_O, (0, pad_size)).contiguous()
+        V_contig = V.contiguous()
+        
+        Y_O = F.scaled_dot_product_attention(Q_O_padded, K_O_padded, V_contig, is_causal=True, scale=1.0)
 
         # ----- inlier gated linear attention -----
         in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
         Q_J = Q.gather(-1, in_gather)
         K_J = K.gather(-1, in_gather)
 
-        log_gamma_inlier = log_gamma.gather(-1, in_gather)
-
-        Y_I, _ = chunk_gla(Q_J, K_J, V, g=log_gamma_inlier, scale=1.0, output_final_state=False)
+        Y_I = ChunkGLAInlier.apply(Q_J, K_J, V, gamma, self.chunk_size)
 
         Y_out = Y_O + Y_I
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
