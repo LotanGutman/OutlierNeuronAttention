@@ -102,25 +102,20 @@ class HybridOutlierFactorizedAttention(nn.Module):
         gamma = torch.sigmoid(-gate_logits).squeeze(-1)
 
         # ----- outlier exact attention -----
-        out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
+        # Pseudo-Fused Kernel Execution
+        # We pass the full Q and K to the kernels along with the routing indices.
+        # This completely avoids O(N * d) memory overhead from .gather()
         
-        # DO NOT PAD. Memory-Efficient Attention natively handles r=8 extremely fast.
-        Q_O = Q.gather(-1, out_gather)
-        K_O = K.gather(-1, out_gather)
+        from src.chunk_gla_inlier import ChunkGLAInlier
+        Y = ChunkGLAInlier.apply(Q, K, V, gamma, inlier_idx, self.chunk_size)
         
         from src.exact_attention import exact_attention_triton
-        Y_O = exact_attention_triton(Q_O, K_O, V)
-
-        # ----- inlier gated linear attention -----
-        in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
-        Q_J = Q.gather(-1, in_gather)
-        K_J = K.gather(-1, in_gather)
-
-        Y_I = ChunkGLAInlier.apply(Q_J, K_J, V, gamma, self.chunk_size)
-
-        Y_out = Y_O.add_(Y_I)
-        Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
-        return self.out_proj(Y_out).to(dtype_in)
+        # exact_attention adds in-place onto Y
+        exact_attention_triton(Q, K, V, outlier_idx, out=Y)
+        
+        # Merge heads
+        Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
+        return self.out_proj(Y).to(dtype_in)
 
     def forward_step(self, x, cache_O=None, state_I=None):
         """Single‑step autoregressive decoding."""
