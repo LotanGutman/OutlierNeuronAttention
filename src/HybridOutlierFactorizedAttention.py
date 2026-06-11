@@ -84,7 +84,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if self.r == 0:
             gate_logits = self._compute_gate_logits(Q, K)
             gamma = torch.sigmoid(-gate_logits).squeeze(-1)
-            Y_I = ChunkGLAInlier.apply(Q, K, V, gamma, self.chunk_size)
+            Y_I = ChunkGLAInlier.apply(Q, K, V, gamma, self.chunk_size) # this would error if r=0 was actually called because missing inlier_idx but user said do not fix
+            del gate_logits, gamma
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in)
 
@@ -108,10 +109,12 @@ class HybridOutlierFactorizedAttention(nn.Module):
         
         from src.chunk_gla_inlier import ChunkGLAInlier
         Y = ChunkGLAInlier.apply(Q, K, V, gamma, inlier_idx, self.chunk_size)
+        del gate_logits, gamma
         
         from src.exact_attention import exact_attention_triton
         # exact_attention adds in-place onto Y
         exact_attention_triton(Q, K, V, outlier_idx, out=Y)
+        del Q, K, V, outlier_idx, inlier_idx
         
         # Merge heads
         Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
