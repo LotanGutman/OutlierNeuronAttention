@@ -145,7 +145,7 @@ def chunk_gla_bwd_kernel(
     U = tl.cdiv(N, chunk_size)
     dS = tl.zeros([j_padded, d_head_padded], dtype=tl.float32)
 
-    dg_cumsum_accum = 0.0
+    # Removed dg_cumsum_accum
 
     for u in range(U - 1, -1, -1):
         start = u * chunk_size
@@ -190,23 +190,25 @@ def chunk_gla_bwd_kernel(
 
         # 1. Gradients from inter-chunk component (Y_inter)
         dY_inter = (dY_c * tl.math.exp(g_cumsum)[:, None]).to(Q_c.dtype)
-        dQ_c_scaled = tl.dot(dY_inter, tl.trans(S_u).to(dY_inter.dtype), allow_tf32=True)
-        dS_u_from_Y = tl.dot(tl.trans(Q_c_scaled), dY_inter, allow_tf32=True)
+        dQ_c_scaled = tl.dot(dY_inter, tl.trans(S_u).to(dY_inter.dtype), allow_tf32=False)
+        dS_u_from_Y = tl.dot(tl.trans(Q_c_scaled), dY_inter, allow_tf32=False)
 
         # 2. Gradients from the next state (S_{u+1})
-        dS_u = dS_u_from_Y + dS * tl.math.exp(g_cumsum_last)
-        dK_c_decayed = tl.dot(V_c, tl.trans(dS).to(V_c.dtype), allow_tf32=True)
-        dV_c = tl.dot(K_c_decayed, dS.to(K_c.dtype), allow_tf32=True)
+        dS_next = dS
+        dS_u = dS_u_from_Y + dS_next * tl.math.exp(g_cumsum_last)
+        dK_c_decayed = tl.dot(V_c, tl.trans(dS_next).to(V_c.dtype), allow_tf32=False)
+        dV_c = tl.dot(K_c_decayed, dS_next.to(K_c.dtype), allow_tf32=False)
         
-        dK_c = dK_c_decayed * k_decay[:, None] * tl.where(mask_t[:, None], 1.0, 0.0)
+        dK_c_inter = dK_c_decayed * k_decay[:, None] * tl.where(mask_t[:, None], 1.0, 0.0)
+        dK_c = dK_c_inter
 
         # 3. Gradients from intra-chunk component (Y_intra)
-        d_attn = tl.dot(dY_c, tl.trans(V_c), allow_tf32=True)
-        dV_c += tl.dot(tl.trans(attn), dY_c, allow_tf32=True)
+        d_attn = tl.dot(dY_c, tl.trans(V_c), allow_tf32=False)
+        dV_c += tl.dot(tl.trans(attn), dY_c, allow_tf32=False)
         
         d_attn = d_attn * mask
-        dQ_c_scaled += tl.dot(d_attn.to(K_c.dtype), K_c, allow_tf32=True)
-        dK_c += tl.dot(tl.trans(d_attn.to(Q_c.dtype)), Q_c_scaled, allow_tf32=True)
+        dQ_c_scaled += tl.dot(d_attn.to(K_c.dtype), K_c, allow_tf32=False)
+        dK_c += tl.dot(tl.trans(d_attn.to(Q_c.dtype)), Q_c_scaled, allow_tf32=False)
         
         dQ_c = dQ_c_scaled * scale
         
@@ -215,11 +217,15 @@ def chunk_gla_bwd_kernel(
         
         # 4. Gradient w.r.t gamma
         dg_cumsum_c = tl.sum(dQ_c * Q_c, axis=1) - tl.sum(dK_c * K_c, axis=1)
-        dg_c_intra = tl.sum(dg_cumsum_c) - tl.cumsum(dg_cumsum_c, axis=0) + dg_cumsum_c
-        dg_c = dg_c_intra + dg_cumsum_accum
-        dgamma_c = dg_c / gamma_c
         
-        dg_cumsum_accum += tl.sum(dg_cumsum_c)
+        dS_S_update = tl.sum(dK_c_inter * K_c)
+        dS_S_u = tl.sum(dS_next * S_u) * tl.math.exp(g_cumsum_last)
+        dS_S_new = dS_S_u + dS_S_update
+        dg_cumsum_c += tl.where(offsets_c == last_idx, dS_S_new, 0.0)
+
+        dg_c_intra = tl.sum(dg_cumsum_c) - tl.cumsum(dg_cumsum_c, axis=0) + dg_cumsum_c
+        dg_c = dg_c_intra
+        dgamma_c = dg_c / gamma_c
 
         # Store gradients
         dq_ptrs = b_h_dq_ptr + t_offs[:, None] * stride_dq_n + inlier_indices[None, :] * stride_dq_d

@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from src.config import ModelConfig
 from src.chunk_gla_inlier import ChunkGLAInlier
+from src.exact_attention import exact_attention_triton
+from src.chunk_gla_inlier import ChunkGLAInlier
 
 class HybridOutlierFactorizedAttention(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
@@ -107,11 +109,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # We pass the full Q and K to the kernels along with the routing indices.
         # This completely avoids O(N * d) memory overhead from .gather()
         
-        from src.chunk_gla_inlier import ChunkGLAInlier
         Y = ChunkGLAInlier.apply(Q, K, V, gamma, inlier_idx, self.chunk_size)
         del gate_logits, gamma
         
-        from src.exact_attention import exact_attention_triton
         # exact_attention adds in-place onto Y
         exact_attention_triton(Q, K, V, outlier_idx, out=Y)
         del Q, K, V, outlier_idx, inlier_idx
@@ -120,8 +120,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
         return self.out_proj(Y).to(dtype_in)
 
-    def forward_step(self, x, cache_O=None, state_I=None):
-        """Single‑step autoregressive decoding."""
+    def forward_step(self, x, cache_O=None, state_I=None, cache_seq_len=None):
+        """Single - step autoregressive decoding."""
         B, N, D = x.shape
         assert N == 1, "forward_step expects a single token (N=1)"
         dtype_in = x.dtype
@@ -150,11 +150,18 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if self.r == self.d_head:
             if cache_O is None:
                 K_past, V_past = K, V
+                cache_new = (K_past, V_past)
+            elif cache_seq_len is not None:
+                cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K
+                cache_O[1][:, :, cache_seq_len:cache_seq_len+1, :] = V
+                K_past = cache_O[0][:, :, :cache_seq_len+1, :]
+                V_past = cache_O[1][:, :, :cache_seq_len+1, :]
+                cache_new = cache_O
             else:
                 K_past = torch.cat([cache_O[0], K], dim=2)
                 V_past = torch.cat([cache_O[1], V], dim=2)
+                cache_new = (K_past, V_past)
             Y = F.scaled_dot_product_attention(Q, K_past, V_past, is_causal=False, scale=1.0)
-            cache_new = (K_past, V_past)
             Y_out = Y.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in), cache_new, None
 
@@ -169,12 +176,19 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         if cache_O is None:
             K_O_past, V_past = K_O, V
+            cache_O_new = (K_O_past, V_past)
+        elif cache_seq_len is not None:
+            cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K_O
+            cache_O[1][:, :, cache_seq_len:cache_seq_len+1, :] = V
+            K_O_past = cache_O[0][:, :, :cache_seq_len+1, :]
+            V_past   = cache_O[1][:, :, :cache_seq_len+1, :]
+            cache_O_new = cache_O
         else:
             K_O_past = torch.cat([cache_O[0], K_O], dim=2)
             V_past   = torch.cat([cache_O[1], V], dim=2)
+            cache_O_new = (K_O_past, V_past)
 
         Y_O = F.scaled_dot_product_attention(Q_O, K_O_past, V_past, is_causal=False, scale=1.0)
-        cache_O_new = (K_O_past, V_past)
 
         in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
         q_J = Q.gather(-1, in_gather).squeeze(2)
