@@ -11,6 +11,7 @@ class ModelConfig:
     tokenizer_name: str = "gpt2"
     refresh_steps: int = 100
     seed: int = 42
+    chunk_size: int = 32 # should probably be 64 to match fla, need to remove j padding in chunk_gla_inlier so that this will fit in SRAM.
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
     @property

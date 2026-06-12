@@ -7,7 +7,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-from src.HybridOutlierFactorizedAttention import HybridOutlierFactorizedAttention
+from src.HybridOutlierFactorizedAttentionTrain import HybridOutlierFactorizedAttention
 from benchmarks.benchmarks_configs import RecallExperimentConfig, CACHE_PATH
 from fla.layers import DeltaNet, GatedLinearAttention as GLA
 

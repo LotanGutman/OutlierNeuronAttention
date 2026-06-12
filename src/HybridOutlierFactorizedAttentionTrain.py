@@ -2,19 +2,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from src.config import ModelConfig
-from src.chunk_gla_inlier import ChunkGLAInlier
-from src.exact_attention import exact_attention_triton
-from src.chunk_gla_inlier import ChunkGLAInlier
+from fla.ops.gla import chunk_gla
+
 
 class HybridOutlierFactorizedAttention(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
         super().__init__()
-        self.d_model   = model_cfg.d_model
+        self.d_model = model_cfg.d_model
         self.num_heads = model_cfg.num_heads
-        self.d_head    = model_cfg.d_head
-        self.r         = model_cfg.r
-        self.j         = self.d_head - self.r
-        self.chunk_size = model_cfg.chunk_size
+        self.d_head = model_cfg.d_head
+        self.r = model_cfg.r
+        self.j = self.d_head - self.r
 
         # Gate projection uses full Q,K (before routing) for stability
         self.gate_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
@@ -68,10 +66,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Q, K: (B, H, N, d_head)   full features (before routing)
         Returns gate logits: (B, H, N, 1)  (scalar per head per token)
         """
-        qk = torch.cat([Q, K], dim=-1)                      # (B, H, N, 2*d_head)
+        qk = torch.cat([Q, K], dim=-1)  # (B, H, N, 2*d_head)
         logits = torch.einsum('bhnf,hf->bhn', qk, self.gate_proj.weight) + \
                  self.gate_proj.bias.view(1, self.num_heads, 1)
-        return logits.unsqueeze(-1)                         # (B, H, N, 1)
+        return logits.unsqueeze(-1)  # (B, H, N, 1)
 
     def forward(self, x):
         B, N, D = x.shape
@@ -85,9 +83,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # ----- special cases: r = 0 or r = d_head -----
         if self.r == 0:
             gate_logits = self._compute_gate_logits(Q, K)
-            gamma = torch.sigmoid(-gate_logits).squeeze(-1)
-            Y_I = ChunkGLAInlier.apply(Q, K, V, gamma, self.chunk_size) # this would error if r=0 was actually called because missing inlier_idx but user said do not fix
-            del gate_logits, gamma
+            log_gamma = F.logsigmoid(-gate_logits)
+            log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
+            Y_I, _ = chunk_gla(Q, K, V, g=log_gamma, scale=1.0, output_final_state=False)
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in)
 
@@ -99,29 +97,34 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # ----- obtain routing indices -----
         self._maybe_update_indices(increment=True)
         outlier_idx = self._cached_outlier_idx
-        inlier_idx  = self._cached_inlier_idx
+        inlier_idx = self._cached_inlier_idx
 
         gate_logits = self._compute_gate_logits(Q, K)
-        gamma = torch.sigmoid(-gate_logits).squeeze(-1)
+        log_gamma = F.logsigmoid(-gate_logits)
+        log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
 
         # ----- outlier exact attention -----
-        # Pseudo-Fused Kernel Execution
-        # We pass the full Q and K to the kernels along with the routing indices.
-        # This completely avoids O(N * d) memory overhead from .gather()
-        
-        Y = ChunkGLAInlier.apply(Q, K, V, gamma, inlier_idx, self.chunk_size)
-        del gate_logits, gamma
-        
-        # exact_attention adds in-place onto Y
-        exact_attention_triton(Q, K, V, outlier_idx, out=Y)
-        del Q, K, V, outlier_idx, inlier_idx
-        
-        # Merge heads
-        Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
-        return self.out_proj(Y).to(dtype_in)
+        out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
+        Q_O = Q.gather(-1, out_gather)
+        K_O = K.gather(-1, out_gather)
+        Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=1.0)
 
-    def forward_step(self, x, cache_O=None, state_I=None, cache_seq_len=None):
-        """Single - step autoregressive decoding."""
+        # ----- inlier gated linear attention -----
+        in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
+        Q_J = Q.gather(-1, in_gather)
+        K_J = K.gather(-1, in_gather)
+
+        Q_J = F.pad(Q_J, (0, self.d_head - self.j))
+        K_J = F.pad(K_J, (0, self.d_head - self.j))
+
+        Y_I, _ = chunk_gla(Q_J, K_J, V, g=log_gamma, scale=1.0, output_final_state=False)
+
+        Y_out = Y_O + Y_I
+        Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
+        return self.out_proj(Y_out).to(dtype_in)
+
+    def forward_step(self, x, cache_O=None, state_I=None):
+        """Single-step autoregressive decoding."""
         B, N, D = x.shape
         assert N == 1, "forward_step expects a single token (N=1)"
         dtype_in = x.dtype
@@ -135,40 +138,32 @@ class HybridOutlierFactorizedAttention(nn.Module):
             gate_logits = self._compute_gate_logits(Q, K)
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
             if state_I is None:
-                state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
+                state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
                                       device=x.device, dtype=x.dtype)
             K_s = K.squeeze(2)
             V_s = V.squeeze(2)
-            
-            # --- Causal Fix: compute output with old state, then update state ---
-            Y_I = torch.einsum('bhj,bhjd->bhd', Q.squeeze(2), state_I).unsqueeze(2)
-            state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', K_s, V_s)
-            
+
+            Y_I = torch.einsum('bhi,bhij->bhj', Q.squeeze(2), state_I).unsqueeze(2)
+            state_I_new = gamma * state_I + torch.einsum('bhi,bhj->bhij', K_s, V_s)
+
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in), None, state_I_new
 
         if self.r == self.d_head:
             if cache_O is None:
                 K_past, V_past = K, V
-                cache_new = (K_past, V_past)
-            elif cache_seq_len is not None:
-                cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K
-                cache_O[1][:, :, cache_seq_len:cache_seq_len+1, :] = V
-                K_past = cache_O[0][:, :, :cache_seq_len+1, :]
-                V_past = cache_O[1][:, :, :cache_seq_len+1, :]
-                cache_new = cache_O
             else:
                 K_past = torch.cat([cache_O[0], K], dim=2)
                 V_past = torch.cat([cache_O[1], V], dim=2)
-                cache_new = (K_past, V_past)
             Y = F.scaled_dot_product_attention(Q, K_past, V_past, is_causal=False, scale=1.0)
+            cache_new = (K_past, V_past)
             Y_out = Y.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in), cache_new, None
 
         # ----- hybrid step -----
         self._maybe_update_indices(increment=False)
         outlier_idx = self._cached_outlier_idx
-        inlier_idx  = self._cached_inlier_idx
+        inlier_idx = self._cached_inlier_idx
 
         out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
         Q_O = Q.gather(-1, out_gather)
@@ -176,37 +171,30 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         if cache_O is None:
             K_O_past, V_past = K_O, V
-            cache_O_new = (K_O_past, V_past)
-        elif cache_seq_len is not None:
-            cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K_O
-            cache_O[1][:, :, cache_seq_len:cache_seq_len+1, :] = V
-            K_O_past = cache_O[0][:, :, :cache_seq_len+1, :]
-            V_past   = cache_O[1][:, :, :cache_seq_len+1, :]
-            cache_O_new = cache_O
         else:
             K_O_past = torch.cat([cache_O[0], K_O], dim=2)
-            V_past   = torch.cat([cache_O[1], V], dim=2)
-            cache_O_new = (K_O_past, V_past)
+            V_past = torch.cat([cache_O[1], V], dim=2)
 
         Y_O = F.scaled_dot_product_attention(Q_O, K_O_past, V_past, is_causal=False, scale=1.0)
+        cache_O_new = (K_O_past, V_past)
 
         in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
         q_J = Q.gather(-1, in_gather).squeeze(2)
         k_J = K.gather(-1, in_gather).squeeze(2)
-        v   = V.squeeze(2)
+        v = V.squeeze(2)
 
         gate_logits = self._compute_gate_logits(Q, K)
         gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
 
+        q_J_pad = F.pad(q_J, (0, self.d_head - self.j))
+        k_J_pad = F.pad(k_J, (0, self.d_head - self.j))
+
         if state_I is None:
-            state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
+            state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
                                   device=x.device, dtype=x.dtype)
 
-        # --- Causal Fix: compute Y_I using old state, then update ---
-        Y_I = torch.einsum('bhj,bhjd->bhd', q_J, state_I).unsqueeze(2)  # (B,1,d_head)
-        
-        # Now update the state for the next token
-        state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', k_J, v)
+        Y_I = torch.einsum('bhj,bhjd->bhd', q_J_pad, state_I).unsqueeze(2)
+        state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', k_J_pad, v)
 
         Y_out = Y_O + Y_I
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
