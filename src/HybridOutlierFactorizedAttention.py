@@ -21,6 +21,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         nn.init.constant_(self.gate_proj.bias, -1.0)
         nn.init.zeros_(self.gate_proj.weight)
+        
+        # Learnable weighting between pathways
+        self.alpha = nn.Parameter(torch.tensor(0.5))
 
         # Shared projections (no bias, standard for attention)
         self.W_q = nn.Linear(self.d_model, self.d_model, bias=False)
@@ -85,9 +88,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # ----- special cases: r = 0 or r = d_head -----
         if self.r == 0:
             gate_logits = self._compute_gate_logits(Q, K)
-            gamma = torch.sigmoid(-gate_logits).squeeze(-1)
-            Y_I = ChunkGLAInlier.apply(Q, K, V, gamma, self.chunk_size) # this would error if r=0 was actually called because missing inlier_idx but user said do not fix
-            del gate_logits, gamma
+            log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
+            Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.chunk_size) # this would error if r=0 was actually called because missing inlier_idx but user said do not fix
+            del gate_logits, log_gamma
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in)
 
@@ -102,19 +105,20 @@ class HybridOutlierFactorizedAttention(nn.Module):
         inlier_idx  = self._cached_inlier_idx
 
         gate_logits = self._compute_gate_logits(Q, K)
-        gamma = torch.sigmoid(-gate_logits).squeeze(-1)
+        log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
 
         # ----- outlier exact attention -----
         # Pseudo-Fused Kernel Execution
         # We pass the full Q and K to the kernels along with the routing indices.
         # This completely avoids O(N * d) memory overhead from .gather()
         
-        Y = ChunkGLAInlier.apply(Q, K, V, gamma, inlier_idx, self.chunk_size)
-        del gate_logits, gamma
+        Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, inlier_idx, self.chunk_size)
+        del gate_logits, log_gamma
         
-        # exact_attention adds in-place onto Y
-        exact_attention_triton(Q, K, V, outlier_idx, out=Y)
+        Y_O = exact_attention_triton(Q, K, V, outlier_idx, out=None)
         del Q, K, V, outlier_idx, inlier_idx
+        
+        Y = self.alpha * Y_O + (1 - self.alpha) * Y_I
         
         # Merge heads
         Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
@@ -141,8 +145,18 @@ class HybridOutlierFactorizedAttention(nn.Module):
             V_s = V.squeeze(2)
             
             # --- Causal Fix: compute output with old state, then update state ---
-            Y_I = torch.einsum('bhj,bhjd->bhd', Q.squeeze(2), state_I).unsqueeze(2)
-            state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', K_s, V_s)
+            # Y_I = torch.einsum('bhj,bhjd->bhd', Q.squeeze(2), state_I).unsqueeze(2)
+            # state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', K_s, V_s)
+            
+            q_bmm = Q.squeeze(2).view(B * self.num_heads, 1, self.j)
+            k_bmm = K_s.view(B * self.num_heads, self.j, 1)
+            v_bmm = V_s.view(B * self.num_heads, 1, self.d_head)
+            state_I_bmm = state_I.view(B * self.num_heads, self.j, self.d_head)
+            gamma_bmm = gamma.view(B * self.num_heads, 1, 1)
+
+            Y_I = torch.bmm(q_bmm, state_I_bmm).view(B, self.num_heads, 1, self.d_head)
+            state_I_new_bmm = torch.baddbmm(state_I_bmm * gamma_bmm, k_bmm, v_bmm)
+            state_I_new = state_I_new_bmm.view(B, self.num_heads, self.j, self.d_head)
             
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in), None, state_I_new
@@ -203,12 +217,26 @@ class HybridOutlierFactorizedAttention(nn.Module):
                                   device=x.device, dtype=x.dtype)
 
         # --- Causal Fix: compute Y_I using old state, then update ---
-        Y_I = torch.einsum('bhj,bhjd->bhd', q_J, state_I).unsqueeze(2)  # (B,1,d_head)
-        
-        # Now update the state for the next token
-        state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', k_J, v)
+        # Y_I = torch.einsum('bhj,bhjd->bhd', q_J, state_I).unsqueeze(2)  # (B,1,d_head)
+        # state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', k_J, v)
 
-        Y_out = Y_O + Y_I
+        
+        # Optimized BMM approach:
+        # Reshape to (B*H, ...) for batched matrix multiply
+        q_J_bmm = q_J.view(B * self.num_heads, 1, self.j)
+        k_J_bmm = k_J.view(B * self.num_heads, self.j, 1)
+        v_bmm = v.view(B * self.num_heads, 1, self.d_head)
+        state_I_bmm = state_I.view(B * self.num_heads, self.j, self.d_head)
+        gamma_bmm = gamma.view(B * self.num_heads, 1, 1)
+
+        # Query: q @ state (1xj @ jxd -> 1xd)
+        Y_I = torch.bmm(q_J_bmm, state_I_bmm).view(B, self.num_heads, 1, self.d_head)
+
+        # Update: state = gamma * state + k @ v
+        state_I_new_bmm = torch.baddbmm(state_I_bmm * gamma_bmm, k_J_bmm, v_bmm)
+        state_I_new = state_I_new_bmm.view(B, self.num_heads, self.j, self.d_head)
+
+        Y_out = self.alpha * Y_O + (1 - self.alpha) * Y_I
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in), cache_O_new, state_I_new
 

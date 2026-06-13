@@ -17,11 +17,26 @@ def hofa_decode_step(q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I, gamma, seq
     k_past = k_O_cache[:, :, :seq_idx+1, :]
     v_past = v_cache[:, :, :seq_idx+1, :]
     
-    # Math
+    # Math for Outlier
     Y_O = F.scaled_dot_product_attention(q_O, k_past, v_past, is_causal=False)
-    state_I_new = gamma * state_I + k_J.unsqueeze(-1) * v_J.unsqueeze(-2)
-    Y_I = (q_J.unsqueeze(-1) * state_I_new).sum(dim=2)
-    return Y_O, Y_I, state_I_new
+    
+    # Math for Inlier using BMM (batched matrix multiplication) for cuBLAS optimization
+    B, H, j = k_J.shape
+    D_head = v_J.shape[-1]
+    
+    # Reshape to (B*H, j, 1) and (B*H, 1, d)
+    k_J_bmm = k_J.view(B*H, j, 1)
+    v_J_bmm = v_J.view(B*H, 1, D_head)
+    state_I_bmm = state_I.view(B*H, j, D_head)
+    
+    # Update state: state = gamma * state + k @ v
+    state_I_new = torch.baddbmm(state_I_bmm * gamma.view(B*H, 1, 1), k_J_bmm, v_J_bmm)
+    
+    # Query: q @ state (q is 1 x j, state is j x d -> 1 x d)
+    q_J_bmm = q_J.view(B*H, 1, j)
+    Y_I = torch.bmm(q_J_bmm, state_I_new).view(B, H, 1, D_head)
+    
+    return Y_O, Y_I, state_I_new.view(B, H, j, D_head)
 
 @torch.compile(mode="reduce-overhead", fullgraph=True)
 def mha_decode_step(q, k_cache, v_cache, seq_idx):
@@ -50,84 +65,84 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
 
         # Batch size is always 1 for decoding profiling
         B = 1
-    H = model_cfg.num_heads
-    D_head = model_cfg.d_head
-    r = model_cfg.r
-    j = D_head - r
+        H = model_cfg.num_heads
+        D_head = model_cfg.d_head
+        r = model_cfg.r
+        j = D_head - r
 
-    for sl in seq_lengths:
-        torch.cuda.empty_cache()
-        
-        mha_gb = (2 * (B * H * sl * D_head) * 2) / (1024**3)
-        hyb_gb = ((B * H * sl * r * 2) + (B * H * sl * D_head * 2) + (B * H * j * D_head * 4)) / (1024**3)
-        
-        try:
-            with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-                q_mha = torch.randn(B, H, 1, D_head, device=device, dtype=torch.bfloat16)
-                k_mha_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
-                v_mha_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
-                seq_idx = sl - 1
-
-                for _ in range(config.warmup_steps):
-                    _ = mha_decode_step(q_mha, k_mha_cache, v_mha_cache, seq_idx)
-                torch.cuda.synchronize()
-
-                start = torch.cuda.Event(enable_timing=True)
-                end = torch.cuda.Event(enable_timing=True)
-                start.record()
-                for _ in range(config.active_steps):
-                    _ = mha_decode_step(q_mha, k_mha_cache, v_mha_cache, seq_idx)
-                end.record()
-                torch.cuda.synchronize()
-                
-                # Multiply by B to get total tokens per second
-                tok_s_mha = (B * 1000.0) / (start.elapsed_time(end) / config.active_steps) 
-                del q_mha, k_mha_cache, v_mha_cache
-        except torch.cuda.OutOfMemoryError:
-            tok_s_mha = float('nan')
-
-        try:
-            with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-                q_O = torch.randn(B, H, 1, r, device=device, dtype=torch.bfloat16)
-                k_O_cache = torch.randn(B, H, sl, r, device=device, dtype=torch.bfloat16)
-                v_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
-                
-                q_J = torch.randn(B, H, j, device=device, dtype=torch.float32)
-                k_J = torch.randn(B, H, j, device=device, dtype=torch.float32)
-                v_J = torch.randn(B, H, D_head, device=device, dtype=torch.float32)
-                state_I = torch.randn(B, H, j, D_head, device=device, dtype=torch.float32)
-                gamma = torch.randn(B, H, 1, 1, device=device, dtype=torch.float32)
-
-                for _ in range(config.warmup_steps):
-                    _ = hofa_decode_step(q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I, gamma, seq_idx)
-                torch.cuda.synchronize()
-
-                start.record()
-                for _ in range(config.active_steps):
-                    _ = hofa_decode_step(q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I, gamma, seq_idx)
-                end.record()
-                torch.cuda.synchronize()
-                
-                tok_s_hyb = (B * 1000.0) / (start.elapsed_time(end) / config.active_steps)
-                del q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I
-        except torch.cuda.OutOfMemoryError:
-            tok_s_hyb = float('nan')
-
-        times_mha.append(tok_s_mha)
-        times_hyb.append(tok_s_hyb)
-        cache_mha_mb.append(mha_gb)
-        cache_hyb_mb.append(hyb_gb)
-        valid_lens.append(sl)
-
-        t_mha_str = f"{tok_s_mha:.1f}" if not np.isnan(tok_s_mha) else "OOM"
-        t_hyb_str = f"{tok_s_hyb:.1f}" if not np.isnan(tok_s_hyb) else "OOM"
-        print(f"{sl:<8d} | {t_mha_str:<10} | {mha_gb:<10.2f} | {t_hyb_str:<10} | {hyb_gb:<10.2f}")
-                
-        if save_results:
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            torch.save((valid_lens, times_mha, times_hyb, cache_mha_mb, cache_hyb_mb), cache_path)
+        for sl in seq_lengths:
+            torch.cuda.empty_cache()
             
-    plot_decode_results(valid_lens, times_mha, times_hyb, cache_mha_mb, cache_hyb_mb)
+            mha_gb = (2 * (B * H * sl * D_head) * 2) / (1024**3)
+            hyb_gb = ((B * H * sl * r * 2) + (B * H * sl * D_head * 2) + (B * H * j * D_head * 4)) / (1024**3)
+            
+            try:
+                with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    q_mha = torch.randn(B, H, 1, D_head, device=device, dtype=torch.bfloat16)
+                    k_mha_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
+                    v_mha_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
+                    seq_idx = sl - 1
+
+                    for _ in range(config.warmup_steps):
+                        _ = mha_decode_step(q_mha, k_mha_cache, v_mha_cache, seq_idx)
+                    torch.cuda.synchronize()
+
+                    start = torch.cuda.Event(enable_timing=True)
+                    end = torch.cuda.Event(enable_timing=True)
+                    start.record()
+                    for _ in range(config.active_steps):
+                        _ = mha_decode_step(q_mha, k_mha_cache, v_mha_cache, seq_idx)
+                    end.record()
+                    torch.cuda.synchronize()
+                    
+                    # Multiply by B to get total tokens per second
+                    tok_s_mha = (B * 1000.0) / (start.elapsed_time(end) / config.active_steps) 
+                    del q_mha, k_mha_cache, v_mha_cache
+            except torch.cuda.OutOfMemoryError:
+                tok_s_mha = float('nan')
+
+            try:
+                with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    q_O = torch.randn(B, H, 1, r, device=device, dtype=torch.bfloat16)
+                    k_O_cache = torch.randn(B, H, sl, r, device=device, dtype=torch.bfloat16)
+                    v_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
+                    
+                    q_J = torch.randn(B, H, j, device=device, dtype=torch.float32)
+                    k_J = torch.randn(B, H, j, device=device, dtype=torch.float32)
+                    v_J = torch.randn(B, H, D_head, device=device, dtype=torch.float32)
+                    state_I = torch.randn(B, H, j, D_head, device=device, dtype=torch.float32)
+                    gamma = torch.randn(B, H, 1, 1, device=device, dtype=torch.float32)
+
+                    for _ in range(config.warmup_steps):
+                        _ = hofa_decode_step(q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I, gamma, seq_idx)
+                    torch.cuda.synchronize()
+
+                    start.record()
+                    for _ in range(config.active_steps):
+                        _ = hofa_decode_step(q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I, gamma, seq_idx)
+                    end.record()
+                    torch.cuda.synchronize()
+                    
+                    tok_s_hyb = (B * 1000.0) / (start.elapsed_time(end) / config.active_steps)
+                    del q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I
+            except torch.cuda.OutOfMemoryError:
+                tok_s_hyb = float('nan')
+
+            times_mha.append(tok_s_mha)
+            times_hyb.append(tok_s_hyb)
+            cache_mha_mb.append(mha_gb)
+            cache_hyb_mb.append(hyb_gb)
+            valid_lens.append(sl)
+
+            t_mha_str = f"{tok_s_mha:.1f}" if not np.isnan(tok_s_mha) else "OOM"
+            t_hyb_str = f"{tok_s_hyb:.1f}" if not np.isnan(tok_s_hyb) else "OOM"
+            print(f"{sl:<8d} | {t_mha_str:<10} | {mha_gb:<10.2f} | {t_hyb_str:<10} | {hyb_gb:<10.2f}")
+                    
+            if save_results:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                torch.save((valid_lens, times_mha, times_hyb, cache_mha_mb, cache_hyb_mb), cache_path)
+                
+        plot_decode_results(valid_lens, times_mha, times_hyb, cache_mha_mb, cache_hyb_mb)
 
 def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     plt.rcParams.update({'font.size': 12, 'font.family': 'serif'})
@@ -150,7 +165,7 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     ax1.set_ylabel('Tokens Per Second')
     ax1.set_title('Decoding Throughput')
     ax1.grid(True, linestyle=':', alpha=0.6)
-    ax1.legend()
+    # ax1.legend() removed
 
     ax2.plot(lens, c_mha, marker='o', color='#D55E00', lw=2.5, label='MHA')
     ax2.plot(lens, c_hyb, marker='s', color='#0072B2', lw=2.5, label='HOFA (Ours)')
@@ -162,9 +177,14 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     ax2.set_ylabel('KV Cache Size (GB)')
     ax2.set_title('KV Cache Footprint')
     ax2.grid(True, linestyle=':', alpha=0.6)
-    ax2.legend()
+    # ax2.legend() removed
+
+    # Add shared legend
+    handles, labels = ax1.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.05), ncol=2, frameon=False, fontsize=12)
 
     plt.tight_layout()
+    plt.subplots_adjust(top=0.85) 
     os.makedirs('data/plots', exist_ok=True)
     plt.savefig('data/plots/profile_decode.pdf', bbox_inches='tight')
     print("Saved plot to data/plots/profile_decode.pdf")

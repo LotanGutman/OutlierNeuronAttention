@@ -13,7 +13,7 @@ CACHE_PATH = "data/experiments_cache"
 class PrefillExperimentConfig:
     model_config: ModelConfig = field(default_factory=ModelConfig)
     train_cfg: TrainingConfig = field(default_factory=TrainingConfig)
-    seq_lengths: tuple[int, ...] = (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072)
+    seq_lengths: tuple[int, ...] = (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144)
     cache_file_name: str = "profile_prefill_results.pt"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -43,10 +43,10 @@ class RecallExperimentConfig:
 @dataclass
 class DecodeExperimentConfig:
     model_config: ModelConfig = field(
-        default_factory=lambda: ModelConfig(d_model=4096, num_heads=32, num_layers=1, r=16)
+        default_factory=lambda: ModelConfig(d_model=2048, num_heads=16, num_layers=1, r=16)
     )
     warmup_steps: int = 10
     active_steps: int = 30
-    seq_lengths: tuple[int, ...] = (1024, 4096, 16384, 32768, 65536, 131072)
+    seq_lengths: tuple[int, ...] = (1024, 4096, 16384, 32768, 65536, 131072, 196608, 262144)
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     cache_file_name: str = "profile_decode_results.pt"
