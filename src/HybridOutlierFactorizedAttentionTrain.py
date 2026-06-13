@@ -25,44 +25,12 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.W_k = nn.Linear(self.d_model, self.d_model, bias=False)
         self.W_v = nn.Linear(self.d_model, self.d_model, bias=False)
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
-        
-        # Learnable weighting between pathways
-        self.alpha = nn.Parameter(torch.tensor(0.5))
 
-        # Outlier routing indices – cached and refreshed every _refresh_steps steps
-        self.register_buffer('_cached_outlier_idx', None)
-        self.register_buffer('_cached_inlier_idx', None)
-        self.register_buffer('_step_counter', torch.tensor(0, dtype=torch.long))
+        # Learnable weighting between pathways (per head)
+        self.alpha = nn.Parameter(torch.full((self.num_heads,), 0.5))
 
-        # Refresh period – pull from config if available, otherwise default to 100
-        refresh_steps = getattr(model_cfg, 'refresh_steps', 100)
-        self.register_buffer('_refresh_steps', torch.tensor(refresh_steps, dtype=torch.long))
-
-    @torch.no_grad()
-    def get_routing_indices(self):
-        wq = self.W_q.weight.view(self.num_heads, self.d_head, self.d_model)
-        wk = self.W_k.weight.view(self.num_heads, self.d_head, self.d_model)
-        wv = self.W_v.weight.view(self.num_heads, self.d_head, self.d_model)
-        score = (wq.norm(dim=-1) * wk.norm(dim=-1) * wv.norm(dim=-1))
-        _, out_idx = torch.topk(score, self.r, dim=-1)
-        mask = torch.ones(self.num_heads, self.d_head, dtype=torch.bool, device=wq.device)
-        mask.scatter_(1, out_idx, False)
-        in_idx = mask.nonzero()[:, 1].view(self.num_heads, self.j)
-        return out_idx, in_idx
-
-    def _maybe_update_indices(self, increment=True):
-        """Optionally increment the step counter and refresh routing indices if needed."""
-        if increment:
-            self._step_counter.add_(1)
-
-        if self._cached_outlier_idx is None:
-            o, i = self.get_routing_indices()
-            self._cached_outlier_idx = o
-            self._cached_inlier_idx = i
-        elif increment and (self._step_counter.item() % self._refresh_steps.item() == 0):
-            o, i = self.get_routing_indices()
-            self._cached_outlier_idx = o
-            self._cached_inlier_idx = i
+        # RMSNorm to balance magnitudes of the linear attention pathway
+        self.inlier_norm = nn.RMSNorm(self.d_head)
 
     def _compute_gate_logits(self, Q, K):
         """
@@ -97,32 +65,26 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Y = Y.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y).to(dtype_in)
 
-        # ----- obtain routing indices -----
-        self._maybe_update_indices(increment=True)
-        outlier_idx = self._cached_outlier_idx
-        inlier_idx = self._cached_inlier_idx
-
         gate_logits = self._compute_gate_logits(Q, K)
         log_gamma = F.logsigmoid(-gate_logits)
         log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
 
         # ----- outlier exact attention -----
-        out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
-        Q_O = Q.gather(-1, out_gather)
-        K_O = K.gather(-1, out_gather)
+        Q_O = Q[..., :self.r]
+        K_O = K[..., :self.r]
         Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=1.0)
 
         # ----- inlier gated linear attention -----
-        in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
-        Q_J = Q.gather(-1, in_gather)
-        K_J = K.gather(-1, in_gather)
+        Q_J = Q[..., self.r:]
+        K_J = K[..., self.r:]
 
-        Q_J = F.pad(Q_J, (0, self.d_head - self.j))
-        K_J = F.pad(K_J, (0, self.d_head - self.j))
+        Q_J = F.pad(Q_J, (0, self.r))
+        K_J = F.pad(K_J, (0, self.r))
 
         Y_I, _ = chunk_gla(Q_J, K_J, V, g=log_gamma, scale=1.0, output_final_state=False)
 
-        Y_out = self.alpha * Y_O + (1 - self.alpha) * Y_I
+        alpha = self.alpha.view(1, self.num_heads, 1, 1)
+        Y_out = (alpha * Y_O) + ((1.0 - alpha) * self.inlier_norm(Y_I))
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in)
 
@@ -163,45 +125,46 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Y_out = Y.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in), cache_new, None
 
-        # ----- hybrid step -----
-        self._maybe_update_indices(increment=False)
-        outlier_idx = self._cached_outlier_idx
-        inlier_idx = self._cached_inlier_idx
+        gate_logits = self._compute_gate_logits(Q, K)
 
-        out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
-        Q_O = Q.gather(-1, out_gather)
-        K_O = K.gather(-1, out_gather)
+        # ----- outlier exact attention -----
+        Q_O = Q[..., :self.r]
+        K_O = K[..., :self.r]
 
         if cache_O is None:
-            K_O_past, V_past = K_O, V
+            cache_O = (K_O, V)
         else:
-            K_O_past = torch.cat([cache_O[0], K_O], dim=2)
-            V_past = torch.cat([cache_O[1], V], dim=2)
+            K_cache, V_cache = cache_O
+            K_cache = torch.cat([K_cache, K_O], dim=2)
+            V_cache = torch.cat([V_cache, V], dim=2)
+            cache_O = (K_cache, V_cache)
 
-        Y_O = F.scaled_dot_product_attention(Q_O, K_O_past, V_past, is_causal=False, scale=1.0)
-        cache_O_new = (K_O_past, V_past)
+        attn_weights = torch.einsum('bhid,bhjd->bhij', Q_O, cache_O[0])
+        Y_O = torch.einsum('bhij,bhjd->bhid', torch.softmax(attn_weights, dim=-1), cache_O[1])
 
-        in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
-        q_J = Q.gather(-1, in_gather).squeeze(2)
-        k_J = K.gather(-1, in_gather).squeeze(2)
-        v = V.squeeze(2)
+        # ----- inlier gated linear attention -----
+        Q_J = Q[..., self.r:]
+        K_J = K[..., self.r:]
 
-        gate_logits = self._compute_gate_logits(Q, K)
+        Q_J = F.pad(Q_J, (0, self.r))
+        K_J = F.pad(K_J, (0, self.r))
+
         gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
-
-        q_J_pad = F.pad(q_J, (0, self.d_head - self.j))
-        k_J_pad = F.pad(k_J, (0, self.d_head - self.j))
 
         if state_I is None:
             state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
                                   device=x.device, dtype=x.dtype)
 
-        Y_I = torch.einsum('bhj,bhjd->bhd', q_J_pad, state_I).unsqueeze(2)
-        state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', k_J_pad, v)
+        K_J_s = K_J.squeeze(2)
+        V_s = V.squeeze(2)
 
-        Y_out = self.alpha * Y_O + (1 - self.alpha) * Y_I
+        state_I = state_I * gamma + torch.einsum('bhd,bhm->bhdm', K_J_s, V_s)
+        Y_I = torch.einsum('bhd,bhdm->bhm', Q_J.squeeze(2), state_I).unsqueeze(2)
+
+        alpha = self.alpha.view(1, self.num_heads, 1, 1)
+        Y_out = (alpha * Y_O) + ((1.0 - alpha) * self.inlier_norm(Y_I))
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
-        return self.out_proj(Y_out).to(dtype_in), cache_O_new, state_I_new
+        return self.out_proj(Y_out).to(dtype_in), cache_O, state_I
 
 
 class TransformerBlock(nn.Module):

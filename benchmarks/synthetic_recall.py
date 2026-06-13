@@ -167,7 +167,9 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
     device = gen_kwargs["device"]
     use_autocast = config.use_mixed_precision and device == "cuda"
     warmup_steps = int(0.1 * config.train_steps)
-
+    
+    from collections import defaultdict
+    alpha_history = defaultdict(list)
     consecutive_perfect_acc = 0
 
     for i in range(config.train_steps):
@@ -183,6 +185,14 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
         optimizer.step()
 
         if (i + 1) % config.print_every == 0 or i == 0 or (i + 1) == config.train_steps:
+            alpha_str = ""
+            for l_idx, block in enumerate(model.blocks):
+                if isinstance(block['attn'], HybridOutlierFactorizedAttention):
+                    alphas = block['attn'].alpha.detach().cpu().numpy()
+                    alpha_history[l_idx].append((i + 1, alphas.mean()))
+                    alphas_str = ",".join(f"{a:.2f}" for a in alphas)
+                    alpha_str += f" | L{l_idx} a:[{alphas_str}]"
+                    
             model.eval()
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast):
@@ -194,7 +204,7 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
                 val_acc = (logits_val.argmax(dim=-1) == targets_valid).float().mean().item()
                 
             model.train()
-            print(f"      Step {i + 1:4d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc*100:.1f}%")
+            print(f"      Step {i + 1:4d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc*100:.1f}%{alpha_str}")
 
             # a simple early stopping mechanism to save time on models that converge quickly
             if val_acc == 1.0:
@@ -210,7 +220,9 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
     # Print alpha if HOFA
     for i, block in enumerate(model.blocks):
         if isinstance(block['attn'], HybridOutlierFactorizedAttention):
-            print(f"      Layer {i} final alpha: {block['attn'].alpha.item():.4f}")
+            alphas = block['attn'].alpha.detach().cpu().numpy()
+            alphas_str = ", ".join(f"{a:.4f}" for a in alphas)
+            print(f"      Layer {i} final alphas: [{alphas_str}]")
             
     model.eval()
     correct = 0
@@ -226,7 +238,36 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
             correct += (preds == targets_valid).sum().item()
             total_tokens += targets_valid.numel()
 
-    return correct / total_tokens
+    return correct / total_tokens, alpha_history
+
+def plot_alphas(alpha_histories, save_plot=True):
+    if not alpha_histories or not alpha_histories.get(list(alpha_histories.keys())[0]):
+        return
+        
+    os.makedirs("data/plots", exist_ok=True)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # We will just plot alpha evolution for the max density to avoid clutter
+    max_density = max(alpha_histories.keys())
+    history = alpha_histories[max_density]
+    
+    for l_idx, records in history.items():
+        if not records: continue
+        steps, alphas = zip(*records)
+        ax.plot(steps, alphas, marker='o', label=f'Layer {l_idx}')
+        
+    ax.set_xlabel('Training Steps')
+    ax.set_ylabel('Alpha Value')
+    ax.set_title(f'Alpha Evolution Over Time (Density: {max_density})')
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.7)
+    
+    plt.tight_layout()
+    if save_plot:
+        plot_path = "data/plots/alpha_evolution.pdf"
+        plt.savefig(plot_path)
+        print(f"Plot saved to {plot_path}")
+    plt.close()
 
 
 def plot_results(results, save_plot=True):
@@ -254,7 +295,7 @@ def plot_results(results, save_plot=True):
     
     plt.tight_layout()
     if save_plot:
-        plot_path = "data/plots/recall_accuracy.png"
+        plot_path = "data/plots/recall_accuracy.pdf"
         plt.savefig(plot_path)
         print(f"Plot saved to {plot_path}")
     plt.close()
@@ -272,6 +313,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
         results = torch.load(cache_path)
     else:
         results = {d: {} for d in config.densities}
+        all_alpha_histories = {}
         for density in config.densities:
             for name in model_names:
                 print(f"\nTraining {name} (Density: {density})...")
@@ -294,7 +336,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
                     model_cfg=model_cfg
                 ).to(device)
                 
-                acc = train_and_eval(
+                acc, alpha_hist = train_and_eval(
                     model,
                     generate_zoology_mqar,
                     {
@@ -308,6 +350,8 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
                 )
                 print(f">>> MQAR {density} | {name} Final Accuracy: {acc*100:.1f}%")
                 results[density][name] = acc
+                if name == "HOFA (r=8)":
+                    all_alpha_histories[density] = alpha_hist
                 
                 model.to('cpu')
                 del model
@@ -319,6 +363,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
             torch.save(results, cache_path)
 
     plot_results(results, save_plot=save_results)
+    plot_alphas(all_alpha_histories, save_plot=save_results)
     return results
 
 if __name__ == "__main__":
