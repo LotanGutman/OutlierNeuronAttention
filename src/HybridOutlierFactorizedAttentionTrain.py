@@ -25,6 +25,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.W_k = nn.Linear(self.d_model, self.d_model, bias=False)
         self.W_v = nn.Linear(self.d_model, self.d_model, bias=False)
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
+        
+        # Learnable weighting between pathways
+        self.alpha = nn.Parameter(torch.tensor(0.5))
 
         # Outlier routing indices – cached and refreshed every _refresh_steps steps
         self.register_buffer('_cached_outlier_idx', None)
@@ -119,7 +122,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         Y_I, _ = chunk_gla(Q_J, K_J, V, g=log_gamma, scale=1.0, output_final_state=False)
 
-        Y_out = Y_O + Y_I
+        Y_out = self.alpha * Y_O + (1 - self.alpha) * Y_I
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in)
 
@@ -196,7 +199,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Y_I = torch.einsum('bhj,bhjd->bhd', q_J_pad, state_I).unsqueeze(2)
         state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', k_J_pad, v)
 
-        Y_out = Y_O + Y_I
+        Y_out = self.alpha * Y_O + (1 - self.alpha) * Y_I
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in), cache_O_new, state_I_new
 

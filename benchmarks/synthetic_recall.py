@@ -7,7 +7,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-from src.HybridOutlierFactorizedAttention import HybridOutlierFactorizedAttention
+from src.HybridOutlierFactorizedAttentionTrain import HybridOutlierFactorizedAttention
 from benchmarks.benchmarks_configs import RecallExperimentConfig, CACHE_PATH
 from fla.layers import DeltaNet, GatedLinearAttention as GLA
 
@@ -207,6 +207,11 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
                 break
 
     print()
+    # Print alpha if HOFA
+    for i, block in enumerate(model.blocks):
+        if isinstance(block['attn'], HybridOutlierFactorizedAttention):
+            print(f"      Layer {i} final alpha: {block['attn'].alpha.item():.4f}")
+            
     model.eval()
     correct = 0
     total_tokens = 0
