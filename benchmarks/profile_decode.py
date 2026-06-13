@@ -103,28 +103,36 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
 
             try:
                 with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    q_O = torch.randn(B, H, 1, r, device=device, dtype=torch.bfloat16)
-                    k_O_cache = torch.randn(B, H, sl, r, device=device, dtype=torch.bfloat16)
+                    Q = torch.randn(B, H, 1, D_head, device=device, dtype=torch.bfloat16)
+                    K = torch.randn(B, H, 1, D_head, device=device, dtype=torch.bfloat16)
+                    V = torch.randn(B, H, 1, D_head, device=device, dtype=torch.bfloat16)
+                    
+                    k_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
                     v_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
                     
-                    q_J = torch.randn(B, H, j, device=device, dtype=torch.float32)
-                    k_J = torch.randn(B, H, j, device=device, dtype=torch.float32)
-                    v_J = torch.randn(B, H, D_head, device=device, dtype=torch.float32)
                     state_I = torch.randn(B, H, j, D_head, device=device, dtype=torch.float32)
-                    gamma = torch.randn(B, H, 1, 1, device=device, dtype=torch.float32)
+                    
+                    outlier_idx = torch.arange(0, r, device=device)
+                    inlier_idx = torch.arange(r, D_head, device=device)
+                    
+                    gate_weight = torch.randn(H, 2*D_head, device=device, dtype=torch.bfloat16)
+                    gate_bias = torch.randn(H, device=device, dtype=torch.bfloat16)
+                    alpha = torch.tensor(0.5, device=device, dtype=torch.bfloat16)
+
+                    from src.hofa_decode_triton import fused_hofa_decode
 
                     for _ in range(config.warmup_steps):
-                        _ = hofa_decode_step(q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I, gamma, seq_idx)
+                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, outlier_idx, inlier_idx, gate_weight, gate_bias, alpha, sl)
                     torch.cuda.synchronize()
 
                     start.record()
                     for _ in range(config.active_steps):
-                        _ = hofa_decode_step(q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I, gamma, seq_idx)
+                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, outlier_idx, inlier_idx, gate_weight, gate_bias, alpha, sl)
                     end.record()
                     torch.cuda.synchronize()
                     
                     tok_s_hyb = (B * 1000.0) / (start.elapsed_time(end) / config.active_steps)
-                    del q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I
+                    del Q, K, V, k_cache, v_cache, state_I
             except torch.cuda.OutOfMemoryError:
                 tok_s_hyb = float('nan')
 
@@ -142,13 +150,13 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 torch.save((valid_lens, times_mha, times_hyb, cache_mha_mb, cache_hyb_mb), cache_path)
                 
-        plot_decode_results(valid_lens, times_mha, times_hyb, cache_mha_mb, cache_hyb_mb)
+    plot_decode_results(valid_lens, times_mha, times_hyb, cache_mha_mb, cache_hyb_mb)
 
 def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     plt.rcParams.update({'font.size': 12, 'font.family': 'serif'})
-    formatter_x = FuncFormatter(lambda x, pos: f'{int(x/1024)}k')
+    formatter_x = FuncFormatter(lambda x, pos: f'{int(x)}' if x < 1024 else f'{int(x/1024)}k')
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5.5))
 
     valid_mha_lens = [l for i, l in enumerate(lens) if not np.isnan(t_mha[i])]
     valid_mha_times = [t for t in t_mha if not np.isnan(t)]
@@ -160,24 +168,63 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     
     ax1.set_xscale('log', base=2)
     ax1.xaxis.set_major_formatter(formatter_x)
-    ax1.set_xticks(lens)
+    # Clean up x-ticks to prevent overlap
+    tick_lens = [l for l in lens if l != 196608]
+
+    ax1.set_xticks(tick_lens)
     ax1.set_xlabel('Context Length ($N$)')
     ax1.set_ylabel('Tokens Per Second')
     ax1.set_title('Decoding Throughput')
     ax1.grid(True, linestyle=':', alpha=0.6)
-    # ax1.legend() removed
 
     ax2.plot(lens, c_mha, marker='o', color='#D55E00', lw=2.5, label='MHA')
     ax2.plot(lens, c_hyb, marker='s', color='#0072B2', lw=2.5, label='HOFA (Ours)')
     
     ax2.set_xscale('log', base=2)
     ax2.xaxis.set_major_formatter(formatter_x)
-    ax2.set_xticks(lens)
+    ax2.set_xticks(tick_lens)
     ax2.set_xlabel('Context Length ($N$)')
     ax2.set_ylabel('KV Cache Size (GB)')
     ax2.set_title('KV Cache Footprint')
     ax2.grid(True, linestyle=':', alpha=0.6)
-    # ax2.legend() removed
+
+    # --- Plot 3: Speedup ---
+    speedups = [t_hyb[i] / t_mha[i] for i in range(len(lens))]
+    valid_speedup_lens = [l for i, l in enumerate(lens) if not np.isnan(speedups[i])]
+    valid_speedups = [s for s in speedups if not np.isnan(s)]
+    
+    ax3.plot(valid_speedup_lens, valid_speedups, marker='^', color='#009E73', linewidth=2.5, markersize=7, label='Speedup')
+    ax3.axhline(1.0, color='black', linestyle='--', linewidth=1.2, alpha=0.8)
+    
+    # Calculate interpolated crossover point
+    crossover_x = None
+    for i in range(len(valid_speedups) - 1):
+        if valid_speedups[i] < 1.0 and valid_speedups[i+1] >= 1.0:
+            x0, x1 = np.log2(valid_speedup_lens[i]), np.log2(valid_speedup_lens[i+1])
+            y0, y1 = valid_speedups[i], valid_speedups[i+1]
+            log_cross = x0 + (1.0 - y0) * (x1 - x0) / (y1 - y0)
+            crossover_x = 2 ** log_cross
+            break
+
+    if crossover_x is not None:
+        ax3.annotate(
+            f'Approx. crossover\n$\\sim${int(crossover_x/1000)}k',
+            xy=(crossover_x, 1.0),
+            xytext=(crossover_x * 2.0, 0.4), 
+            arrowprops=dict(arrowstyle="->", color='black', lw=1.2),
+            fontsize=11,
+            ha='left'
+        )
+
+    ax3.set_ylim(0, np.ceil(max(valid_speedups) * 5) / 5 if valid_speedups else 5)
+    ax3.set_xscale('log', base=2)
+    ax3.xaxis.set_major_formatter(formatter_x)
+    tick_speed_lens = [l for l in valid_speedup_lens if l != 196608]
+    ax3.set_xticks(tick_speed_lens)
+    ax3.set_xlabel('Context Length ($N$)')
+    ax3.set_ylabel(rf'Speedup ($\times$ over MHA)')
+    ax3.set_title('Decoding Speedup over MHA')
+    ax3.grid(True, linestyle=':', alpha=0.6)
 
     # Add shared legend
     handles, labels = ax1.get_legend_handles_labels()

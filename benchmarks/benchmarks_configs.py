@@ -47,6 +47,6 @@ class DecodeExperimentConfig:
     )
     warmup_steps: int = 10
     active_steps: int = 30
-    seq_lengths: tuple[int, ...] = (1024, 4096, 16384, 32768, 65536, 131072, 196608, 262144)
+    seq_lengths: tuple[int, ...] = (512, 1024, 4096, 16384, 32768, 65536, 131072, 196608, 262144)
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     cache_file_name: str = "profile_decode_results.pt"

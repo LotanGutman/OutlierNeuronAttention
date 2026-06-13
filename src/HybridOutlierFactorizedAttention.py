@@ -184,59 +184,37 @@ class HybridOutlierFactorizedAttention(nn.Module):
         outlier_idx = self._cached_outlier_idx
         inlier_idx  = self._cached_inlier_idx
 
-        out_gather = outlier_idx.view(1, self.num_heads, 1, self.r).expand(B, self.num_heads, N, self.r)
-        Q_O = Q.gather(-1, out_gather)
-        K_O = K.gather(-1, out_gather)
-
+        # Append to Cache
         if cache_O is None:
-            K_O_past, V_past = K_O, V
-            cache_O_new = (K_O_past, V_past)
+            K_past, V_past = K, V
+            cache_O_new = (K_past, V_past)
+            cache_seq_len = 0
         elif cache_seq_len is not None:
-            cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K_O
+            cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K
             cache_O[1][:, :, cache_seq_len:cache_seq_len+1, :] = V
-            K_O_past = cache_O[0][:, :, :cache_seq_len+1, :]
-            V_past   = cache_O[1][:, :, :cache_seq_len+1, :]
+            K_past = cache_O[0]
+            V_past = cache_O[1]
             cache_O_new = cache_O
         else:
-            K_O_past = torch.cat([cache_O[0], K_O], dim=2)
-            V_past   = torch.cat([cache_O[1], V], dim=2)
-            cache_O_new = (K_O_past, V_past)
+            K_past = torch.cat([cache_O[0], K], dim=2)
+            V_past = torch.cat([cache_O[1], V], dim=2)
+            cache_O_new = (K_past, V_past)
+            cache_seq_len = K_past.shape[2] - 1
 
-        Y_O = F.scaled_dot_product_attention(Q_O, K_O_past, V_past, is_causal=False, scale=1.0)
-
-        in_gather = inlier_idx.view(1, self.num_heads, 1, self.j).expand(B, self.num_heads, N, self.j)
-        q_J = Q.gather(-1, in_gather).squeeze(2)
-        k_J = K.gather(-1, in_gather).squeeze(2)
-        v   = V.squeeze(2)
-
-        gate_logits = self._compute_gate_logits(Q, K)
-        gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
+        seq_len = cache_seq_len + 1
 
         if state_I is None:
             state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
                                   device=x.device, dtype=x.dtype)
 
-        # --- Causal Fix: compute Y_I using old state, then update ---
-        # Y_I = torch.einsum('bhj,bhjd->bhd', q_J, state_I).unsqueeze(2)  # (B,1,d_head)
-        # state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', k_J, v)
+        from src.hofa_decode_triton import fused_hofa_decode
+        Y_out, state_I_new = fused_hofa_decode(
+            Q, K, V, K_past, V_past, state_I,
+            outlier_idx, inlier_idx,
+            self.gate_proj.weight, self.gate_proj.bias,
+            self.alpha, seq_len
+        )
 
-        
-        # Optimized BMM approach:
-        # Reshape to (B*H, ...) for batched matrix multiply
-        q_J_bmm = q_J.view(B * self.num_heads, 1, self.j)
-        k_J_bmm = k_J.view(B * self.num_heads, self.j, 1)
-        v_bmm = v.view(B * self.num_heads, 1, self.d_head)
-        state_I_bmm = state_I.view(B * self.num_heads, self.j, self.d_head)
-        gamma_bmm = gamma.view(B * self.num_heads, 1, 1)
-
-        # Query: q @ state (1xj @ jxd -> 1xd)
-        Y_I = torch.bmm(q_J_bmm, state_I_bmm).view(B, self.num_heads, 1, self.d_head)
-
-        # Update: state = gamma * state + k @ v
-        state_I_new_bmm = torch.baddbmm(state_I_bmm * gamma_bmm, k_J_bmm, v_bmm)
-        state_I_new = state_I_new_bmm.view(B, self.num_heads, self.j, self.d_head)
-
-        Y_out = self.alpha * Y_O + (1 - self.alpha) * Y_I
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in), cache_O_new, state_I_new
 
