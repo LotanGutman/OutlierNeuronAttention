@@ -22,8 +22,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         nn.init.constant_(self.gate_proj.bias, -1.0)
         nn.init.zeros_(self.gate_proj.weight)
         
-        # Learnable weighting between pathways
-        self.alpha = nn.Parameter(torch.tensor(0.5))
+        # Learnable weighting between pathways (per head)
+        self.alpha = nn.Parameter(torch.full((self.num_heads,), 0.5))
 
         # Shared projections (no bias, standard for attention)
         self.W_q = nn.Linear(self.d_model, self.d_model, bias=False)
@@ -31,40 +31,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.W_v = nn.Linear(self.d_model, self.d_model, bias=False)
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
-        # Outlier routing indices – cached and refreshed every _refresh_steps steps
-        self.register_buffer('_cached_outlier_idx', None)
-        self.register_buffer('_cached_inlier_idx', None)
-        self.register_buffer('_step_counter', torch.tensor(0, dtype=torch.long))
-
-        # Refresh period – pull from config if available, otherwise default to 100
-        refresh_steps = getattr(model_cfg, 'refresh_steps', 100)
-        self.register_buffer('_refresh_steps', torch.tensor(refresh_steps, dtype=torch.long))
-
-    @torch.no_grad()
-    def get_routing_indices(self):
-        wq = self.W_q.weight.view(self.num_heads, self.d_head, self.d_model)
-        wk = self.W_k.weight.view(self.num_heads, self.d_head, self.d_model)
-        wv = self.W_v.weight.view(self.num_heads, self.d_head, self.d_model)
-        score = (wq.norm(dim=-1) * wk.norm(dim=-1) * wv.norm(dim=-1))
-        _, out_idx = torch.topk(score, self.r, dim=-1)
-        mask = torch.ones(self.num_heads, self.d_head, dtype=torch.bool, device=wq.device)
-        mask.scatter_(1, out_idx, False)
-        in_idx = mask.nonzero()[:, 1].view(self.num_heads, self.j)
-        return out_idx, in_idx
-
-    def _maybe_update_indices(self, increment=True):
-        """Optionally increment the step counter and refresh routing indices if needed."""
-        if increment:
-            self._step_counter.add_(1)
-
-        if self._cached_outlier_idx is None:
-            o, i = self.get_routing_indices()
-            self._cached_outlier_idx = o
-            self._cached_inlier_idx = i
-        elif increment and (self._step_counter.item() % self._refresh_steps.item() == 0):
-            o, i = self.get_routing_indices()
-            self._cached_outlier_idx = o
-            self._cached_inlier_idx = i
+        # RMSNorm to balance magnitudes of the linear attention pathway
+        self.inlier_norm = nn.RMSNorm(self.d_head)
 
     def _compute_gate_logits(self, Q, K):
         """
@@ -100,9 +68,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             return self.out_proj(Y).to(dtype_in)
 
         # ----- obtain routing indices -----
-        self._maybe_update_indices(increment=True)
-        outlier_idx = self._cached_outlier_idx
-        inlier_idx  = self._cached_inlier_idx
+        # (Static routing removed indices fetching)
 
         gate_logits = self._compute_gate_logits(Q, K)
         log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
@@ -112,13 +78,14 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # We pass the full Q and K to the kernels along with the routing indices.
         # This completely avoids O(N * d) memory overhead from .gather()
         
-        Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, inlier_idx, self.chunk_size)
+        Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.r, self.chunk_size)
         del gate_logits, log_gamma
         
-        Y_O = exact_attention_triton(Q, K, V, outlier_idx, out=None)
-        del Q, K, V, outlier_idx, inlier_idx
+        Y_O = exact_attention_triton(Q, K, V, self.r, out=None)
+        del Q, K, V
         
-        Y = self.alpha * Y_O + (1 - self.alpha) * Y_I
+        alpha = self.alpha.view(1, self.num_heads, 1, 1)
+        Y = (alpha * Y_O) + ((1.0 - alpha) * self.inlier_norm(Y_I))
         
         # Merge heads
         Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
@@ -180,10 +147,6 @@ class HybridOutlierFactorizedAttention(nn.Module):
             return self.out_proj(Y_out).to(dtype_in), cache_new, None
 
         # ----- hybrid step -----
-        self._maybe_update_indices(increment=False)
-        outlier_idx = self._cached_outlier_idx
-        inlier_idx  = self._cached_inlier_idx
-
         # Append to Cache
         if cache_O is None:
             K_past, V_past = K, V
@@ -201,18 +164,19 @@ class HybridOutlierFactorizedAttention(nn.Module):
             cache_O_new = (K_past, V_past)
             cache_seq_len = K_past.shape[2] - 1
 
-        seq_len = cache_seq_len + 1
-
         if state_I is None:
             state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
                                   device=x.device, dtype=x.dtype)
 
         from src.hofa_decode_triton import fused_hofa_decode
         Y_out, state_I_new = fused_hofa_decode(
-            Q, K, V, K_past, V_past, state_I,
-            outlier_idx, inlier_idx,
-            self.gate_proj.weight, self.gate_proj.bias,
-            self.alpha, seq_len
+            Q, K, V, 
+            cache_O_new[0], cache_O_new[1], 
+            state_I, 
+            self.gate_proj.weight, self.gate_proj.bias, 
+            self.alpha, self.inlier_norm.weight,
+            self.r,
+            cache_seq_len + 1
         )
 
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)

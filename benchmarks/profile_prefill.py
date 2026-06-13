@@ -39,8 +39,7 @@ def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperiment
     model_cfg.refresh_steps = 999999999
     hybrid_attn = HybridOutlierFactorizedAttention(model_cfg).to(device).eval()
     
-    # Prevent the model from updating indices during the benchmark loop
-    hybrid_attn._maybe_update_indices()
+    # (Static routing doesn't need to update indices)
     
     # Replace the linear layers with Identity to instantly skip the O(N * D^2) compute
     hybrid_attn.W_q = nn.Identity()

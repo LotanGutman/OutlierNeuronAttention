@@ -12,10 +12,9 @@ def _fused_hofa_decode_kernel(
     Q_ptr, K_ptr, V_ptr,
     K_cache_ptr, V_cache_ptr,
     State_I_ptr,
-    Outlier_idx_ptr, Inlier_idx_ptr,
     Gate_W_ptr, Gate_B_ptr,
     Y_out_ptr,
-    seq_len, alpha,
+    seq_len, alpha_ptr, norm_weight_ptr,
     stride_b, stride_h, stride_d,
     cache_stride_b, cache_stride_h, cache_stride_sl, cache_stride_d,
     state_stride_b, state_stride_h, state_stride_j, state_stride_d,
@@ -33,14 +32,11 @@ def _fused_hofa_decode_kernel(
     state_offset = batch_idx * state_stride_b + head_idx * state_stride_h
     gw_offset = head_idx * gw_stride_h
 
-    # Load routing indices with padding masks
     offs_r = tl.arange(0, R_PAD)
     mask_r = offs_r < R
-    outlier_idx = tl.load(Outlier_idx_ptr + head_idx * R + offs_r, mask=mask_r, other=0)
     
-    offs_j = tl.arange(0, J_PAD)
-    mask_j = offs_j < J
-    inlier_idx = tl.load(Inlier_idx_ptr + head_idx * J + offs_j, mask=mask_j, other=0)
+    offs_j = R + tl.arange(0, J_PAD)
+    mask_j = (offs_j - R) < J
 
     # Load Q, K, V for current token
     offs_d = tl.arange(0, D_HEAD)
@@ -66,9 +62,9 @@ def _fused_hofa_decode_kernel(
     state_ptrs = State_I_ptr + state_offset + offs_j_2d * state_stride_j + offs_d_2d * state_stride_d
     state = tl.load(state_ptrs, mask=mask_j_2d, other=0.0)
 
-    # Gather Q_J and K_J using indices
-    q_J = tl.load(Q_ptr + q_offset + inlier_idx, mask=mask_j, other=0.0)
-    k_J = tl.load(K_ptr + q_offset + inlier_idx, mask=mask_j, other=0.0)
+    # Gather Q_J and K_J using static indices
+    q_J = tl.load(Q_ptr + q_offset + offs_j, mask=mask_j, other=0.0)
+    k_J = tl.load(K_ptr + q_offset + offs_j, mask=mask_j, other=0.0)
 
     # Y_I = sum_j (q_J[j] * state[j, d])
     y_i = tl.sum(q_J[:, None] * state, axis=0)
@@ -78,7 +74,7 @@ def _fused_hofa_decode_kernel(
     tl.store(state_ptrs, state_new, mask=mask_j_2d)
 
     # --- Outlier Exact Attention ---
-    q_O = tl.load(Q_ptr + q_offset + outlier_idx, mask=mask_r, other=0.0)
+    q_O = tl.load(Q_ptr + q_offset + offs_r, mask=mask_r, other=0.0)
     
     m_i = -float("inf")
     l_i = 0.0
@@ -92,7 +88,7 @@ def _fused_hofa_decode_kernel(
         mask_n = offs_n < seq_len
         
         # k_O block: (BLOCK_SEQ, R_PAD)
-        k_ptrs = cache_base_k + offs_n[:, None] * cache_stride_sl + outlier_idx[None, :] * cache_stride_d
+        k_ptrs = cache_base_k + offs_n[:, None] * cache_stride_sl + offs_r[None, :] * cache_stride_d
         mask_k = mask_n[:, None] & mask_r[None, :]
         k_O_block = tl.load(k_ptrs, mask=mask_k, other=0.0)
         
@@ -118,13 +114,24 @@ def _fused_hofa_decode_kernel(
     y_o = acc / l_i
     y_o = y_o.to(q.dtype)
 
+    # --- RMSNorm for Y_I ---
+    # Compute variance over D_HEAD
+    var_acc = tl.sum(y_i * y_i, axis=0)
+    var = var_acc / D_HEAD
+    rsqrt = tl.math.rsqrt(var + 1e-5)
+    
+    # Scale Y_I
+    norm_w = tl.load(norm_weight_ptr + offs_d)
+    y_i_norm = y_i * rsqrt * norm_w
+
     # --- Blend and Store ---
-    y_out = alpha * y_o + (1.0 - alpha) * y_i
+    alpha_val = tl.load(alpha_ptr + head_idx)
+    y_out = alpha_val * y_o + (1.0 - alpha_val) * y_i_norm
     y_out_ptrs = Y_out_ptr + q_offset + offs_d
     tl.store(y_out_ptrs, y_out)
 
 
-def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, outlier_idx, inlier_idx, gate_weight, gate_bias, alpha, seq_len):
+def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, gate_weight, gate_bias, alpha, norm_weight, r, seq_len):
     """
     Q, K, V: (B, H, 1, d_head)
     K_cache, V_cache: (B, H, max_sl, d_head)
@@ -137,35 +144,30 @@ def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, outlier_idx, inlier_id
     B, H, N, D_HEAD = Q.shape
     assert N == 1, "fused_hofa_decode only supports step-by-step decoding (N=1)"
     
-    if outlier_idx.dim() == 1:
-        outlier_idx = outlier_idx.unsqueeze(0).expand(H, -1).contiguous()
-    if inlier_idx.dim() == 1:
-        inlier_idx = inlier_idx.unsqueeze(0).expand(H, -1).contiguous()
-        
-    R = outlier_idx.shape[1]
-    J = inlier_idx.shape[1]
+    # j is now explicitly derived from D_HEAD and r
+    j = D_HEAD - r
+    
+    # Calculate padded sizes for BLOCK optimizations
+    R_PAD = triton_next_power_of_2(r)
+    J_PAD = triton_next_power_of_2(j)
     
     Y_out = torch.empty_like(Q)
     
     grid = (B, H)
     BLOCK_SEQ = 128
     
-    R_PAD = triton_next_power_of_2(R) if R > 0 else 16
-    J_PAD = triton_next_power_of_2(J) if J > 0 else 16
-    
     _fused_hofa_decode_kernel[grid](
         Q, K, V,
         K_cache, V_cache,
         state_I,
-        outlier_idx, inlier_idx,
         gate_weight, gate_bias,
         Y_out,
-        seq_len, alpha.item(),
+        seq_len, alpha, norm_weight,
         Q.stride(0), Q.stride(1), Q.stride(3),
         K_cache.stride(0), K_cache.stride(1), K_cache.stride(2), K_cache.stride(3),
         state_I.stride(0), state_I.stride(1), state_I.stride(2), state_I.stride(3),
         gate_weight.stride(0), gate_weight.stride(1),
-        D_HEAD=D_HEAD, R=R, J=J,
+        D_HEAD=D_HEAD, R=r, J=j,
         R_PAD=R_PAD, J_PAD=J_PAD,
         BLOCK_SEQ=BLOCK_SEQ
     )
