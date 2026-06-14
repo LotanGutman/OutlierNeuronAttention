@@ -22,8 +22,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
         nn.init.constant_(self.gate_proj.bias, -1.0)
         nn.init.zeros_(self.gate_proj.weight)
         
-        # Learnable weighting between pathways (per head)
-        self.alpha = nn.Parameter(torch.full((self.num_heads,), 0.5))
+        # Dynamic mixing gate between exact and linear pathways
+        self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
+        nn.init.zeros_(self.mix_proj.weight)
+        nn.init.constant_(self.mix_proj.bias, 0.0) # Initializes mix_g to exactly 0.5
 
         # Shared projections (no bias, standard for attention)
         self.W_q = nn.Linear(self.d_model, self.d_model, bias=False)
@@ -34,15 +36,20 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # RMSNorm to balance magnitudes of the linear attention pathway
         self.inlier_norm = nn.RMSNorm(self.d_head)
 
-    def _compute_gate_logits(self, Q, K):
+    def _compute_gates(self, Q, K):
         """
-        Q, K: (B, H, N, d_head)   full features (before routing)
-        Returns gate logits: (B, H, N, 1)  (scalar per head per token)
+        Computes both the GLA decay gate and the token-level mixing gate.
+        Reuses the concatenated QK tensor for zero memory overhead.
         """
         qk = torch.cat([Q, K], dim=-1)                      # (B, H, N, 2*d_head)
-        logits = torch.einsum('bhnf,hf->bhn', qk, self.gate_proj.weight) + \
-                 self.gate_proj.bias.view(1, self.num_heads, 1)
-        return logits.unsqueeze(-1)                         # (B, H, N, 1)
+        
+        gate_logits = torch.einsum('bhnf,hf->bhn', qk, self.gate_proj.weight) + \
+                      self.gate_proj.bias.view(1, self.num_heads, 1)
+                      
+        mix_logits = torch.einsum('bhnf,hf->bhn', qk, self.mix_proj.weight) + \
+                     self.mix_proj.bias.view(1, self.num_heads, 1)
+                     
+        return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
 
     def forward(self, x):
         B, N, D = x.shape
@@ -55,7 +62,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # ----- special cases: r = 0 or r = d_head -----
         if self.r == 0:
-            gate_logits = self._compute_gate_logits(Q, K)
+            gate_logits, _ = self._compute_gates(Q, K)
             log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
             Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.chunk_size) # this would error if r=0 was actually called because missing inlier_idx but user said do not fix
             del gate_logits, log_gamma
@@ -70,7 +77,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # ----- obtain routing indices -----
         # (Static routing removed indices fetching)
 
-        gate_logits = self._compute_gate_logits(Q, K)
+        gate_logits, mix_g = self._compute_gates(Q, K)
         log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
 
         # ----- outlier exact attention -----
@@ -84,8 +91,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Y_O = exact_attention_triton(Q, K, V, self.r, out=None)
         del Q, K, V
         
-        alpha = self.alpha.view(1, self.num_heads, 1, 1)
-        Y = (alpha * Y_O) + ((1.0 - alpha) * self.inlier_norm(Y_I))
+        Y = (mix_g * Y_O) + ((1.0 - mix_g) * self.inlier_norm(Y_I))
         
         # Merge heads
         Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
@@ -103,7 +109,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
         if self.r == 0:
-            gate_logits = self._compute_gate_logits(Q, K)
+            gate_logits, _ = self._compute_gates(Q, K)
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
             if state_I is None:
                 state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
@@ -174,7 +180,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
             cache_O_new[0], cache_O_new[1], 
             state_I, 
             self.gate_proj.weight, self.gate_proj.bias, 
-            self.alpha, self.inlier_norm.weight,
+            self.mix_proj.weight, self.mix_proj.bias,
+            self.inlier_norm.weight,
             self.r,
             cache_seq_len + 1
         )

@@ -13,8 +13,9 @@ def _fused_hofa_decode_kernel(
     K_cache_ptr, V_cache_ptr,
     State_I_ptr,
     Gate_W_ptr, Gate_B_ptr,
+    Mix_W_ptr, Mix_B_ptr,
     Y_out_ptr,
-    seq_len, alpha_ptr, norm_weight_ptr,
+    seq_len, norm_weight_ptr,
     stride_b, stride_h, stride_d,
     cache_stride_b, cache_stride_h, cache_stride_sl, cache_stride_d,
     state_stride_b, state_stride_h, state_stride_j, state_stride_d,
@@ -124,14 +125,23 @@ def _fused_hofa_decode_kernel(
     norm_w = tl.load(norm_weight_ptr + offs_d)
     y_i_norm = y_i * rsqrt * norm_w
 
+    # --- Compute Mix Gate ---
+    mix_w_q = tl.load(Mix_W_ptr + gw_offset + offs_d)
+    mix_w_k = tl.load(Mix_W_ptr + gw_offset + D_HEAD + offs_d)
+    mix_b = tl.load(Mix_B_ptr + head_idx)
+    
+    mix_logit = tl.sum(q * mix_w_q) + tl.sum(k * mix_w_k) + mix_b
+    mix_logit = mix_logit.to(tl.float32)
+    mix_g = 1.0 / (1.0 + tl.math.exp(-mix_logit))
+    mix_g = mix_g.to(q.dtype)
+
     # --- Blend and Store ---
-    alpha_val = tl.load(alpha_ptr + head_idx)
-    y_out = alpha_val * y_o + (1.0 - alpha_val) * y_i_norm
+    y_out = mix_g * y_o + (1.0 - mix_g) * y_i_norm
     y_out_ptrs = Y_out_ptr + q_offset + offs_d
     tl.store(y_out_ptrs, y_out)
 
 
-def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, gate_weight, gate_bias, alpha, norm_weight, r, seq_len):
+def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, gate_weight, gate_bias, mix_weight, mix_bias, norm_weight, r, seq_len):
     """
     Q, K, V: (B, H, 1, d_head)
     K_cache, V_cache: (B, H, max_sl, d_head)
@@ -140,6 +150,8 @@ def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, gate_weight, gate_bias
     inlier_idx: (H, j) or (j,)
     gate_weight: (H, 2*d_head)
     gate_bias: (H)
+    mix_weight: (H, 2*d_head)
+    mix_bias: (H)
     """
     B, H, N, D_HEAD = Q.shape
     assert N == 1, "fused_hofa_decode only supports step-by-step decoding (N=1)"
@@ -161,8 +173,9 @@ def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, gate_weight, gate_bias
         K_cache, V_cache,
         state_I,
         gate_weight, gate_bias,
+        mix_weight, mix_bias,
         Y_out,
-        seq_len, alpha, norm_weight,
+        seq_len, norm_weight,
         Q.stride(0), Q.stride(1), Q.stride(3),
         K_cache.stride(0), K_cache.stride(1), K_cache.stride(2), K_cache.stride(3),
         state_I.stride(0), state_I.stride(1), state_I.stride(2), state_I.stride(3),
