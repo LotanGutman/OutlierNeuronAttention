@@ -26,21 +26,28 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.W_v = nn.Linear(self.d_model, self.d_model, bias=False)
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
-        # Learnable weighting between pathways (per head)
-        self.alpha = nn.Parameter(torch.full((self.num_heads,), 0.5))
+        # Dynamic mixing gate between exact and linear pathways
+        self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
+        nn.init.zeros_(self.mix_proj.weight)
+        nn.init.constant_(self.mix_proj.bias, 0.0) # Initializes mix_g to exactly 0.5
 
         # RMSNorm to balance magnitudes of the linear attention pathway
         self.inlier_norm = nn.RMSNorm(self.d_head)
 
-    def _compute_gate_logits(self, Q, K):
+    def _compute_gates(self, Q, K):
         """
-        Q, K: (B, H, N, d_head)   full features (before routing)
-        Returns gate logits: (B, H, N, 1)  (scalar per head per token)
+        Computes both the GLA decay gate and the token-level mixing gate.
+        Reuses the concatenated QK tensor for zero memory overhead.
         """
         qk = torch.cat([Q, K], dim=-1)  # (B, H, N, 2*d_head)
-        logits = torch.einsum('bhnf,hf->bhn', qk, self.gate_proj.weight) + \
-                 self.gate_proj.bias.view(1, self.num_heads, 1)
-        return logits.unsqueeze(-1)  # (B, H, N, 1)
+        
+        gate_logits = torch.einsum('bhnf,hf->bhn', qk, self.gate_proj.weight) + \
+                      self.gate_proj.bias.view(1, self.num_heads, 1)
+                      
+        mix_logits = torch.einsum('bhnf,hf->bhn', qk, self.mix_proj.weight) + \
+                     self.mix_proj.bias.view(1, self.num_heads, 1)
+                     
+        return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
 
     def forward(self, x):
         B, N, D = x.shape
@@ -53,7 +60,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # ----- special cases: r = 0 or r = d_head -----
         if self.r == 0:
-            gate_logits = self._compute_gate_logits(Q, K)
+            gate_logits, _ = self._compute_gates(Q, K)
             log_gamma = F.logsigmoid(-gate_logits)
             log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
             Y_I, _ = chunk_gla(Q, K, V, g=log_gamma, scale=1.0, output_final_state=False)
@@ -65,7 +72,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Y = Y.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y).to(dtype_in)
 
-        gate_logits = self._compute_gate_logits(Q, K)
+        gate_logits, mix_g = self._compute_gates(Q, K)
+        self.last_mix_g = mix_g.detach()
         log_gamma = F.logsigmoid(-gate_logits)
         log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
 
@@ -83,8 +91,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         Y_I, _ = chunk_gla(Q_J, K_J, V, g=log_gamma, scale=1.0, output_final_state=False)
 
-        alpha = self.alpha.view(1, self.num_heads, 1, 1)
-        Y_out = (alpha * Y_O) + ((1.0 - alpha) * self.inlier_norm(Y_I))
+        Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * self.inlier_norm(Y_I))
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in)
 
@@ -100,7 +107,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
         if self.r == 0:
-            gate_logits = self._compute_gate_logits(Q, K)
+            gate_logits, _ = self._compute_gates(Q, K)
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
             if state_I is None:
                 state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
@@ -125,7 +132,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Y_out = Y.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in), cache_new, None
 
-        gate_logits = self._compute_gate_logits(Q, K)
+        gate_logits, mix_g = self._compute_gates(Q, K)
 
         # ----- outlier exact attention -----
         Q_O = Q[..., :self.r]
@@ -161,8 +168,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         state_I = state_I * gamma + torch.einsum('bhd,bhm->bhdm', K_J_s, V_s)
         Y_I = torch.einsum('bhd,bhdm->bhm', Q_J.squeeze(2), state_I).unsqueeze(2)
 
-        alpha = self.alpha.view(1, self.num_heads, 1, 1)
-        Y_out = (alpha * Y_O) + ((1.0 - alpha) * self.inlier_norm(Y_I))
+        Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * self.inlier_norm(Y_I))
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in), cache_O, state_I
 

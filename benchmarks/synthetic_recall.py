@@ -185,14 +185,6 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
         optimizer.step()
 
         if (i + 1) % config.print_every == 0 or i == 0 or (i + 1) == config.train_steps:
-            alpha_str = ""
-            for l_idx, block in enumerate(model.blocks):
-                if isinstance(block['attn'], HybridOutlierFactorizedAttention):
-                    alphas = block['attn'].alpha.detach().cpu().numpy()
-                    alpha_history[l_idx].append((i + 1, alphas.mean()))
-                    alphas_str = ",".join(f"{a:.2f}" for a in alphas)
-                    alpha_str += f" | L{l_idx} a:[{alphas_str}]"
-                    
             model.eval()
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast):
@@ -203,8 +195,24 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
                 val_loss = F.cross_entropy(logits_val, targets_valid).item()
                 val_acc = (logits_val.argmax(dim=-1) == targets_valid).float().mean().item()
                 
+                query_mask = (y_val != -100)
+                context_mask = (y_val == -100)
+    
+                layer_stats = ""
+                for block_idx, block in enumerate(model.blocks):
+                    if hasattr(block['attn'], 'last_mix_g'):
+                        mix_g = block['attn'].last_mix_g.squeeze(-1) # (B, H, N)
+                        
+                        query_val = mix_g[query_mask.unsqueeze(1).expand(-1, mix_g.shape[1], -1)].mean().item()
+                        context_val = mix_g[context_mask.unsqueeze(1).expand(-1, mix_g.shape[1], -1)].mean().item()
+                        
+                        alpha_history.setdefault(f'layer_{block_idx}_query', []).append((i + 1, query_val))
+                        alpha_history.setdefault(f'layer_{block_idx}_context', []).append((i + 1, context_val))
+                        
+                        layer_stats += f" | L{block_idx} Q:{query_val:.2f} C:{context_val:.2f}"
+
             model.train()
-            print(f"      Step {i + 1:4d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc*100:.1f}%{alpha_str}")
+            print(f"      Step {i + 1:4d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc*100:.1f}%{layer_stats}")
 
             # a simple early stopping mechanism to save time on models that converge quickly
             if val_acc == 1.0:
@@ -217,12 +225,10 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
                 break
 
     print()
-    # Print alpha if HOFA
+    # Print final gate status if HOFA
     for i, block in enumerate(model.blocks):
-        if isinstance(block['attn'], HybridOutlierFactorizedAttention):
-            alphas = block['attn'].alpha.detach().cpu().numpy()
-            alphas_str = ", ".join(f"{a:.4f}" for a in alphas)
-            print(f"      Layer {i} final alphas: [{alphas_str}]")
+        if hasattr(block['attn'], 'last_mix_g'):
+            print(f"      Layer {i} mix_g tracked successfully.")
             
     model.eval()
     correct = 0
@@ -251,14 +257,15 @@ def plot_alphas(alpha_histories, save_plot=True):
     max_density = max(alpha_histories.keys())
     history = alpha_histories[max_density]
     
-    for l_idx, records in history.items():
+    for key, records in history.items():
         if not records: continue
         steps, alphas = zip(*records)
-        ax.plot(steps, alphas, marker='o', label=f'Layer {l_idx}')
+        linestyle = '-' if 'query' in str(key) else '--'
+        ax.plot(steps, alphas, marker='o', linestyle=linestyle, label=f'{key}')
         
     ax.set_xlabel('Training Steps')
-    ax.set_ylabel('Alpha Value')
-    ax.set_title(f'Alpha Evolution Over Time (Density: {max_density})')
+    ax.set_ylabel('Mix Gate Value')
+    ax.set_title(f'Dynamic Mix Gate Evolution (Density: {max_density})')
     ax.legend()
     ax.grid(True, linestyle='--', alpha=0.7)
     
