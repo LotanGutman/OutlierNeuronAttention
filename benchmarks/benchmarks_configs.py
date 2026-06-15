@@ -24,11 +24,11 @@ class RecallExperimentConfig:
             d_model=256, num_heads=4, num_layers=4, r=8
         )
     )
-    densities: tuple[int, ...] = (4, 8, 16)
+    densities: tuple[int, ...] = (16, 32, 64, 128)
     batch_size: int = 64
-    seq_len: int = 64             # enough space for 16 pairs
-    vocab_size: int = 128
-    train_steps: int = 4000
+    seq_len: int = 512
+    vocab_size: int = 512
+    train_steps: int = 15000
     learning_rate: float = 1e-3
     weight_decay: float = 0.05
     seed: int = 42

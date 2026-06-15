@@ -29,7 +29,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # Dynamic mixing gate between exact and linear pathways
         self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
         nn.init.zeros_(self.mix_proj.weight)
-        nn.init.constant_(self.mix_proj.bias, 0.0) # Initializes mix_g to exactly 0.5
+        nn.init.constant_(self.mix_proj.bias, -3.0) # Initializes mix_g to strongly favor GLA (near 0.05)
 
         # RMSNorm to balance magnitudes of the linear attention pathway
         self.inlier_norm = nn.RMSNorm(self.d_head)
