@@ -38,7 +38,6 @@ def hofa_decode_step(q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I, gamma, seq
     
     return Y_O, Y_I, state_I_new.view(B, H, j, D_head)
 
-@torch.compile(mode="reduce-overhead", fullgraph=True)
 def mha_decode_step(q, k_cache, v_cache, seq_idx):
     k_past = k_cache[:, :, :seq_idx+1, :]
     v_past = v_cache[:, :, :seq_idx+1, :]
@@ -120,14 +119,15 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                     mix_bias = torch.randn(H, device=device, dtype=torch.bfloat16)
 
                     from src.hofa_decode_triton import fused_hofa_decode
+                    sm_scale = (D_head / r) ** 0.5
 
                     for _ in range(config.warmup_steps):
-                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, gate_weight, gate_bias, mix_weight, mix_bias, norm_weight, r, sl)
+                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, gate_weight, gate_bias, mix_weight, mix_bias, norm_weight, r, sm_scale, sl)
                     torch.cuda.synchronize()
 
                     start.record()
                     for _ in range(config.active_steps):
-                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, gate_weight, gate_bias, mix_weight, mix_bias, norm_weight, r, sl)
+                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, gate_weight, gate_bias, mix_weight, mix_bias, norm_weight, r, sm_scale, sl)
                     end.record()
                     torch.cuda.synchronize()
                     
@@ -232,9 +232,9 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.85) 
-    os.makedirs('data/plots', exist_ok=True)
-    plt.savefig('data/plots/profile_decode.pdf', bbox_inches='tight')
-    print("Saved plot to data/plots/profile_decode.pdf")
+    os.makedirs('data/plots/profiling', exist_ok=True)
+    plt.savefig('data/plots/profiling/profile_decode.pdf', bbox_inches='tight')
+    print("Saved plot to data/plots/profiling/profile_decode.pdf")
 
 if __name__ == "__main__":
     import argparse

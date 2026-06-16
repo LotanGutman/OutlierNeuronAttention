@@ -291,7 +291,7 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     plt.tight_layout()
     plt.subplots_adjust(top=0.85) 
     if save_plot:
-        plot_path = 'data/plots/profile_prefill.pdf'
+        plot_path = 'data/plots/profiling/profile_prefill.pdf'
         os.makedirs(os.path.dirname(plot_path), exist_ok=True)
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         print(f"\nProfile plot saved to {plot_path}")

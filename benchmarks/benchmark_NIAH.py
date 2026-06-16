@@ -69,7 +69,7 @@ def train_and_eval_sniah(model, seq_len, config):
     return results
 
 def plot_sniah_heatmaps(all_results, models, seq_lens, depths, save_plot=True):
-    os.makedirs("data/plots", exist_ok=True)
+    os.makedirs("data/plots/niah", exist_ok=True)
     fig, axes = plt.subplots(1, len(models), figsize=(5 * len(models), 4))
     if len(models) == 1:
         axes = [axes]
@@ -99,7 +99,7 @@ def plot_sniah_heatmaps(all_results, models, seq_lens, depths, save_plot=True):
 
     fig.colorbar(cax, ax=axes, fraction=0.02, pad=0.04)
     if save_plot:
-        plot_path = "data/plots/sniah_heatmap.pdf"
+        plot_path = "data/plots/niah/sniah_heatmap.pdf"
         plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
         print(f"Plot saved to {plot_path}")
     plt.close()
