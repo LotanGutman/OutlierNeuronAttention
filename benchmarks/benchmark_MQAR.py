@@ -179,6 +179,9 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
     
     from collections import defaultdict
     alpha_history = defaultdict(list)
+    train_loss_history = []
+    val_loss_history = []
+    val_acc_history = []
     consecutive_perfect_acc = 0
 
     for i in range(config.train_steps):
@@ -193,6 +196,8 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip_norm)
         optimizer.step()
 
+        train_loss_history.append((i + 1, loss.item()))
+
         if (i + 1) % config.print_every == 0 or i == 0 or (i + 1) == config.train_steps:
             model.eval()
             with torch.no_grad():
@@ -203,6 +208,9 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
                 targets_valid = y_val[y_val != -100]
                 val_loss = F.cross_entropy(logits_val, targets_valid).item()
                 val_acc = (logits_val.argmax(dim=-1) == targets_valid).float().mean().item()
+                
+                val_loss_history.append((i + 1, val_loss))
+                val_acc_history.append((i + 1, val_acc))
                 
                 query_mask = (y_val != -100)
                 context_mask = (y_val == -100)
@@ -281,6 +289,9 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
         'correct_tokens': correct,
         'total_tokens': total_tokens,
         'alpha_history': alpha_history,
+        'train_loss_history': train_loss_history,
+        'val_loss_history': val_loss_history,
+        'val_acc_history': val_acc_history,
         'final_val_loss': val_loss if 'val_loss' in locals() else None,
         'consecutive_perfect_acc': consecutive_perfect_acc
     }

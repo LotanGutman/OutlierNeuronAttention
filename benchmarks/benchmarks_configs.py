@@ -28,9 +28,9 @@ class RecallExperimentConfig:
     batch_size: int = 64
     seq_len: int = 512
     vocab_size: int = 512
-    train_steps: int = 15000
+    train_steps: int = 50000
     learning_rate: float = 1e-3
-    weight_decay: float = 0.05
+    weight_decay: float = 0.01
     seed: int = 42
 
     use_mixed_precision: bool = True

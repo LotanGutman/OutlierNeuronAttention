@@ -5,6 +5,7 @@ import triton.language as tl
 @triton.jit
 def _fwd_kernel(
     Q, K, V, Out,
+    sm_scale,
     stride_qz, stride_qh, stride_qm, stride_qk,
     stride_kz, stride_kh, stride_kn, stride_kk,
     stride_vz, stride_vh, stride_vn, stride_vk,
@@ -54,6 +55,7 @@ def _fwd_kernel(
         
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         qk += tl.dot(q, k, allow_tf32=True)
+        qk = qk * sm_scale
         
         # causal mask
         qk = tl.where(offs_m[:, None] >= offs_n_curr[None, :], qk, float("-inf"))
@@ -81,7 +83,7 @@ def _fwd_kernel(
     new_out = prev_out + acc.to(Out.dtype.element_ty)
     tl.store(o_ptrs, new_out, mask=mask_o)
 
-def exact_attention_triton(q, k, v, r, out=None):
+def exact_attention_triton(q, k, v, r, sm_scale, out=None):
     Z, H, N_CTX, D_qk = q.shape
     D_v = v.shape[-1]
     
@@ -94,6 +96,7 @@ def exact_attention_triton(q, k, v, r, out=None):
     
     _fwd_kernel[grid](
         q, k, v, out,
+        sm_scale,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),

@@ -14,6 +14,8 @@ def train_and_eval_sniah(model, seq_len, config):
     use_autocast = config.use_mixed_precision and device == "cuda"
     warmup_steps = int(0.1 * config.train_steps)
 
+    train_loss_history = []
+
     model.train()
     for i in range(config.train_steps):
         adjust_learning_rate(optimizer, i, config.train_steps, config.learning_rate, warmup_steps)
@@ -29,6 +31,8 @@ def train_and_eval_sniah(model, seq_len, config):
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip_norm)
         optimizer.step()
+        
+        train_loss_history.append((i + 1, loss.item()))
 
         if (i + 1) % config.print_every == 0:
             print(f"      Step {i + 1:4d}/{config.train_steps} | Train Loss: {loss.item():.4f}")
@@ -61,6 +65,7 @@ def train_and_eval_sniah(model, seq_len, config):
             }
             print(f"      Eval depth {d*100:.0f}%: {results[d]['accuracy']*100:.1f}%")
             
+    results['train_loss_history'] = train_loss_history
     return results
 
 def plot_sniah_heatmaps(all_results, models, seq_lens, depths, save_plot=True):

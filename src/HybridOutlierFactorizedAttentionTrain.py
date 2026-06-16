@@ -13,6 +13,11 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.d_head = model_cfg.d_head
         self.r = model_cfg.r
         self.j = self.d_head - self.r
+        self.chunk_size = model_cfg.chunk_size
+
+        if self.r > 0 and (self.r & (self.r - 1)) != 0:
+            import warnings
+            warnings.warn(f"HOFA efficiency warning: r={self.r} is not a power of 2. Triton kernels will pad it to the next power of 2, wasting computation.")
 
         # Gate projection uses full Q,K (before routing) for stability
         self.gate_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
@@ -80,7 +85,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # ----- outlier exact attention -----
         Q_O = Q[..., :self.r]
         K_O = K[..., :self.r]
-        Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=1.0)
+        sm_scale = (self.d_head / self.r) ** 0.5
+        Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=sm_scale)
 
         # ----- inlier gated linear attention -----
         Q_J = Q[..., self.r:]
@@ -147,7 +153,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
             cache_O = (K_cache, V_cache)
 
         attn_weights = torch.einsum('bhid,bhjd->bhij', Q_O, cache_O[0])
-        Y_O = torch.einsum('bhij,bhjd->bhid', torch.softmax(attn_weights, dim=-1), cache_O[1])
+        sm_scale = (self.d_head / self.r) ** 0.5
+        Y_O = torch.einsum('bhij,bhjd->bhid', torch.softmax(attn_weights * sm_scale, dim=-1), cache_O[1])
 
         # ----- inlier gated linear attention -----
         Q_J = Q[..., self.r:]

@@ -1,6 +1,8 @@
 import torch
 import triton
 import triton.language as tl
+import warnings
+import torch.nn.functional as F
 
 @triton.jit
 def chunk_gla_fwd_kernel(
@@ -161,7 +163,6 @@ class ChunkGLAInlier(torch.autograd.Function):
         # Pad Q_J, K_J along the feature dimension to match d_head
         pad_size = d_head - j
         if pad_size > 0:
-            import torch.nn.functional as F
             Q_J = F.pad(Q_J, (0, pad_size))
             K_J = F.pad(K_J, (0, pad_size))
 

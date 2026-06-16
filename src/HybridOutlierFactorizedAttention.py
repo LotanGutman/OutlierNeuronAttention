@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from src.config import ModelConfig
 from src.chunk_gla_inlier import ChunkGLAInlier
 from src.exact_attention import exact_attention_triton
-from src.chunk_gla_inlier import ChunkGLAInlier
+from src.hofa_decode_triton import fused_hofa_decode
 
 class HybridOutlierFactorizedAttention(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
@@ -15,6 +15,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.r         = model_cfg.r
         self.j         = self.d_head - self.r
         self.chunk_size = model_cfg.chunk_size
+
+        if self.r > 0 and (self.r & (self.r - 1)) != 0:
+            import warnings
+            warnings.warn(f"HOFA efficiency warning: r={self.r} is not a power of 2. Triton kernels will pad it to the next power of 2, wasting computation.")
 
         # Gate projection uses full Q,K (before routing) for stability
         self.gate_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
@@ -88,7 +92,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.r, self.chunk_size)
         del gate_logits, log_gamma
         
-        Y_O = exact_attention_triton(Q, K, V, self.r, out=None)
+        sm_scale = (self.d_head / self.r) ** 0.5
+        Y_O = exact_attention_triton(Q, K, V, self.r, sm_scale, out=None)
         del Q, K, V
         
         Y = (mix_g * Y_O) + ((1.0 - mix_g) * self.inlier_norm(Y_I))
@@ -174,7 +179,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
             state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
                                   device=x.device, dtype=x.dtype)
 
-        from src.hofa_decode_triton import fused_hofa_decode
+
+        sm_scale = (self.d_head / self.r) ** 0.5
         Y_out, state_I_new = fused_hofa_decode(
             Q, K, V, 
             cache_O_new[0], cache_O_new[1], 
@@ -183,7 +189,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
             self.mix_proj.weight, self.mix_proj.bias,
             self.inlier_norm.weight,
             self.r,
-            cache_seq_len + 1
+            cache_seq_len + 1,
+            sm_scale
         )
 
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)

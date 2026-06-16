@@ -1,6 +1,7 @@
 import torch
 import triton
 import triton.language as tl
+import warnings
 
 def triton_next_power_of_2(n):
     if n <= 1:
@@ -15,7 +16,7 @@ def _fused_hofa_decode_kernel(
     Gate_W_ptr, Gate_B_ptr,
     Mix_W_ptr, Mix_B_ptr,
     Y_out_ptr,
-    seq_len, norm_weight_ptr,
+    seq_len, norm_weight_ptr, sm_scale,
     stride_b, stride_h, stride_d,
     cache_stride_b, cache_stride_h, cache_stride_sl, cache_stride_d,
     state_stride_b, state_stride_h, state_stride_j, state_stride_d,
@@ -95,6 +96,7 @@ def _fused_hofa_decode_kernel(
         
         # dot product over R_PAD
         qk = tl.sum(q_O[None, :] * k_O_block, axis=1).to(tl.float32)
+        qk = qk * sm_scale
         qk = tl.where(mask_n, qk, -float("inf"))
         
         # Online softmax
@@ -141,7 +143,7 @@ def _fused_hofa_decode_kernel(
     tl.store(y_out_ptrs, y_out)
 
 
-def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, gate_weight, gate_bias, mix_weight, mix_bias, norm_weight, r, seq_len):
+def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, gate_weight, gate_bias, mix_weight, mix_bias, norm_weight, r, seq_len, sm_scale):
     """
     Q, K, V: (B, H, 1, d_head)
     K_cache, V_cache: (B, H, max_sl, d_head)
@@ -175,7 +177,7 @@ def fused_hofa_decode(Q, K, V, K_cache, V_cache, state_I, gate_weight, gate_bias
         gate_weight, gate_bias,
         mix_weight, mix_bias,
         Y_out,
-        seq_len, norm_weight,
+        seq_len, norm_weight, sm_scale,
         Q.stride(0), Q.stride(1), Q.stride(3),
         K_cache.stride(0), K_cache.stride(1), K_cache.stride(2), K_cache.stride(3),
         state_I.stride(0), state_I.stride(1), state_I.stride(2), state_I.stride(3),
