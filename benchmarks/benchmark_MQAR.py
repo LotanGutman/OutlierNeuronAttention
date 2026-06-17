@@ -388,7 +388,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
     torch.manual_seed(config.seed)
     print("--- Starting Zoology Exact-Match MQAR Sweep ---")
     
-    model_names = ["HOFA (r=34)", "HOFA (r=32)", "MHA", "Gated DeltaNet", "GLA", "Mamba"]
+    model_names = ["Gated DeltaNet", "HOFA (r=34)", "HOFA (r=32)", "MHA", "GLA", "Mamba"]
     
     if os.path.exists(cache_path) and not force_rerun:
         print(f"Loading cached results from {cache_path}")
