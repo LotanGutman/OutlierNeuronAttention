@@ -339,8 +339,8 @@ def plot_results(results, save_plot=True):
     fig, ax = plt.subplots(figsize=(8, 5))
     
     # Distinct markers for each model to make it readable in black & white
-    markers = {'HOFA (r=34)': 'o', 'HOFA (r=8)': 'x', 'MHA': 's', 'Gated DeltaNet': '^', 'GLA': 'D'}
-    colors = {'HOFA (r=34)': '#1f77b4', 'HOFA (r=8)': '#9467bd', 'MHA': '#ff7f0e', 'Gated DeltaNet': '#2ca02c', 'GLA': '#d62728'}
+    markers = {'HOFA (r=32)': 'o', 'HOFA (r=8)': 'x', 'MHA': 's', 'Gated DeltaNet': '^', 'GLA': 'D'}
+    colors = {'HOFA (r=32)': '#1f77b4', 'HOFA (r=8)': '#9467bd', 'MHA': '#ff7f0e', 'Gated DeltaNet': '#2ca02c', 'GLA': '#d62728'}
     
     for model in models:
         accs = []
@@ -388,7 +388,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
     torch.manual_seed(config.seed)
     print("--- Starting Zoology Exact-Match MQAR Sweep ---")
     
-    model_names = ["HOFA (r=34)", "HOFA (r=8)", "MHA", "Gated DeltaNet", "GLA", "Mamba"]
+    model_names = ["HOFA (r=32)", "HOFA (r=8)", "MHA", "Gated DeltaNet", "GLA", "Mamba"]
     
     if os.path.exists(cache_path) and not force_rerun:
         print(f"Loading cached results from {cache_path}")
@@ -420,14 +420,14 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
                 
                 from dataclasses import replace
                 model_cfg = config.model_config
-                if name == "HOFA (r=34)":
-                    model_cfg = replace(model_cfg, r=34)
+                if name == "HOFA (r=32)":
+                    model_cfg = replace(model_cfg, r=32)
                 elif name == "HOFA (r=8)":
                     model_cfg = replace(model_cfg, r=8)
                 
                 attn_type_map = {
                     "MHA": AttentionType.MHA,
-                    "HOFA (r=34)": AttentionType.HOFA,
+                    "HOFA (r=32)": AttentionType.HOFA,
                     "HOFA (r=8)": AttentionType.HOFA,
                     "Gated DeltaNet": AttentionType.DELTA,
                     "GLA": AttentionType.GLA,
@@ -465,7 +465,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
                 info['model_config'] = asdict(model_cfg)
                 results[density][name] = info
                 
-                if name == "HOFA (r=34)":
+                if name == "HOFA (r=32)":
                     all_alpha_histories[density] = alpha_hist
                 
                 model.to('cpu')
@@ -485,8 +485,8 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
     all_alpha_histories = {}
     for density in config.densities:
         if density in results:
-            if "HOFA (r=34)" in results[density] and 'alpha_history' in results[density]["HOFA (r=34)"]:
-                all_alpha_histories[density] = results[density]["HOFA (r=34)"]['alpha_history']
+            if "HOFA (r=32)" in results[density] and 'alpha_history' in results[density]["HOFA (r=32)"]:
+                all_alpha_histories[density] = results[density]["HOFA (r=32)"]['alpha_history']
             elif "HOFA (r=8)" in results[density] and 'alpha_history' in results[density]["HOFA (r=8)"]:
                 all_alpha_histories[density] = results[density]["HOFA (r=8)"]['alpha_history']
 
