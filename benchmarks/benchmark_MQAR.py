@@ -169,7 +169,7 @@ def adjust_learning_rate(optimizer, step, total_steps, base_lr, warmup_steps):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-def train_and_eval(model, gen_func, gen_kwargs, config):
+def train_and_eval(model, gen_func, gen_kwargs, config, model_name=""):
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     
     model.train()
@@ -183,6 +183,10 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
     val_loss_history = []
     val_acc_history = []
     consecutive_perfect_acc = 0
+
+    from interrupt_util.interrupts import GracefulInterruptHandler
+    early_stopper = GracefulInterruptHandler()
+    early_stopper.attach()
 
     for i in range(config.train_steps):
         adjust_learning_rate(optimizer, i, config.train_steps, config.learning_rate, warmup_steps)
@@ -240,10 +244,17 @@ def train_and_eval(model, gen_func, gen_kwargs, config):
             if consecutive_perfect_acc >= 2:
                 print("\n      Early stopping: achieved >99.5% accuracy for 2 consecutive evaluations.")
                 break
+                
+            if early_stopper.stop_requested:
+                break
         else:
             # Print dynamic progress bar
             print(f"\r      Step {i + 1:4d}/{config.train_steps}", end="", flush=True)
+            
+            if early_stopper.stop_requested:
+                break
 
+    early_stopper.detach()
     print()
     # Print final gate status if HOFA
     for i, block in enumerate(model.blocks):
@@ -455,6 +466,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
                         "device": device,
                     },
                     config,
+                    model_name=name
                 )
                 
                 acc = info['accuracy']

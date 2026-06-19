@@ -21,15 +21,18 @@ class PrefillExperimentConfig:
 class RecallExperimentConfig:
     model_config: ModelConfig = field(
         default_factory=lambda: ModelConfig(
-            d_model=256, num_heads=4, num_layers=4, r=8
+            d_model=128, 
+            num_heads=2, 
+            num_layers=2, 
+            r=32
         )
     )
-    densities: tuple[int, ...] = (16, 32, 64, 128)
-    batch_size: int = 64
-    seq_len: int = 512
-    vocab_size: int = 512
+    densities: tuple[int, ...] = (16, 32, 64, 128, 256)
+    batch_size: int = 48
+    seq_len: int = 1024
+    vocab_size: int = 1024
     train_steps: int = 50000
-    learning_rate: float = 1e-3
+    learning_rate: float = 3e-4
     weight_decay: float = 0.01
     seed: int = 42
 
