@@ -11,6 +11,7 @@ from src.HybridOutlierFactorizedAttentionTrain import HybridOutlierFactorizedAtt
 from benchmarks.benchmarks_configs import RecallExperimentConfig, CACHE_PATH
 from fla.layers import DeltaNet, GatedLinearAttention as GLA
 from mamba_ssm import Mamba2
+from src.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 
 def generate_zoology_mqar(batch_size, seq_len, vocab_size, num_kv_pairs, device):
@@ -68,12 +69,16 @@ class StandardMHA(nn.Module):
         self.W_k = nn.Linear(d_model, d_model, bias=False)
         self.W_v = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
+        self.rotary_emb = RotaryEmbedding(dim=self.d_head)
 
     def forward(self, x):
         B, N, D = x.shape
         q = self.W_q(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         k = self.W_k(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         v = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
+        
+        cos, sin = self.rotary_emb(N)
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)
         
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         
@@ -121,7 +126,7 @@ class GenericBenchmarkLM(nn.Module):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.pos_embedding = nn.Embedding(131072, d_model)
-        
+
         self.blocks = nn.ModuleList([
             nn.ModuleDict({
                 'ln_1': nn.LayerNorm(d_model),
@@ -137,11 +142,10 @@ class GenericBenchmarkLM(nn.Module):
         self.lm_head.weight = self.token_embedding.weight
 
     def forward(self, x, targets=None, return_loss=True):
-        seq_len = x.size(1)
-        positions = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(x.size(0), -1)
-        
-        x = self.token_embedding(x) + self.pos_embedding(positions)
-        
+        x = self.token_embedding(x)
+        positions = torch.arange(x.size(1), device=x.device).unsqueeze(0).expand(x.size(0), -1)
+        x = x + self.pos_embedding(positions)
+
         for block in self.blocks:
             x = x + block['attn'](block['ln_1'](x))
             x = x + block['mlp'](block['ln_2'](x))
@@ -231,6 +235,12 @@ def train_and_eval(model, gen_func, gen_kwargs, config, model_name=""):
                         alpha_history.setdefault(f'layer_{block_idx}_context', []).append((i + 1, context_val))
                         
                         layer_stats += f" | L{block_idx} Q:{query_val:.2f} C:{context_val:.2f}"
+                        
+                    if hasattr(block['attn'], 'gla_scale'):
+                        gla_scale = block['attn'].gla_scale.detach().view(-1)
+                        gla_scale_mean = gla_scale.mean().item()
+                        layer_stats += f" S:{gla_scale_mean:.2f}"
+                        alpha_history.setdefault(f'layer_{block_idx}_gla_scale', []).append((i + 1, gla_scale.tolist()))
 
             model.train()
             print(f"\r      Step {i + 1:4d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc*100:.1f}%{layer_stats}")
@@ -321,8 +331,15 @@ def plot_alphas(alpha_histories, save_plot=True):
     for key, records in history.items():
         if not records: continue
         steps, alphas = zip(*records)
-        linestyle = '-' if 'query' in str(key) else '--'
-        ax.plot(steps, alphas, marker='o', linestyle=linestyle, label=f'{key}')
+        
+        if 'gla_scale' in str(key):
+            # alphas is a list of lists (one per head)
+            for head_idx in range(len(alphas[0])):
+                head_alphas = [a[head_idx] for a in alphas]
+                ax.plot(steps, head_alphas, marker='x', linestyle=':', label=f'{key}_h{head_idx}')
+        else:
+            linestyle = '-' if 'query' in str(key) else '--'
+            ax.plot(steps, alphas, marker='o', linestyle=linestyle, label=f'{key}')
         
     ax.set_xlabel('Training Steps')
     ax.set_ylabel('Mix Gate Value')
@@ -350,8 +367,8 @@ def plot_results(results, save_plot=True):
     fig, ax = plt.subplots(figsize=(8, 5))
     
     # Distinct markers for each model to make it readable in black & white
-    markers = {'HOFA (r=34)': 'o', 'HOFA (r=32)': 'x', 'MHA': 's', 'Gated DeltaNet': '^', 'GLA': 'D'}
-    colors = {'HOFA (r=34)': '#1f77b4', 'HOFA (r=32)': '#9467bd', 'MHA': '#ff7f0e', 'Gated DeltaNet': '#2ca02c', 'GLA': '#d62728'}
+    markers = {'HOFA (r=34)': 'o', 'HOFA (r=32)': 'X', 'MHA': 's', 'Gated DeltaNet': '^', 'GLA': 'D', 'Mamba': 'v'}
+    colors = {'HOFA (r=34)': '#1f77b4', 'HOFA (r=32)': '#17becf', 'MHA': '#ff7f0e', 'Gated DeltaNet': '#2ca02c', 'GLA': '#d62728', 'Mamba': '#e377c2'}
     
     for model in models:
         accs = []
@@ -399,7 +416,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
     torch.manual_seed(config.seed)
     print("--- Starting Zoology Exact-Match MQAR Sweep ---")
     
-    model_names = ["Gated DeltaNet", "HOFA (r=34)", "HOFA (r=32)", "MHA", "GLA", "Mamba"]
+    model_names = ["Gated DeltaNet", "MHA", "HOFA (r=34)", "GLA", "Mamba", "HOFA (r=32)"]
     
     if os.path.exists(cache_path) and not force_rerun:
         print(f"Loading cached results from {cache_path}")
@@ -431,10 +448,10 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
                 
                 from dataclasses import replace
                 model_cfg = config.model_config
-                if name == "HOFA (r=34)":
-                    model_cfg = replace(model_cfg, r=34)
-                elif name == "HOFA (r=32)":
+                if name == "HOFA (r=32)":
                     model_cfg = replace(model_cfg, r=32)
+                elif name == "HOFA (r=34)":
+                    model_cfg = replace(model_cfg, r=34)
                 
                 attn_type_map = {
                     "MHA": AttentionType.MHA,
@@ -477,8 +494,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
                 info['model_config'] = asdict(model_cfg)
                 results[density][name] = info
                 
-                if name == "HOFA (r=32)":
-                    all_alpha_histories[density] = alpha_hist
+                all_alpha_histories[density] = alpha_hist
                 
                 model.to('cpu')
                 del model
@@ -497,6 +513,7 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
     all_alpha_histories = {}
     for density in config.densities:
         if density in results:
+            # Plot alpha evolution for HOFA if it was run
             if "HOFA (r=34)" in results[density] and 'alpha_history' in results[density]["HOFA (r=34)"]:
                 all_alpha_histories[density] = results[density]["HOFA (r=34)"]['alpha_history']
             elif "HOFA (r=32)" in results[density] and 'alpha_history' in results[density]["HOFA (r=32)"]:

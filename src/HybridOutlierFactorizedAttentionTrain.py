@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from src.config import ModelConfig
 from fla.ops.gla import chunk_gla
-
+from src.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 class HybridOutlierFactorizedAttention(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
@@ -34,10 +34,14 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # Dynamic mixing gate between exact and linear pathways
         self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
         nn.init.zeros_(self.mix_proj.weight)
-        nn.init.constant_(self.mix_proj.bias, -3.0) # Initializes mix_g to strongly favor GLA (near 0.05)
+        nn.init.constant_(self.mix_proj.bias, 0.0) # Initializes mix_g to 0.5 to allow gradients to both pathways
 
-        # RMSNorm to balance magnitudes of the linear attention pathway
-        self.inlier_norm = nn.RMSNorm(self.d_head)
+        # RoPE dedicated strictly to the exact-match routing dimension
+        if self.r > 0:
+            self.rotary_emb = RotaryEmbedding(dim=self.r)
+
+        # Learned scalar for the GLA pathway
+        self.gla_scale = nn.Parameter(torch.ones(1, self.num_heads, 1, 1))
 
     def _compute_gates(self, Q, K):
         """
@@ -69,6 +73,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             log_gamma = F.logsigmoid(-gate_logits)
             log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
             Y_I, _ = chunk_gla(Q, K, V, g=log_gamma, scale=1.0, output_final_state=False)
+            Y_I = Y_I * self.gla_scale
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in)
 
@@ -85,6 +90,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # ----- outlier exact attention -----
         Q_O = Q[..., :self.r]
         K_O = K[..., :self.r]
+
+        cos, sin = self.rotary_emb(N)
+        Q_O, K_O = apply_rotary_pos_emb(Q_O, K_O, cos, sin)
+
         sm_scale = (self.d_head / self.r) ** 0.5
         Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=sm_scale)
 
@@ -96,8 +105,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
         K_J = F.pad(K_J, (0, self.r))
 
         Y_I, _ = chunk_gla(Q_J, K_J, V, g=log_gamma, scale=1.0, output_final_state=False)
+        Y_I = Y_I * self.gla_scale
 
-        Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * self.inlier_norm(Y_I))
+        Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * Y_I)
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in)
 
@@ -122,6 +132,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             V_s = V.squeeze(2)
 
             Y_I = torch.einsum('bhi,bhij->bhj', Q.squeeze(2), state_I).unsqueeze(2)
+            Y_I = Y_I * self.gla_scale
             state_I_new = gamma * state_I + torch.einsum('bhi,bhj->bhij', K_s, V_s)
 
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
@@ -143,6 +154,12 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # ----- outlier exact attention -----
         Q_O = Q[..., :self.r]
         K_O = K[..., :self.r]
+
+        curr_len = 1 if cache_O is None else cache_O[0].shape[2] + 1
+        cos, sin = self.rotary_emb(curr_len)
+        cos = cos[-1:]
+        sin = sin[-1:]
+        Q_O, K_O = apply_rotary_pos_emb(Q_O, K_O, cos, sin)
 
         if cache_O is None:
             cache_O = (K_O, V)
@@ -174,8 +191,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         state_I = state_I * gamma + torch.einsum('bhd,bhm->bhdm', K_J_s, V_s)
         Y_I = torch.einsum('bhd,bhdm->bhm', Q_J.squeeze(2), state_I).unsqueeze(2)
+        Y_I = Y_I * self.gla_scale
 
-        Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * self.inlier_norm(Y_I))
+        Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * Y_I)
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
         return self.out_proj(Y_out).to(dtype_in), cache_O, state_I
 
@@ -202,7 +220,6 @@ class SubwordLM(nn.Module):
     def __init__(self, vocab_size: int, model_cfg: ModelConfig):
         super().__init__()
         self.token_emb = nn.Embedding(vocab_size, model_cfg.d_model)
-        self.pos_emb = nn.Embedding(model_cfg.block_size, model_cfg.d_model)
         self.layers = nn.ModuleList([
             TransformerBlock(model_cfg) for _ in range(model_cfg.num_layers)
         ])
@@ -212,8 +229,7 @@ class SubwordLM(nn.Module):
 
     def forward(self, x, targets=None):
         B, N = x.shape
-        pos = torch.arange(0, N, dtype=torch.long, device=x.device).unsqueeze(0)
-        x = self.token_emb(x) + self.pos_emb(pos)
+        x = self.token_emb(x)
         for layer in self.layers:
             x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant=False)
         x = self.ln_f(x)
