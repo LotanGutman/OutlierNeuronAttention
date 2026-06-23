@@ -11,7 +11,8 @@ from src.HybridOutlierFactorizedAttentionTrain import HybridOutlierFactorizedAtt
 from benchmarks.benchmarks_configs import RecallExperimentConfig, CACHE_PATH
 from fla.layers import DeltaNet, GatedLinearAttention as GLA
 from mamba_ssm import Mamba2
-from src.modules import RotaryEmbedding, apply_rotary_pos_emb
+from modules.modules import RotaryEmbedding, apply_rotary_pos_emb
+from modules.checkpointing import save_checkpoint, load_checkpoint
 
 
 def generate_zoology_mqar(batch_size, seq_len, vocab_size, num_kv_pairs, device):
@@ -61,7 +62,7 @@ def generate_sniah(batch_size, seq_len, vocab_size, depth_pct, device):
 
 
 class StandardMHA(nn.Module):
-    def __init__(self, d_model, num_heads):
+    def __init__(self, d_model, num_heads, use_rope=False):
         super().__init__()
         self.num_heads = num_heads
         self.d_head = d_model // num_heads
@@ -69,7 +70,9 @@ class StandardMHA(nn.Module):
         self.W_k = nn.Linear(d_model, d_model, bias=False)
         self.W_v = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
-        self.rotary_emb = RotaryEmbedding(dim=self.d_head)
+        self.use_rope = use_rope
+        if self.use_rope:
+            self.rotary_emb = RotaryEmbedding(dim=self.d_head)
 
     def forward(self, x):
         B, N, D = x.shape
@@ -77,8 +80,9 @@ class StandardMHA(nn.Module):
         k = self.W_k(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         v = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         
-        cos, sin = self.rotary_emb(N)
-        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+        if self.use_rope:
+            cos, sin = self.rotary_emb(N)
+            q, k = apply_rotary_pos_emb(q, k, cos, sin)
         
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         
@@ -105,7 +109,7 @@ def build_attention(attn_type, model_cfg):
     d_model = model_cfg.d_model
     num_heads = model_cfg.num_heads
     if attn_type == AttentionType.MHA:
-        return StandardMHA(d_model, num_heads)
+        return StandardMHA(d_model, num_heads, getattr(model_cfg, 'use_rope', False))
     if attn_type == AttentionType.HOFA:
         return HybridOutlierFactorizedAttention(model_cfg)
     if attn_type == AttentionType.DELTA:
@@ -124,8 +128,12 @@ def build_attention(attn_type, model_cfg):
 class GenericBenchmarkLM(nn.Module):
     def __init__(self, vocab_size, d_model, attn_type, num_heads=8, num_layers=2, model_cfg=None):
         super().__init__()
+        self.use_rope = getattr(model_cfg, 'use_rope', False) if model_cfg else False
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_embedding = nn.Embedding(131072, d_model)
+        if not self.use_rope:
+            self.pos_embedding = nn.Embedding(131072, d_model)
+        else:
+            self.pos_embedding = None
 
         self.blocks = nn.ModuleList([
             nn.ModuleDict({
@@ -143,8 +151,9 @@ class GenericBenchmarkLM(nn.Module):
 
     def forward(self, x, targets=None, return_loss=True):
         x = self.token_embedding(x)
-        positions = torch.arange(x.size(1), device=x.device).unsqueeze(0).expand(x.size(0), -1)
-        x = x + self.pos_embedding(positions)
+        if self.pos_embedding is not None:
+            positions = torch.arange(x.size(1), device=x.device).unsqueeze(0).expand(x.size(0), -1)
+            x = x + self.pos_embedding(positions)
 
         for block in self.blocks:
             x = x + block['attn'](block['ln_1'](x))
@@ -173,7 +182,7 @@ def adjust_learning_rate(optimizer, step, total_steps, base_lr, warmup_steps):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-def train_and_eval(model, gen_func, gen_kwargs, config, model_name=""):
+def train_and_eval(model, gen_func, gen_kwargs, config, model_name="", checkpoint_dir=None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     
     model.train()
@@ -187,12 +196,24 @@ def train_and_eval(model, gen_func, gen_kwargs, config, model_name=""):
     val_loss_history = []
     val_acc_history = []
     consecutive_perfect_acc = 0
+    start_step = 0
+
+    if checkpoint_dir is not None:
+        metadata = load_checkpoint(model, optimizer, model_name, gen_kwargs.get("num_kv_pairs"), checkpoint_dir)
+        if metadata is not None:
+            print(f"\n      Resuming {model_name} from step {metadata['step']}")
+            start_step = metadata['step']
+            train_loss_history = metadata.get('train_loss_history', [])
+            val_loss_history = metadata.get('val_loss_history', [])
+            val_acc_history = metadata.get('val_acc_history', [])
+            alpha_history = metadata.get('alpha_history', defaultdict(list))
+            consecutive_perfect_acc = metadata.get('consecutive_perfect_acc', 0)
 
     from interrupt_util.interrupts import GracefulInterruptHandler
     early_stopper = GracefulInterruptHandler()
     early_stopper.attach()
 
-    for i in range(config.train_steps):
+    for i in range(start_step, config.train_steps):
         adjust_learning_rate(optimizer, i, config.train_steps, config.learning_rate, warmup_steps)
         optimizer.zero_grad()
         x, y = gen_func(**gen_kwargs)
@@ -254,6 +275,19 @@ def train_and_eval(model, gen_func, gen_kwargs, config, model_name=""):
             if consecutive_perfect_acc >= 2:
                 print("\n      Early stopping: achieved >99.5% accuracy for 2 consecutive evaluations.")
                 break
+                
+            if checkpoint_dir is not None:
+                metadata = {
+                    'model_name': model_name,
+                    'density': gen_kwargs.get("num_kv_pairs"),
+                    'step': i + 1,
+                    'train_loss_history': train_loss_history,
+                    'val_loss_history': val_loss_history,
+                    'val_acc_history': val_acc_history,
+                    'alpha_history': alpha_history,
+                    'consecutive_perfect_acc': consecutive_perfect_acc
+                }
+                save_checkpoint(model, optimizer, metadata, checkpoint_dir)
                 
             if early_stopper.stop_requested:
                 break
@@ -410,8 +444,9 @@ def plot_results(results, save_plot=True):
     plt.close()
 
 def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfig(), force_rerun=True, save_results=True, continue_from_cache=False):
-    cache_path = os.path.join(CACHE_PATH, config.cache_file_name)
-    interm_cache_path = os.path.join(CACHE_PATH, "intermediate_" + config.cache_file_name)
+    mqar_cache_dir = os.path.join(CACHE_PATH, "MQAR")
+    cache_path = os.path.join(mqar_cache_dir, config.cache_file_name)
+    interm_cache_path = os.path.join(mqar_cache_dir, "intermediate_" + config.cache_file_name)
     device = config.device
     torch.manual_seed(config.seed)
     print("--- Starting Zoology Exact-Match MQAR Sweep ---")
@@ -483,12 +518,21 @@ def run_recall_experiment(config: RecallExperimentConfig = RecallExperimentConfi
                         "device": device,
                     },
                     config,
-                    model_name=name
+                    model_name=name,
+                    checkpoint_dir=mqar_cache_dir
                 )
                 
                 acc = info['accuracy']
                 alpha_hist = info['alpha_history']
                 print(f">>> MQAR {density} | {name} Final Accuracy: {acc*100:.1f}%")
+                
+                # Save the final model
+                models_dir = os.path.join(mqar_cache_dir, "models")
+                os.makedirs(models_dir, exist_ok=True)
+                clean_name = name.replace(" ", "_").replace("(", "").replace(")", "").replace("=", "")
+                final_model_path = os.path.join(models_dir, f"{clean_name}_{density}.pt")
+                torch.save(model.state_dict(), final_model_path)
+                print(f"Saved final model to {final_model_path}")
                 
                 from dataclasses import asdict
                 info['model_config'] = asdict(model_cfg)

@@ -13,6 +13,7 @@ class ModelConfig:
     seed: int = 42
     chunk_size: int = 32
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    use_rope: bool = False
 
     @property
     def d_head(self) -> int:

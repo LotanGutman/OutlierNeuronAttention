@@ -29,10 +29,10 @@ class RecallExperimentConfig:
     )
     densities: tuple[int, ...] = (16, 32, 64, 128)
     batch_size: int = 64
-    seq_len: int = 256
+    seq_len: int = 512
     vocab_size: int = 512
-    train_steps: int = 10000
-    learning_rate: float = 3e-4
+    train_steps: int = 35000
+    learning_rate: float = 5e-4
     weight_decay: float = 0.01
     seed: int = 42
 
