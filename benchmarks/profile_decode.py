@@ -111,23 +111,21 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                     
                     state_I = torch.randn(B, H, j, D_head, device=device, dtype=torch.float32)
                     
-                    norm_weight = torch.ones(D_head, device=device, dtype=torch.bfloat16)
+                    norm_weight = torch.ones(H, D_head, device=device, dtype=torch.bfloat16)
                     
-                    gate_weight = torch.randn(H, 2*D_head, device=device, dtype=torch.bfloat16)
-                    gate_bias = torch.randn(H, device=device, dtype=torch.bfloat16)
-                    mix_weight = torch.randn(H, 2*D_head, device=device, dtype=torch.bfloat16)
-                    mix_bias = torch.randn(H, device=device, dtype=torch.bfloat16)
+                    log_gamma = torch.randn(B, H, 1, device=device, dtype=torch.float32)
+                    mix_g = torch.randn(B, H, 1, device=device, dtype=torch.bfloat16)
 
                     from src.hofa_decode_triton import fused_hofa_decode
                     sm_scale = (D_head / r) ** 0.5
 
                     for _ in range(config.warmup_steps):
-                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, gate_weight, gate_bias, mix_weight, mix_bias, norm_weight, r, sm_scale, sl)
+                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, log_gamma, mix_g, norm_weight, r, sl, sm_scale)
                     torch.cuda.synchronize()
 
                     start.record()
                     for _ in range(config.active_steps):
-                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, gate_weight, gate_bias, mix_weight, mix_bias, norm_weight, r, sm_scale, sl)
+                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, log_gamma, mix_g, norm_weight, r, sl, sm_scale)
                     end.record()
                     torch.cuda.synchronize()
                     

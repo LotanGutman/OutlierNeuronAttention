@@ -4,12 +4,13 @@ import triton.language as tl
 
 @triton.jit
 def _fwd_kernel(
-    Q, K, V, Out,
+    Q, K, V, Out, mix_g_ptr,
     sm_scale,
     stride_qz, stride_qh, stride_qm, stride_qk,
     stride_kz, stride_kh, stride_kn, stride_kk,
     stride_vz, stride_vh, stride_vn, stride_vk,
     stride_oz, stride_oh, stride_om, stride_on,
+    stride_mix_g_b, stride_mix_g_h, stride_mix_g_n,
     Z, H, N_CTX, r,
     BLOCK_M: tl.constexpr, BLOCK_DMODEL_QK: tl.constexpr, BLOCK_DMODEL_V: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -42,7 +43,7 @@ def _fwd_kernel(
     
     mask_q = (offs_m[:, None] < N_CTX) & mask_qk[None, :]
     q = tl.load(q_ptrs, mask=mask_q, other=0.0)
-    
+
     for start_n in range(0, (start_m + 1) * BLOCK_M, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
         offs_n_curr = start_n + offs_n
@@ -78,12 +79,19 @@ def _fwd_kernel(
     acc = acc / l_i[:, None]
     
     mask_o = offs_m[:, None] < N_CTX
+    mask_m = offs_m < N_CTX
+    
+    mix_g_ptrs = mix_g_ptr + off_z * stride_mix_g_b + off_h * stride_mix_g_h + offs_m * stride_mix_g_n
+    mix_g_val = tl.load(mix_g_ptrs, mask=mask_m, other=0.0)
+    
+    acc = acc * mix_g_val[:, None]
+    
     # IN-PLACE ADDITION to the output initialized by GLA
     prev_out = tl.load(o_ptrs, mask=mask_o, other=0.0)
     new_out = prev_out + acc.to(Out.dtype.element_ty)
     tl.store(o_ptrs, new_out, mask=mask_o)
 
-def exact_attention_triton(q, k, v, r, sm_scale, out=None):
+def exact_attention_triton(q, k, v, r, sm_scale, mix_g, out=None):
     Z, H, N_CTX, D_qk = q.shape
     D_v = v.shape[-1]
     
@@ -95,12 +103,13 @@ def exact_attention_triton(q, k, v, r, sm_scale, out=None):
     grid = (triton.cdiv(N_CTX, BLOCK_M), Z * H)
     
     _fwd_kernel[grid](
-        q, k, v, out,
+        q, k, v, out, mix_g,
         sm_scale,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),
         out.stride(0), out.stride(1), out.stride(2), out.stride(3),
+        mix_g.stride(0), mix_g.stride(1), mix_g.stride(2),
         Z, H, N_CTX, r,
         BLOCK_DMODEL_QK=max(triton.next_power_of_2(r), 16),
         BLOCK_DMODEL_V=triton.next_power_of_2(D_v),

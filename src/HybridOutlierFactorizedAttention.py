@@ -1,10 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from src.config import ModelConfig
 from src.chunk_gla_inlier import ChunkGLAInlier
 from src.exact_attention import exact_attention_triton
 from src.hofa_decode_triton import fused_hofa_decode
+from modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 class HybridOutlierFactorizedAttention(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
@@ -29,7 +31,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # Dynamic mixing gate between exact and linear pathways
         self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
         nn.init.zeros_(self.mix_proj.weight)
-        nn.init.constant_(self.mix_proj.bias, -3.0) # Initializes mix_g to strongly favor GLA
+        nn.init.constant_(self.mix_proj.bias, 0.0) # Initializes mix_g to 0.5 to allow gradients to both pathways
 
         # Shared projections (no bias, standard for attention)
         self.W_q = nn.Linear(self.d_model, self.d_model, bias=False)
@@ -37,8 +39,13 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.W_v = nn.Linear(self.d_model, self.d_model, bias=False)
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
-        # RMSNorm to balance magnitudes of the linear attention pathway
-        self.inlier_norm = nn.RMSNorm(self.d_head)
+        # RoPE dedicated strictly to the exact-match routing dimension
+        if self.r > 0 and getattr(model_cfg, 'use_rope', True):
+            self.rotary_emb = RotaryEmbedding(dim=self.r)
+
+        # Inlier normalization and learned LayerScale for the GLA pathway
+        self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)
+        self.gla_scale = nn.Parameter(torch.ones(1, self.num_heads, 1, self.d_head))
 
     def _compute_gates(self, Q, K):
         """
@@ -64,12 +71,13 @@ class HybridOutlierFactorizedAttention(nn.Module):
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
-        # ----- special cases: r = 0 or r = d_head -----
+        # ----- special cases: If r=0, fallback to pure GLA
         if self.r == 0:
             gate_logits, _ = self._compute_gates(Q, K)
             log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
-            Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.chunk_size) # this would error if r=0 was actually called because missing inlier_idx but user said do not fix
+            Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.r, self.chunk_size)
             del gate_logits, log_gamma
+            Y_I = self.inlier_norm(Y_I) * self.gla_scale
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out).to(dtype_in)
 
@@ -84,6 +92,17 @@ class HybridOutlierFactorizedAttention(nn.Module):
         gate_logits, mix_g = self._compute_gates(Q, K)
         log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
 
+        # --- Pre-calculate RoPE (Q and K outlier dimensions) ---
+        if hasattr(self, 'rotary_emb'):
+            cos, sin = self.rotary_emb(N)
+            Q_O = Q[..., :self.r]
+            K_O = K[..., :self.r]
+            Q_O_rotated, K_O_rotated = apply_rotary_pos_emb(Q_O, K_O, cos, sin)
+            
+            # In-place update to prevent massive tensor duplication
+            Q[..., :self.r] = Q_O_rotated
+            K[..., :self.r] = K_O_rotated
+
         # ----- outlier exact attention -----
         # Pseudo-Fused Kernel Execution
         # We pass the full Q and K to the kernels along with the routing indices.
@@ -93,10 +112,18 @@ class HybridOutlierFactorizedAttention(nn.Module):
         del gate_logits, log_gamma
         
         sm_scale = (self.d_head / self.r) ** 0.5
-        Y_O = exact_attention_triton(Q, K, V, self.r, sm_scale, out=None)
-        del Q, K, V
         
-        Y = (mix_g * Y_O) + ((1.0 - mix_g) * self.inlier_norm(Y_I))
+        # Apply inlier norm and scale
+        Y_I = self.inlier_norm(Y_I) * self.gla_scale
+        
+        # Pre-allocate Final Output and blend the pre-scaled Y_I
+        Y_Final = ((1.0 - mix_g) * Y_I)
+        
+        # Run exact attention, adding mix_g * exact directly into Y_Final via True Kernel Fusion
+        exact_attention_triton(Q, K, V, self.r, sm_scale, mix_g.squeeze(-1), out=Y_Final)
+        del Q, K, V, Y_I
+        
+        Y = Y_Final
         
         # Merge heads
         Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
@@ -133,6 +160,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             gamma_bmm = gamma.view(B * self.num_heads, 1, 1)
 
             Y_I = torch.bmm(q_bmm, state_I_bmm).view(B, self.num_heads, 1, self.d_head)
+            Y_I = self.inlier_norm(Y_I) * self.gla_scale
             state_I_new_bmm = torch.baddbmm(state_I_bmm * gamma_bmm, k_bmm, v_bmm)
             state_I_new = state_I_new_bmm.view(B, self.num_heads, self.j, self.d_head)
             
@@ -158,6 +186,25 @@ class HybridOutlierFactorizedAttention(nn.Module):
             return self.out_proj(Y_out).to(dtype_in), cache_new, None
 
         # ----- hybrid step -----
+        # Compute gates BEFORE rotating Q and K
+        gate_logits, mix_g = self._compute_gates(Q, K)
+        log_gamma = F.logsigmoid(-gate_logits).squeeze(-1) # (B, H, N)
+        mix_g = mix_g.squeeze(-1) # (B, H, N)
+        
+        if hasattr(self, 'rotary_emb'):
+            # Determine correct sequence length for RoPE
+            seq_idx = cache_seq_len if cache_seq_len is not None else (cache_O[0].shape[2] if cache_O is not None else 0)
+            cos, sin = self.rotary_emb(seq_idx + 1)
+            # Only slice the last token for RoPE
+            cos = cos[:, -1:]
+            sin = sin[:, -1:]
+            
+            Q_O = Q[..., :self.r]
+            K_O = K[..., :self.r]
+            Q_O, K_O = apply_rotary_pos_emb(Q_O, K_O, cos, sin)
+            Q = torch.cat([Q_O, Q[..., self.r:]], dim=-1)
+            K = torch.cat([K_O, K[..., self.r:]], dim=-1)
+
         # Append to Cache
         if cache_O is None:
             K_past, V_past = K, V
@@ -179,15 +226,16 @@ class HybridOutlierFactorizedAttention(nn.Module):
             state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
                                   device=x.device, dtype=x.dtype)
 
-
         sm_scale = (self.d_head / self.r) ** 0.5
+        
+        norm_w = self.gla_scale.view(self.num_heads, self.d_head)
+        
         Y_out, state_I_new = fused_hofa_decode(
             Q, K, V, 
             cache_O_new[0], cache_O_new[1], 
             state_I, 
-            self.gate_proj.weight, self.gate_proj.bias, 
-            self.mix_proj.weight, self.mix_proj.bias,
-            self.inlier_norm.weight,
+            log_gamma, mix_g,
+            norm_w,
             self.r,
             cache_seq_len + 1,
             sm_scale
@@ -219,7 +267,6 @@ class SubwordLM(nn.Module):
     def __init__(self, vocab_size: int, model_cfg: ModelConfig):
         super().__init__()
         self.token_emb = nn.Embedding(vocab_size, model_cfg.d_model)
-        self.pos_emb = nn.Embedding(model_cfg.block_size, model_cfg.d_model)
         self.layers = nn.ModuleList([
             TransformerBlock(model_cfg) for _ in range(model_cfg.num_layers)
         ])
@@ -229,8 +276,7 @@ class SubwordLM(nn.Module):
 
     def forward(self, x, targets=None):
         B, N = x.shape
-        pos = torch.arange(0, N, dtype=torch.long, device=x.device).unsqueeze(0)
-        x = self.token_emb(x) + self.pos_emb(pos)
+        x = self.token_emb(x)
         for layer in self.layers:
             x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant=False)
         x = self.ln_f(x)
