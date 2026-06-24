@@ -175,49 +175,72 @@ def run_induction_experiment():
         ("Mamba", AttentionType.MAMBA, None)
     ]
     
-    all_histories = {}
+    seq_lengths = [1024, 512, 256, 128, 64]
+    trendline_results = {name: [] for name, _, _ in models_to_test}
     
-    for name, attn_type, r_val in models_to_test:
-        if r_val is not None:
-            config.model_config.r = r_val
-        model = GenericBenchmarkLM(
-            vocab_size=config.vocab_size,
-            d_model=config.model_config.d_model,
-            attn_type=attn_type,
-            num_heads=config.model_config.num_heads,
-            num_layers=config.model_config.num_layers,
-            model_cfg=config.model_config
-        ).to(device)
-        checkpoint_dir = f"data/models/induction_{name.replace(' ', '_').replace('(', '').replace(')', '').replace('=', '')}"
-        os.makedirs(checkpoint_dir, exist_ok=True)
+    for seq_len in seq_lengths:
+        config.seq_len = seq_len
+        print(f"\n========================================")
+        print(f" Starting sequence length: {seq_len}")
+        print(f"========================================")
         
-        history = train_induction(model, config, name, checkpoint_dir=checkpoint_dir)
-        all_histories[name] = history
+        all_histories = {}
+        for name, attn_type, r_val in models_to_test:
+            # Resetting the seed here ensures every model sees the *exact same* 
+            # sequence of training data, providing the fairest possible comparison.
+            torch.manual_seed(config.seed)
+            np.random.seed(config.seed)
+            
+            if r_val is not None:
+                config.model_config.r = r_val
+            model = GenericBenchmarkLM(
+                vocab_size=config.vocab_size,
+                d_model=config.model_config.d_model,
+                attn_type=attn_type,
+                num_heads=config.model_config.num_heads,
+                num_layers=config.model_config.num_layers,
+                model_cfg=config.model_config
+            ).to(device)
+            checkpoint_dir = f"data/models/seqlen_{seq_len}/induction_{name.replace(' ', '_').replace('(', '').replace(')', '').replace('=', '')}"
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            
+            history = train_induction(model, config, name, checkpoint_dir=checkpoint_dir)
+            all_histories[name] = history
+            
+            # Save final model state dict for easy loading later
+            torch.save(model.state_dict(), f"{checkpoint_dir}/final_model.pt")
+            
+            del model
+            torch.cuda.empty_cache()
+            
+            max_acc = max(history['acc']) if len(history['acc']) > 0 else 0
+            trendline_results[name].append(max_acc)
+            
+        # Plotting Convergence for this sequence length
+        os.makedirs("data/plots/induction", exist_ok=True)
+        plt.figure(figsize=(10, 6))
+        for name, history in all_histories.items():
+            if len(history['acc']) == 0: continue
+            steps = np.arange(1, len(history['acc']) + 1) * config.print_every
+            steps[0] = 1
+            plt.plot(steps, history['acc'], label=name, marker='o', markersize=3)
+            
+        plt.title(f"Induction Head Task Convergence (Seq Len = {seq_len})")
+        plt.xlabel("Training Steps")
+        plt.ylabel("Accuracy (%)")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
         
-        # Save final model state dict for easy loading later
-        torch.save(model.state_dict(), f"{checkpoint_dir}/final_model.pt")
-        
-        del model
-        torch.cuda.empty_cache()
-        
-    # Plotting
-    os.makedirs("data/plots/induction", exist_ok=True)
-    plt.figure(figsize=(10, 6))
-    for name, history in all_histories.items():
-        steps = np.arange(1, len(history['acc']) + 1) * config.print_every
-        # Insert 0 at step 1 for plotting
-        steps[0] = 1
-        plt.plot(steps, history['acc'], label=name, marker='o', markersize=3)
-        
-    plt.title("Induction Head Task Convergence")
-    plt.xlabel("Training Steps")
-    plt.ylabel("Accuracy (%)")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    plot_path = "data/plots/induction/induction_convergence.pdf"
-    plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
-    print(f"\nPlot saved to {plot_path}")
+        plot_path = f"data/plots/induction/convergence_seqlen_{seq_len}.pdf"
+        plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
+        plt.close()
+        print(f"\nConvergence plot saved to {plot_path}")
+
+    # Final Trendline Plot is now handled by benchmarks.plotting.plot_induction
 
 if __name__ == "__main__":
     run_induction_experiment()
+    
+    # Automatically generate the unified trendline plot when fully finished
+    from benchmarks.plotting.plot_induction import plot_unified_trendline
+    plot_unified_trendline()
