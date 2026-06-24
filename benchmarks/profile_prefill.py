@@ -212,9 +212,10 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     
     common_len = min(len(times_mha_s), len(times_hyb_s))
     if common_len > 0:
-        zoom_seq_len = valid_lens[common_len - 1]
-        axins.set_xlim(512, zoom_seq_len)
-        zoom_max_y = max(times_mha_s[common_len - 1], times_hyb_s[common_len - 1])
+        zoom_seq_len = min(262144, valid_lens[common_len - 1])
+        zoom_idx = valid_lens.index(zoom_seq_len)
+        axins.set_xlim(512 * 0.85, zoom_seq_len * 1.15)
+        zoom_max_y = max(times_mha_s[zoom_idx], times_hyb_s[zoom_idx])
         axins.set_ylim(min(times_mha_s[0], times_hyb_s[0]) * 0.5, zoom_max_y * 1.5)
         
         axins.xaxis.set_major_formatter(formatter_x)
@@ -229,11 +230,25 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
                                axesA=axins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
         ax1.add_artist(con1)
         
-        y_end = max(times_mha_s[common_len - 1], times_hyb_s[common_len - 1])
+        y_end = max(times_mha_s[zoom_idx], times_hyb_s[zoom_idx])
         con2 = ConnectionPatch(xyA=(zoom_seq_len, axins.get_ylim()[0]), xyB=(zoom_seq_len, y_end), 
                                coordsA="data", coordsB="data", 
                                axesA=axins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
         ax1.add_artist(con2)
+
+    # Add two-sided arrow for Computational Scaling improvement
+    if len(vl1) > 0 and len(vl2) > 0 and vl1[-1] == vl2[-1]:
+        max_len = vl1[-1]
+        val_mha = times_mha_s[-1]
+        val_hyb = times_hyb_s[-1]
+        if val_hyb > 0:
+            improvement = (val_mha - val_hyb) / val_hyb * 100.0
+            ax1.annotate(
+                '', xy=(max_len, val_hyb), xytext=(max_len, val_mha),
+                arrowprops=dict(arrowstyle="<->", color='black', lw=1.5)
+            )
+            ax1.text(max_len * 1.15, (val_mha + val_hyb) / 2, f'+{improvement:.1f}%', 
+                     color='black', va='center', ha='left', fontsize=12, fontweight='bold')
     
     # --- Plot 2: Memory (Log Y to show parallel scaling lines) ---
     ax2.plot(valid_lens[:len(mems_mha)], mems_mha, label='MHA (FlashAttention)', **style_mha)

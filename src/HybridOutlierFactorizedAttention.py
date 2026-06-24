@@ -199,25 +199,23 @@ class HybridOutlierFactorizedAttention(nn.Module):
             cos = cos[:, -1:]
             sin = sin[:, -1:]
             
-            Q_O = Q[..., :self.r]
-            K_O = K[..., :self.r]
-            Q_O, K_O = apply_rotary_pos_emb(Q_O, K_O, cos, sin)
-            Q = torch.cat([Q_O, Q[..., self.r:]], dim=-1)
-            K = torch.cat([K_O, K[..., self.r:]], dim=-1)
+            Q_O, K_O = apply_rotary_pos_emb(Q[..., :self.r], K[..., :self.r], cos, sin)
+            Q[..., :self.r] = Q_O
+            K[..., :self.r] = K_O
 
         # Append to Cache
         if cache_O is None:
-            K_past, V_past = K, V
+            K_past, V_past = K[..., :self.r], V
             cache_O_new = (K_past, V_past)
             cache_seq_len = 0
         elif cache_seq_len is not None:
-            cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K
+            cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K[..., :self.r]
             cache_O[1][:, :, cache_seq_len:cache_seq_len+1, :] = V
             K_past = cache_O[0]
             V_past = cache_O[1]
             cache_O_new = cache_O
         else:
-            K_past = torch.cat([cache_O[0], K], dim=2)
+            K_past = torch.cat([cache_O[0], K[..., :self.r]], dim=2)
             V_past = torch.cat([cache_O[1], V], dim=2)
             cache_O_new = (K_past, V_past)
             cache_seq_len = K_past.shape[2] - 1

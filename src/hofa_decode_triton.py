@@ -28,6 +28,7 @@ def _fused_hofa_decode_kernel(
     BLOCK_HEADS: tl.constexpr,
     BLOCK_SEQ: tl.constexpr,
     D_HEAD: tl.constexpr,
+    R_PAD: tl.constexpr,
     J: tl.constexpr,
     J_PAD: tl.constexpr
 ):
@@ -75,20 +76,21 @@ def _fused_hofa_decode_kernel(
     l_i = tl.zeros([1], dtype=tl.float32)
     acc_O = tl.zeros([D_HEAD], dtype=tl.float32)
 
-    q_O = tl.where(offs_d < R, q, 0.0)
+    offs_r = tl.arange(0, R_PAD)
+    mask_r = offs_r < R
+    q_base = Q + batch_idx * stride_q_b + head_idx * stride_q_h
+    q_O = tl.load(q_base + offs_r * stride_q_d, mask=mask_r, other=0.0)
 
     for start_n in range(0, seq_len, BLOCK_SEQ):
         offs_n = start_n + tl.arange(0, BLOCK_SEQ)
         mask_n = offs_n < seq_len
 
-        k_ptrs = cache_base_k + offs_n[:, None] * cache_stride_sl + offs_d[None, :] * cache_stride_d
-        v_ptrs = cache_base_v + offs_n[:, None] * cache_stride_sl + offs_d[None, :] * cache_stride_d
+        k_ptrs = cache_base_k + offs_n[:, None] * cache_stride_sl + offs_r[None, :] * cache_stride_d
+        v_ptrs = cache_base_v + offs_n[:, None] * cache_stride_sl + offs_d_2d * cache_stride_d
         
-        k_block = tl.load(k_ptrs, mask=mask_n[:, None], other=0.0)
+        k_O_block = tl.load(k_ptrs, mask=mask_n[:, None] & mask_r[None, :], other=0.0)
         v_block = tl.load(v_ptrs, mask=mask_n[:, None], other=0.0)
 
-        k_O_block = tl.where(offs_d[None, :] < R, k_block, 0.0)
-        
         attn_scores = tl.sum(q_O[None, :] * k_O_block, axis=1) * sm_scale
         attn_scores = tl.where(mask_n, attn_scores, float('-inf'))
 
@@ -129,6 +131,7 @@ def fused_hofa_decode(
     BLOCK_HEADS = 1
     BLOCK_SEQ = 128
     D_HEAD = triton.next_power_of_2(D)
+    R_PAD = triton.next_power_of_2(R)
     J = D - R
     J_PAD = triton.next_power_of_2(J)
 
@@ -154,6 +157,7 @@ def fused_hofa_decode(
         BLOCK_HEADS=BLOCK_HEADS,
         BLOCK_SEQ=BLOCK_SEQ,
         D_HEAD=D_HEAD,
+        R_PAD=R_PAD,
         J=J,
         J_PAD=J_PAD
     )
