@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import gc
 
-from benchmarks.benchmark_MQAR import generate_sniah, GenericBenchmarkLM, AttentionType, adjust_learning_rate
-from benchmarks.benchmarks_configs import RecallExperimentConfig, CACHE_PATH
+from modules.benchmark_utils import generate_sniah, GenericBenchmarkLM, AttentionType, adjust_learning_rate
+from benchmarks.benchmarks_configs import SNIAHExperimentConfig, CACHE_PATH
 
 def train_and_eval_sniah(model, seq_len, config):
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
@@ -105,12 +105,7 @@ def plot_sniah_heatmaps(all_results, models, seq_lens, depths, save_plot=True):
     plt.close()
 
 def run_sniah_experiment(force_rerun=False, save_results=True):
-    config = RecallExperimentConfig()
-    # Shorter train steps for SNIAH, it converges instantly
-    config.train_steps = 1000 
-    config.print_every = 250
-    config.batch_size = 4 # Small batch size to fit long contexts in 8GB
-    config.vocab_size = 8192 # Explicitly define large vocab to prevent needle collisions
+    config = SNIAHExperimentConfig()
     
     device = config.device
     torch.manual_seed(config.seed)

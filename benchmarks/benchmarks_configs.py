@@ -18,7 +18,7 @@ class PrefillExperimentConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 @dataclass  
-class RecallExperimentConfig:
+class SNIAHExperimentConfig:
     model_config: ModelConfig = field(
         default_factory=lambda: ModelConfig(
             d_model=256, 
@@ -28,20 +28,43 @@ class RecallExperimentConfig:
         )
     )
     densities: tuple[int, ...] = (16, 32, 64, 128)
-    batch_size: int = 64
-    seq_len: int = 512
-    vocab_size: int = 512
-    train_steps: int = 35000
+    batch_size: int = 4
+    seq_len: int = 8192
+    vocab_size: int = 8192
+    train_steps: int = 1000
     learning_rate: float = 5e-4
     weight_decay: float = 0.01
     seed: int = 42
 
     use_mixed_precision: bool = True
     grad_clip_norm: float = 1.0
-    print_every: int = 1000
+    print_every: int = 250
     num_eval_batches: int = 50
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    cache_file_name: str = "recall_results.pt"
+    cache_file_name: str = "sniah_results.pt"
+
+@dataclass
+class InductionExperimentConfig:
+    model_config: ModelConfig = field(
+        default_factory=lambda: ModelConfig(
+            d_model=128,
+            num_heads=4, 
+            num_layers=4, 
+            r=16,
+            use_rope=True
+        )
+    )
+    batch_size: int = 32
+    seq_len: int = 1024
+    vocab_size: int = 8192
+    train_steps: int = 15000 
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.01
+    seed: int = 42
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    print_every: int = 250
+    grad_clip_norm: float = 1.0
+    use_mixed_precision: bool = True
 
 @dataclass
 class DecodeExperimentConfig:
@@ -53,3 +76,19 @@ class DecodeExperimentConfig:
     seq_lengths: tuple[int, ...] = (512, 1024, 4096, 16384, 32768, 65536, 131072, 196608, 262144, 524288)
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     cache_file_name: str = "profile_decode_results.pt"
+
+@dataclass
+class KEffExperimentConfig:
+    num_sequences: int = 100
+    seq_len: int = 1024
+    batch_size: int = 2
+    models_to_test: tuple[str, ...] = (
+        "gpt2",
+        "EleutherAI/pythia-410m",
+        "meta-llama/Llama-3.2-1B",
+        "meta-llama/Llama-3.2-3B"
+    )
+    dataset_name: str = "HuggingFaceFW/fineweb-edu"
+    dataset_config: str = "sample-10BT"
+    dataset_split: str = "train"
+    cache_file_name: str = "layerwise_cumsum_results.pkl"

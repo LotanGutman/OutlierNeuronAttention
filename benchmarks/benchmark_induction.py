@@ -6,32 +6,10 @@ import numpy as np
 from dataclasses import dataclass, field
 
 from src.config import ModelConfig
-from benchmarks.benchmark_MQAR import GenericBenchmarkLM, AttentionType, adjust_learning_rate
+from modules.benchmark_utils import GenericBenchmarkLM, AttentionType, adjust_learning_rate
+from benchmarks.benchmarks_configs import InductionExperimentConfig
 from modules.checkpointing import save_checkpoint, load_checkpoint
 from interrupt_util.interrupts import GracefulInterruptHandler
-
-@dataclass
-class InductionExperimentConfig:
-    model_config: ModelConfig = field(
-        default_factory=lambda: ModelConfig(
-            d_model=128,
-            num_heads=4, 
-            num_layers=4, 
-            r=16,
-            use_rope=True
-        )
-    )
-    batch_size: int = 32
-    seq_len: int = 1024
-    vocab_size: int = 8192
-    train_steps: int = 15000 
-    learning_rate: float = 1e-3
-    weight_decay: float = 0.01
-    seed: int = 42
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    print_every: int = 250
-    grad_clip_norm: float = 1.0
-    use_mixed_precision: bool = True
 
 def generate_induction_seqs(batch_size, seq_len, vocab_size, device):
     """
