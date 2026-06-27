@@ -1,7 +1,8 @@
 import os
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
-
+import seaborn as sns
 def plot_unified_trendline():
     seq_lengths = [1024, 512, 256, 128, 64]
     
@@ -74,5 +75,54 @@ def plot_unified_trendline():
     
     print(f"\nUnified trendline plot successfully saved to {plot_path}")
 
+def plot_feature_norm_disparity():
+    # 1. Load Checkpoints
+    mha_path = "data/models/seqlen_1024/induction_MHA/checkpoint.pt"
+    hofa14_path = "data/models/seqlen_1024/induction_HOFA_r14/checkpoint.pt"
+    hofa16_path = "data/models/seqlen_1024/induction_HOFA_r16/checkpoint.pt"
+    
+    def get_feature_importance(ckpt_path):
+        if not os.path.exists(ckpt_path):
+            print(f"Missing {ckpt_path}")
+            return np.zeros(32)
+        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+        state_dict = ckpt['model_state_dict']
+        W_q = state_dict['blocks.3.attn.W_q.weight'].view(4, 32, 128)
+        W_k = state_dict['blocks.3.attn.W_k.weight'].view(4, 32, 128)
+        return (W_q.norm(p=2, dim=2) * W_k.norm(p=2, dim=2)).mean(dim=0).numpy()
+
+    mha_imp = get_feature_importance(mha_path)
+    hofa14_imp = get_feature_importance(hofa14_path)
+    hofa16_imp = get_feature_importance(hofa16_path)
+
+    # 2. Plotting
+    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=True)
+    dims = np.arange(32)
+    
+    def plot_step(ax, data, color, title, r_val=None):
+        ax.fill_between(dims, data, step="mid", color=color, alpha=0.3)
+        ax.plot(dims, data, drawstyle="steps-mid", color=color, linewidth=2.5)
+        ax.set_title(title, fontweight='bold', pad=10)
+        ax.set_xlabel("Feature Dimension Index", fontsize=11)
+        ax.set_xlim(0, 31)
+        if r_val:
+            ax.axvline(x=r_val - 0.5, color='red', linestyle='--', linewidth=2, label=f'Hardware Bound (r={r_val})')
+            ax.legend(loc='upper right', frameon=True)
+
+    plot_step(axes[0], mha_imp, '#4c72b0', "MHA (Baseline)")
+    plot_step(axes[1], hofa14_imp, '#dd8452', "HOFA (r=14)", r_val=14)
+    plot_step(axes[2], hofa16_imp, '#55a868', "HOFA (r=16)", r_val=16)
+    
+    axes[0].set_ylabel("Product Norm ($||W_Q||_2 \\times ||W_K||_2$)", fontsize=11)
+    
+    os.makedirs("data/plots/routing", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig("data/plots/routing/feature_norm_disparity.pdf", bbox_inches='tight', format='pdf')
+    plt.close()
+    
+    print("\nFeature norm disparity plot successfully saved to data/plots/routing/feature_norm_disparity.pdf")
+
 if __name__ == "__main__":
-    plot_unified_trendline()
+    # plot_unified_trendline()
+    plot_feature_norm_disparity()
