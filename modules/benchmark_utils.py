@@ -9,23 +9,7 @@ from fla.layers import DeltaNet, GatedLinearAttention as GLA
 from mamba_ssm import Mamba2
 from modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
-def generate_sniah(batch_size, seq_len, vocab_size, depth_pct, device):
-    num_keys = 128
-    num_vals = 128
-    seq = torch.randint(num_keys + num_vals + 1, vocab_size, (batch_size, seq_len), device=device)
-    
-    needle_key = torch.randint(1, num_keys + 1, (batch_size, 1), device=device)
-    needle_value = torch.randint(num_keys + 1, num_keys + num_vals + 1, (batch_size, 1), device=device)
-    
-    needle_idx = int(depth_pct * (seq_len // 2 - 2)) * 2
-    seq[:, needle_idx:needle_idx+1] = needle_key
-    seq[:, needle_idx+1:needle_idx+2] = needle_value
-    
-    x = seq.clone()
-    x[:, -1:] = needle_key
-    y = torch.full_like(x, -100)
-    y[:, -1:] = needle_value
-    return x, y
+
 
 
 class StandardMHA(nn.Module):
@@ -136,7 +120,7 @@ class GenericBenchmarkLM(nn.Module):
             if return_loss:
                 targets_valid = targets[valid_mask]
                 loss = F.cross_entropy(logits_valid, targets_valid)
-                return None, loss
+                return logits_valid, loss
             else:
                 return logits_valid, None
         else:

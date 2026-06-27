@@ -9,6 +9,7 @@ def plot_unified_trendline():
     models_to_test = [
         "MHA",
         "HOFA (r=8)",
+        "HOFA (r=12)",
         "HOFA (r=14)",
         "HOFA (r=16)",
         "Gated DeltaNet",
@@ -20,6 +21,7 @@ def plot_unified_trendline():
     dir_mapping = {
         "MHA": "induction_MHA",
         "HOFA (r=8)": "induction_HOFA_r8",
+        "HOFA (r=12)": "induction_HOFA_r12",
         "HOFA (r=14)": "induction_HOFA_r14",
         "HOFA (r=16)": "induction_HOFA_r16",
         "Gated DeltaNet": "induction_Gated_DeltaNet",
@@ -32,7 +34,7 @@ def plot_unified_trendline():
     for seq_len in seq_lengths:
         for name in models_to_test:
             dir_name = dir_mapping[name]
-            ckpt_path = f"data/models/seqlen_{seq_len}/{dir_name}/checkpoint.pt"
+            ckpt_path = f"data/induction_models/seqlen_{seq_len}/{dir_name}/checkpoint.pt"
             
             if os.path.exists(ckpt_path):
                 ckpt = torch.load(ckpt_path, map_location='cpu')
@@ -77,9 +79,9 @@ def plot_unified_trendline():
 
 def plot_feature_norm_disparity():
     # 1. Load Checkpoints
-    mha_path = "data/models/seqlen_1024/induction_MHA/checkpoint.pt"
-    hofa14_path = "data/models/seqlen_1024/induction_HOFA_r14/checkpoint.pt"
-    hofa16_path = "data/models/seqlen_1024/induction_HOFA_r16/checkpoint.pt"
+    mha_path = "data/induction_models/seqlen_1024/induction_MHA/checkpoint.pt"
+    hofa14_path = "data/induction_models/seqlen_1024/induction_HOFA_r14/checkpoint.pt"
+    hofa16_path = "data/induction_models/seqlen_1024/induction_HOFA_r16/checkpoint.pt"
     
     def get_feature_importance(ckpt_path):
         if not os.path.exists(ckpt_path):

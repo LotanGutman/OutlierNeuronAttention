@@ -17,31 +17,7 @@ class PrefillExperimentConfig:
     cache_file_name: str = "profile_prefill_results.pt"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
-@dataclass  
-class SNIAHExperimentConfig:
-    model_config: ModelConfig = field(
-        default_factory=lambda: ModelConfig(
-            d_model=256, 
-            num_heads=4, 
-            num_layers=4, 
-            r=34
-        )
-    )
-    densities: tuple[int, ...] = (16, 32, 64, 128)
-    batch_size: int = 4
-    seq_len: int = 8192
-    vocab_size: int = 8192
-    train_steps: int = 1000
-    learning_rate: float = 5e-4
-    weight_decay: float = 0.01
-    seed: int = 42
 
-    use_mixed_precision: bool = True
-    grad_clip_norm: float = 1.0
-    print_every: int = 250
-    num_eval_batches: int = 50
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    cache_file_name: str = "sniah_results.pt"
 
 @dataclass
 class InductionExperimentConfig:
@@ -57,8 +33,8 @@ class InductionExperimentConfig:
     batch_size: int = 32
     seq_len: int = 1024
     vocab_size: int = 8192
-    train_steps: int = 15000 
-    learning_rate: float = 1e-3
+    train_steps: int = 20000
+    learning_rate: float = 3e-3
     weight_decay: float = 0.01
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"

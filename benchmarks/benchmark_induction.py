@@ -22,8 +22,8 @@ def generate_induction_seqs(batch_size, seq_len, vocab_size, device):
     y = torch.full((batch_size, seq_len), -100, dtype=torch.long, device=device)
     
     for b in range(batch_size):
-        # Generate a pattern of random length between 32 and 128
-        pattern_len = torch.randint(32, 128, (1,)).item()
+        max_len = min(128, max(2, seq_len // 4))
+        pattern_len = torch.randint(min(32, max_len), max_len + 1, (1,)).item()
         pattern = torch.randint(0, vocab_size, (pattern_len,), device=device)
         
         # Place pattern at the start
@@ -146,6 +146,7 @@ def run_induction_experiment():
     models_to_test = [
         ("MHA", AttentionType.MHA, None),
         ("HOFA (r=8)", AttentionType.HOFA, 8),
+        ("HOFA (r=12)", AttentionType.HOFA, 12),
         ("HOFA (r=14)", AttentionType.HOFA, 14),
         ("HOFA (r=16)", AttentionType.HOFA, 16),
         ("Gated DeltaNet", AttentionType.DELTA, None),
@@ -179,7 +180,7 @@ def run_induction_experiment():
                 num_layers=config.model_config.num_layers,
                 model_cfg=config.model_config
             ).to(device)
-            checkpoint_dir = f"data/models/seqlen_{seq_len}/induction_{name.replace(' ', '_').replace('(', '').replace(')', '').replace('=', '')}"
+            checkpoint_dir = f"data/induction_models/seqlen_{seq_len}/induction_{name.replace(' ', '_').replace('(', '').replace(')', '').replace('=', '')}"
             os.makedirs(checkpoint_dir, exist_ok=True)
             
             history = train_induction(model, config, name, checkpoint_dir=checkpoint_dir)
