@@ -223,13 +223,13 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
             ax1_ins.text(zoom_end_len * 1.15, (val_mha * val_hyb) ** 0.5, f'+{improvement:.1f}%', 
                          color='black', va='center', ha='left', fontsize=12, fontweight='bold', clip_on=False)
                          
-        y_start = min_y
+        y_start = ax1_ins.get_ylim()[0]
         con1 = ConnectionPatch(xyA=(zoom_start_len, ax1_ins.get_ylim()[0]), xyB=(zoom_start_len, y_start), 
                                coordsA="data", coordsB="data", 
                                axesA=ax1_ins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
         ax1.add_artist(con1)
         
-        y_end = max_y
+        y_end = ax1_ins.get_ylim()[0]
         con2 = ConnectionPatch(xyA=(zoom_end_len, ax1_ins.get_ylim()[0]), xyB=(zoom_end_len, y_end), 
                                coordsA="data", coordsB="data", 
                                axesA=ax1_ins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
