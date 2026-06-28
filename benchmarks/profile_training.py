@@ -143,16 +143,9 @@ def plot_training_results(results, cache_path):
     def format_ticks_x(x, pos):
         return f"{int(x/1024)}k" if x >= 1024 else str(int(x))
 
-    def format_ticks_y(y, pos):
-        if y < 0.01:
-            return f"{y:.3f}"
-        elif y < 0.1:
-            return f"{y:.2f}"
-        else:
-            return f"{y:.1f}"
-
     formatter_x = FuncFormatter(format_ticks_x)
-    formatter_y = FuncFormatter(format_ticks_y)
+    formatter_y = ScalarFormatter()
+    formatter_y.set_scientific(False)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5.5))
     
@@ -169,7 +162,6 @@ def plot_training_results(results, cache_path):
     ax1.set_yscale("log", base=10) 
     ax1.xaxis.set_major_formatter(formatter_x)
     ax1.yaxis.set_major_formatter(formatter_y)
-    ax1.set_yticks(sorted(list(set(times_mha_s + times_hyb_s))))
     ax1.set_xticks(valid_lens)
     ax1.set_xlabel("Sequence Length ($N$)")
     ax1.set_ylabel("Fwd+Bwd Latency [s]")
@@ -187,7 +179,6 @@ def plot_training_results(results, cache_path):
     ax2.set_yscale("log", base=10) 
     ax2.xaxis.set_major_formatter(formatter_x)
     ax2.yaxis.set_major_formatter(formatter_y)
-    ax2.set_yticks(sorted(list(set(mems_mha_gb + mems_hyb_gb))))
     ax2.set_xticks(valid_lens)
     ax2.set_xlabel("Sequence Length ($N$)")
     ax2.set_ylabel("Peak VRAM [GB]")
