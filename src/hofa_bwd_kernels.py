@@ -194,6 +194,27 @@ def hofa_bwd_router_kernel(
     dy = (dy_norm - Y_GLA_norm * (sum_dy_norm_y[:, None] / d_head)) / rms[:, None]
     dy = tl.where(mask_d[None, :], dy, 0.0)
     
+    # 3.5. Compute exact attention query gradients dQ_O
+    dQ_O_acc = tl.zeros([BLOCK_M, BLOCK_DMODEL_QK], dtype=tl.float32)
+    for w_start in range(0, start + BLOCK_M, BLOCK_N):
+        offs_n = w_start + tl.arange(0, BLOCK_N)
+        mask_n = offs_n < N
+        
+        k_o_ptrs = b_h_k_ptr + offs_n[None, :] * stride_k_n + offsets_r[:, None] * stride_k_d
+        K_O_w = tl.load(k_o_ptrs, mask=mask_n[None, :] & mask_r[:, None], other=0.0)
+        
+        v_ptrs_w = b_h_v_ptr + offs_n[:, None] * stride_v_n + offsets_d[None, :] * stride_v_d
+        V_w = tl.load(v_ptrs_w, mask=mask_n[:, None] & mask_d[None, :], other=0.0)
+        
+        S = tl.dot(Q_O.to(K_O_w.dtype), K_O_w, allow_tf32=False) * sm_scale
+        S = tl.where(t_offs[:, None] >= offs_n[None, :], S, float('-inf'))
+        P = tl.exp(S - LSE[:, None])
+        
+        dY_O_V = tl.dot(dY_O.to(V_w.dtype), tl.trans(V_w), allow_tf32=False)
+        dP = P * (dY_O_V - D_val[:, None])
+        
+        dQ_O_acc += tl.dot(dP.to(K_O_w.dtype), tl.trans(K_O_w), allow_tf32=False) * sm_scale
+        
     # 4. Write outputs to HBM
     dmix_g_ptrs = b_h_dmix_g_ptr + t_offs[:, None] * stride_dmix_g_n
     tl.store(dmix_g_ptrs, d_mix_g_val[:, None], mask=mask_t[:, None])
@@ -207,9 +228,12 @@ def hofa_bwd_router_kernel(
     LSE_ptrs = b_h_LSE_ptr + t_offs * stride_LSE_n
     tl.store(LSE_ptrs, LSE, mask=mask_t)
     
+    b_h_dQ_ptr = dQ_ptr + pid_b * stride_dq_b + pid_h * stride_dq_h
+    dq_o_ptrs = b_h_dQ_ptr + t_offs[:, None] * stride_dq_n + offsets_r[None, :] * stride_dq_d
+    tl.store(dq_o_ptrs, dQ_O_acc.to(dQ_ptr.dtype.element_ty), mask=mask_t[:, None] & mask_r[None, :])
+    
     # 5. Reconstruct states and compute inlier Q gradient (dQ_J) token-by-token
     S_curr = S_in
-    b_h_dQ_ptr = dQ_ptr + pid_b * stride_dq_b + pid_h * stride_dq_h
     for i in range(BLOCK_M):
         mask_ti = start + i < N
         if mask_ti:
@@ -244,13 +268,13 @@ def hofa_bwd_router_kernel(
         'perf_model': None,
         'top_k': None
     },
-    restore_value=['dQ_ptr']
+    restore_value=[]
 )
 @triton.jit
-def hofa_bwd_monolithic_kernel(
+def hofa_bwd_dkv_kernel(
     Q_ptr, K_ptr, V_ptr, log_gamma_ptr, states_in_ptr,
     dy_ptr, dY_out_ptr, mix_g_ptr, D_ptr, LSE_ptr,
-    dQ_ptr, dK_ptr, dV_ptr, dlog_gamma_ptr,
+    dK_ptr, dV_ptr, dlog_gamma_ptr,
     N, r, j, j_padded: tl.constexpr, d_head, d_head_padded: tl.constexpr,
     stride_q_b, stride_q_h, stride_q_n, stride_q_d,
     stride_k_b, stride_k_h, stride_k_n, stride_k_d,
@@ -262,7 +286,6 @@ def hofa_bwd_monolithic_kernel(
     stride_mix_g_b, stride_mix_g_h, stride_mix_g_n,
     stride_D_b, stride_D_h, stride_D_n,
     stride_LSE_b, stride_LSE_h, stride_LSE_n,
-    stride_dq_b, stride_dq_h, stride_dq_n, stride_dq_d,
     stride_dk_b, stride_dk_h, stride_dk_n, stride_dk_d,
     stride_dv_b, stride_dv_h, stride_dv_n, stride_dv_d,
     stride_dlog_gamma_b, stride_dlog_gamma_h, stride_dlog_gamma_n,
@@ -305,7 +328,6 @@ def hofa_bwd_monolithic_kernel(
     b_h_D_ptr = D_ptr + pid_b * stride_D_b + pid_h * stride_D_h
     b_h_LSE_ptr = LSE_ptr + pid_b * stride_LSE_b + pid_h * stride_LSE_h
     
-    b_h_dQ_ptr = dQ_ptr + pid_b * stride_dq_b + pid_h * stride_dq_h
     b_h_dK_ptr = dK_ptr + pid_b * stride_dk_b + pid_h * stride_dk_h
     b_h_dV_ptr = dV_ptr + pid_b * stride_dv_b + pid_h * stride_dv_h
     b_h_dlog_gamma_ptr = dlog_gamma_ptr + pid_b * stride_dlog_gamma_b + pid_h * stride_dlog_gamma_h
@@ -389,12 +411,8 @@ def hofa_bwd_monolithic_kernel(
         
         dK_O_acc += tl.dot(tl.trans(dP_O.to(Q_O_w.dtype)), Q_O_w, allow_tf32=False) * sm_scale
         
-        dQ_O_w = tl.dot(dP_O.to(K_O_v.dtype), K_O_v, allow_tf32=False) * sm_scale
-        dq_o_ptrs = b_h_dQ_ptr + t_offs_w[:, None] * stride_dq_n + offsets_r[None, :] * stride_dq_d
-        tl.atomic_add(dq_o_ptrs, dQ_O_w.to(dQ_ptr.dtype.element_ty), mask=mask_tw[:, None] & mask_r[None, :])
-        
     # Process local block w == v
-    q_o_ptrs_v = b_h_q_ptr + t_offs_v[:, None] * stride_q_n + offsets_r[None, :] * stride_dq_d
+    q_o_ptrs_v = b_h_q_ptr + t_offs_v[:, None] * stride_q_n + offsets_r[None, :] * stride_q_d
     Q_O_v = tl.load(q_o_ptrs_v, mask=mask_tv[:, None] & mask_r[None, :], other=0.0)
     
     dy_out_ptrs_v = b_h_dy_out_ptr + t_offs_v[:, None] * stride_dy_out_n + offsets_d[None, :] * stride_dy_out_d
@@ -419,10 +437,6 @@ def hofa_bwd_monolithic_kernel(
     dP_O_v = P_O_v * (dY_O_V_v - D_v[:, None])
     
     dK_O_acc += tl.dot(tl.trans(dP_O_v.to(Q_O_v.dtype)), Q_O_v, allow_tf32=False) * sm_scale
-    
-    dQ_O_v_local = tl.dot(dP_O_v.to(K_O_v.dtype), K_O_v, allow_tf32=False) * sm_scale
-    dq_o_ptrs_v = b_h_dQ_ptr + t_offs_v[:, None] * stride_dq_n + offsets_r[None, :] * stride_dq_d
-    tl.atomic_add(dq_o_ptrs_v, dQ_O_v_local.to(dQ_ptr.dtype.element_ty), mask=mask_tv[:, None] & mask_r[None, :])
     
     # Process local GLA scan inside chunk v
     dy_ptrs_v = b_h_dy_ptr + t_offs_v[:, None] * stride_dy_n + offsets_d[None, :] * stride_dy_d
@@ -607,10 +621,10 @@ class HOFAAttentionFunction(torch.autograd.Function):
         
         grid_mono = (triton.cdiv(N, chunk_size), B * H)
         
-        hofa_bwd_monolithic_kernel[grid_mono](
+        hofa_bwd_dkv_kernel[grid_mono](
             Q, K, V, log_gamma, states_in,
             dy, dY_out, mix_g, D, LSE,
-            dQ, dK, dV, dlog_gamma,
+            dK, dV, dlog_gamma,
             N, r, j, j_padded, d_head, d_head_padded,
             Q.stride(0), Q.stride(1), Q.stride(2), Q.stride(3),
             K.stride(0), K.stride(1), K.stride(2), K.stride(3),
@@ -622,7 +636,6 @@ class HOFAAttentionFunction(torch.autograd.Function):
             mix_g.stride(0), mix_g.stride(1), mix_g.stride(2),
             D.stride(0), D.stride(1), D.stride(2),
             LSE.stride(0), LSE.stride(1), LSE.stride(2),
-            dQ.stride(0), dQ.stride(1), dQ.stride(2), dQ.stride(3),
             dK.stride(0), dK.stride(1), dK.stride(2), dK.stride(3),
             dV.stride(0), dV.stride(1), dV.stride(2), dV.stride(3),
             dlog_gamma.stride(0), dlog_gamma.stride(1), dlog_gamma.stride(2),

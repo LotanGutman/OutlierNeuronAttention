@@ -177,7 +177,56 @@ def test_hofa_bwd_decay_safety():
     # Test edge case: gate_logits is very positive (meaning gamma is close to 0, e.g. logsigmoid(-15))
     run_test(B=1, H=2, N=128, d_head=64, r=32, chunk_size=64, gate_logits_val=15.0)
     
+def test_full_module_gradients():
+    from src.config import ModelConfig
+    from src.HybridOutlierFactorizedAttention import HybridOutlierFactorizedAttention as HOFA_Triton
+    from src.HybridOutlierFactorizedAttentionTrain import HybridOutlierFactorizedAttention as HOFA_Torch
+    
+    device = 'cuda'
+    cfg = ModelConfig(
+        d_model=256,
+        num_heads=4,
+        r=16,
+        chunk_size=16,
+        use_rope=False # Disable RoPE to ensure perfect mathematically equivalent gradients without in-place rotation artifacts
+    )
+    
+    B, seq_len = 2, 512
+    print(f"\n--- Testing Full Module B={B}, seq_len={seq_len}, d_model={cfg.d_model}, r={cfg.r} ---")
+    
+    model_triton = HOFA_Triton(cfg).to(device).to(torch.bfloat16)
+    model_torch = HOFA_Torch(cfg).to(device).to(torch.bfloat16)
+    
+    # Sync weights
+    model_torch.load_state_dict(model_triton.state_dict())
+    
+    x1 = torch.randn(B, seq_len, cfg.d_model, device=device, dtype=torch.bfloat16).requires_grad_(True)
+    x2 = x1.clone().detach().requires_grad_(True)
+    
+    out1 = model_triton(x1)
+    out2 = model_torch(x2)
+    
+    loss1 = out1.sum()
+    loss1.backward()
+    
+    loss2 = out2.sum()
+    loss2.backward()
+    
+    def check_module_grad(name, grad_triton, grad_torch):
+        if grad_triton is None or grad_torch is None:
+            return
+        diff = (grad_triton - grad_torch).abs()
+        max_diff = diff.max().item()
+        mean_diff = diff.mean().item()
+        print(f"  {name}: max_diff={max_diff:.6f}, mean_diff={mean_diff:.6f}")
+
+    check_module_grad("Input x", x1.grad, x2.grad)
+    for name, param in model_triton.named_parameters():
+        param_torch = dict(model_torch.named_parameters())[name]
+        check_module_grad(name, param.grad, param_torch.grad)
+        
 if __name__ == '__main__':
     test_hofa_bwd_correctness()
     test_hofa_bwd_decay_safety()
+    test_full_module_gradients()
     print("ALL TESTS PASSED SUCCESSFULLY!")
