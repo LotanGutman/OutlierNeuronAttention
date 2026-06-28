@@ -3,22 +3,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 import os
 import sys
+from torch.utils.flop_counter import FlopCounterMode
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, ScalarFormatter
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.HybridOutlierFactorizedAttention import HybridOutlierFactorizedAttention
-from src.config import ModelConfig
-from benchmarks.benchmarks_configs import CACHE_PATH
+from benchmarks.benchmarks_configs import CACHE_PATH, TrainingExperimentConfig
 
 class StandardMHAWrapper(nn.Module):
     def __init__(self, d_head, num_heads):
         super().__init__()
         self.d_head = d_head
         self.num_heads = num_heads
-        self.W_q = nn.Identity()
-        self.W_k = nn.Identity()
-        self.W_v = nn.Identity()
-        self.out_proj = nn.Identity()
         
     def forward(self, x):
         B, N, D = x.shape
@@ -30,108 +28,86 @@ class StandardMHAWrapper(nn.Module):
         Y = Y.transpose(1, 2).reshape(B, N, D)
         return Y
 
-def profile_fwd_bwd(model, x, warmup=3, active=5):
-    for _ in range(warmup):
+def count_flops_fwd_bwd(model, x):
+    # Warmup and allocate gradients
+    if x.grad is not None:
+        x.grad.zero_()
+    out = model(x)
+    loss = out.sum()
+    loss.backward(retain_graph=True)
+    
+    with FlopCounterMode(display=False) as flop_counter:
         if x.grad is not None:
             x.grad.zero_()
         out = model(x)
         loss = out.sum()
         loss.backward(retain_graph=True)
-            
-    torch.cuda.synchronize()
-    torch.cuda.reset_peak_memory_stats()
-    
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-    
-    start_event.record()
-    for _ in range(active):
-        if x.grad is not None:
-            x.grad.zero_()
-        out = model(x)
-        loss = out.sum()
-        loss.backward(retain_graph=True)
-            
-    end_event.record()
-    torch.cuda.synchronize()
-    
-    latency = start_event.elapsed_time(end_event) / active
-    memory = torch.cuda.max_memory_allocated() / (1024 ** 2)
-    return latency, memory
+        
+    return flop_counter.get_total_flops()
 
-def main():
-    device = "cuda"
-    seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+def run_profiling_experiment(config: TrainingExperimentConfig, force_rerun: bool = False):
+    device = config.device
+    model_cfg = config.model_config
     
-    model_cfg = ModelConfig(d_model=256, num_heads=4, r=16, chunk_size=64)
-    d_head = model_cfg.d_head
-    num_heads = model_cfg.num_heads
-    
-    hofa = HybridOutlierFactorizedAttention(model_cfg).to(device).to(torch.bfloat16)
-    hofa.W_q = hofa.W_k = hofa.W_v = hofa.out_proj = nn.Identity()
-    hofa.train()
-    
-    mha = StandardMHAWrapper(d_head, num_heads).to(device).to(torch.bfloat16)
-    mha.train()
-    
-    cache_path = os.path.join(CACHE_PATH, "profile_training_cache.pt")
-    force_rerun = False
-    
+    cache_path = os.path.join(CACHE_PATH, config.cache_file_name)
     if os.path.exists(cache_path) and not force_rerun:
         print(f"Loading cached results from {cache_path}")
         results = torch.load(cache_path)
-        plot_training_results(results, cache_path)
     else:
         results = []
+        d_head = model_cfg.d_head
+        num_heads = model_cfg.num_heads
+        
+        hofa = HybridOutlierFactorizedAttention(model_cfg).to(device).to(torch.bfloat16)
+        hofa.W_q = hofa.W_k = hofa.W_v = hofa.out_proj = nn.Identity()
+        hofa.train()
+        
+        mha = StandardMHAWrapper(d_head, num_heads).to(device).to(torch.bfloat16)
+        mha.train()
         
         print("=" * 80)
-        print(f"Training Profiling (Fwd+Bwd) (d_model={model_cfg.d_model}, num_heads={num_heads}, r={model_cfg.r})")
+        print(f"Training Profiling (Fwd+Bwd FLOPS) (d_model={model_cfg.d_model}, num_heads={num_heads}, r={model_cfg.r})")
         print("=" * 80)
-        print(f"{'Seq Len':<10} | {'Model':<6} | {'Latency (ms)':<15} | {'Max VRAM (MB)':<15}")
+        print(f"{'Seq Len':<10} | {'Model':<6} | {'Total FLOPs':<20}")
         print("-" * 80)
         
-        for seq_len in seq_lengths:
+        for seq_len in config.seq_lengths:
             x = torch.randn(1, seq_len, model_cfg.d_model, device=device, dtype=torch.bfloat16).requires_grad_(True)
             
-            # Profile MHA
             try:
-                lat_mha, mem_mha = profile_fwd_bwd(mha, x)
-                print(f"{seq_len:<10} | {'MHA':<6} | {lat_mha:<15.2f} | {mem_mha:<15.2f}")
+                flops_mha = count_flops_fwd_bwd(mha, x)
+                print(f"{seq_len:<10} | {'MHA':<6} | {flops_mha:<20}")
             except Exception as e:
-                lat_mha, mem_mha = None, None
-                print(f"{seq_len:<10} | {'MHA':<6} | {'FAILED/OOM':<15} | {'-':<15}")
+                flops_mha = None
+                print(f"{seq_len:<10} | {'MHA':<6} | {'FAILED/OOM':<20}")
                 
-            # Profile HOFA
             try:
-                lat_hofa, mem_hofa = profile_fwd_bwd(hofa, x)
-                print(f"{seq_len:<10} | {'HOFA':<6} | {lat_hofa:<15.2f} | {mem_hofa:<15.2f}")
+                flops_hofa = count_flops_fwd_bwd(hofa, x)
+                print(f"{seq_len:<10} | {'HOFA':<6} | {flops_hofa:<20}")
             except Exception as e:
-                lat_hofa, mem_hofa = None, None
-                print(f"{seq_len:<10} | {'HOFA':<6} | {'FAILED/OOM':<15} | {'-':<15}")
+                flops_hofa = None
+                print(f"{seq_len:<10} | {'HOFA':<6} | {'FAILED/OOM':<20}")
                 
             print("-" * 80)
-            results.append((seq_len, lat_mha, mem_mha, lat_hofa, mem_hofa))
+            results.append((seq_len, flops_mha, flops_hofa))
             
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         torch.save(results, cache_path)
         print(f"Results saved to {cache_path}")
-        plot_training_results(results, cache_path)
+        
+    return results
 
-
-def plot_training_results(results, cache_path):
-    import numpy as np
-    import os
-    from matplotlib.ticker import FuncFormatter, ScalarFormatter
-    import matplotlib.pyplot as plt
-
-    valid_lens = [r[0] for r in results if r[1] is not None and r[3] is not None]
+def plot_training_results(results):
+    valid_lens = [r[0] for r in results if r[1] is not None and r[2] is not None]
     if not valid_lens:
         return
         
-    times_mha = [r[1] for r in results if r[1] is not None and r[3] is not None]
-    times_hyb = [r[3] for r in results if r[1] is not None and r[3] is not None]
-    mems_mha = [r[2] for r in results if r[1] is not None and r[3] is not None]
-    mems_hyb = [r[4] for r in results if r[1] is not None and r[3] is not None]
+    flops_mha = [r[1] for r in results if r[1] is not None and r[2] is not None]
+    flops_hyb = [r[2] for r in results if r[1] is not None and r[2] is not None]
+
+    # Convert to GFLOPs for better readability on log scale
+    flops_mha_g = [f / 1e9 for f in flops_mha]
+    flops_hyb_g = [f / 1e9 for f in flops_hyb]
 
     plt.rcParams.update({
         "font.size": 12, 
@@ -145,47 +121,27 @@ def plot_training_results(results, cache_path):
 
     formatter_x = FuncFormatter(format_ticks_x)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5.5))
-    
-    times_mha_s = [t / 1000 for t in times_mha]
-    times_hyb_s = [t / 1000 for t in times_hyb]
+    fig, ax = plt.subplots(figsize=(8, 6))
     
     style_mha = {"marker": "o", "color": "#D55E00", "linewidth": 2.5, "markersize": 7}
     style_hyb = {"marker": "s", "color": "#0072B2", "linewidth": 2.5, "markersize": 7}
     
-    # --- Plot 1: Latency ---
-    ax1.plot(valid_lens, times_mha_s, label="MHA (FlashAttention)", **style_mha)
-    ax1.plot(valid_lens, times_hyb_s, label="HOFA (Ours)", **style_hyb)
-    ax1.set_xscale("log", base=2)
-    ax1.set_yscale("log", base=10) 
-    ax1.xaxis.set_major_formatter(formatter_x)
-    ax1.set_xticks(valid_lens)
-    ax1.set_xlabel("Sequence Length ($N$)")
-    ax1.set_ylabel("Fwd+Bwd Latency [s]")
-    ax1.set_title("Training Latency Scaling")
-    ax1.grid(True, which="both", linestyle=":", alpha=0.6)
-
-    # Convert MB to GB
-    mems_mha_gb = [m / 1024 for m in mems_mha]
-    mems_hyb_gb = [m / 1024 for m in mems_hyb]
-
-    # --- Plot 2: Memory ---
-    ax2.plot(valid_lens, mems_mha_gb, label="MHA (FlashAttention)", **style_mha)
-    ax2.plot(valid_lens, mems_hyb_gb, label="HOFA (Ours)", **style_hyb)
-    ax2.set_xscale("log", base=2)
-    ax2.set_yscale("log", base=10) 
-    ax2.xaxis.set_major_formatter(formatter_x)
-    ax2.set_xticks(valid_lens)
-    ax2.set_xlabel("Sequence Length ($N$)")
-    ax2.set_ylabel("Peak VRAM [GB]")
-    ax2.set_title("Training Memory Scaling")
-    ax2.grid(True, which="both", linestyle=":", alpha=0.6)
+    ax.plot(valid_lens, flops_mha_g, label="MHA (FlashAttention)", **style_mha)
+    ax.plot(valid_lens, flops_hyb_g, label="HOFA (Ours)", **style_hyb)
     
-    handles, labels = ax1.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.05), ncol=2, frameon=False, fontsize=12)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log", base=10) 
+    ax.xaxis.set_major_formatter(formatter_x)
+    ax.set_xticks(valid_lens)
+    
+    ax.set_xlabel("Sequence Length ($N$)")
+    ax.set_ylabel("Fwd+Bwd Compute [GFLOPs]")
+    ax.set_title("Training FLOP Scaling")
+    ax.grid(True, which="both", linestyle=":", alpha=0.6)
+
+    ax.legend(loc="upper left", frameon=False, fontsize=12)
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.85) 
     
     plot_path = "data/plots/profiling/profile_training.pdf"
     os.makedirs(os.path.dirname(plot_path), exist_ok=True)
@@ -193,7 +149,10 @@ def plot_training_results(results, cache_path):
     print(f"\nProfile plot saved to {plot_path}")
     plt.close()
 
-
+def main():
+    config = TrainingExperimentConfig()
+    results = run_profiling_experiment(config, force_rerun=True)
+    plot_training_results(results)
 
 if __name__ == "__main__":
     main()

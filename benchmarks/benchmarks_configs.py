@@ -68,3 +68,12 @@ class KEffExperimentConfig:
     dataset_config: str = "sample-10BT"
     dataset_split: str = "train"
     cache_file_name: str = "layerwise_cumsum_results.pkl"
+
+@dataclass
+class TrainingExperimentConfig:
+    model_config: ModelConfig = field(
+        default_factory=lambda: ModelConfig(d_model=256, num_heads=4, r=16, chunk_size=64)
+    )
+    seq_lengths: tuple[int, ...] = (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536)
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_file_name: str = "profile_training_flops.pt"
