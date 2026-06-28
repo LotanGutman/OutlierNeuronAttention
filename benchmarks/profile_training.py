@@ -61,7 +61,7 @@ def profile_fwd_bwd(model, x, warmup=3, active=5):
 
 def main():
     device = "cuda"
-    seq_lengths = [32768, 65536, 131072]
+    seq_lengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
     
     model_cfg = ModelConfig(d_model=256, num_heads=4, r=16, chunk_size=64)
     d_head = model_cfg.d_head
@@ -75,11 +75,12 @@ def main():
     mha.train()
     
     cache_path = os.path.join(CACHE_PATH, "profile_training_cache.pt")
-    force_rerun = True
+    force_rerun = False
     
     if os.path.exists(cache_path) and not force_rerun:
         print(f"Loading cached results from {cache_path}")
         results = torch.load(cache_path)
+        plot_training_results(results, cache_path)
     else:
         results = []
         
@@ -114,6 +115,90 @@ def main():
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         torch.save(results, cache_path)
         print(f"Results saved to {cache_path}")
+        plot_training_results(results, cache_path)
+
+
+def plot_training_results(results, cache_path):
+    import numpy as np
+    import os
+    from matplotlib.ticker import FuncFormatter, ScalarFormatter
+    import matplotlib.pyplot as plt
+
+    valid_lens = [r[0] for r in results if r[1] is not None and r[3] is not None]
+    if not valid_lens:
+        return
+        
+    times_mha = [r[1] for r in results if r[1] is not None and r[3] is not None]
+    times_hyb = [r[3] for r in results if r[1] is not None and r[3] is not None]
+    mems_mha = [r[2] for r in results if r[1] is not None and r[3] is not None]
+    mems_hyb = [r[4] for r in results if r[1] is not None and r[3] is not None]
+
+    plt.rcParams.update({
+        "font.size": 12, 
+        "font.family": "serif",
+        "axes.titlesize": 14,
+        "axes.labelsize": 12
+    })
+
+    def format_ticks_x(x, pos):
+        return f"{int(x/1024)}k" if x >= 1024 else str(int(x))
+
+    formatter_x = FuncFormatter(format_ticks_x)
+    formatter_y = ScalarFormatter()
+    formatter_y.set_scientific(False)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5.5))
+    
+    times_mha_s = [t / 1000 for t in times_mha]
+    times_hyb_s = [t / 1000 for t in times_hyb]
+    
+    style_mha = {"marker": "o", "color": "#D55E00", "linewidth": 2.5, "markersize": 7}
+    style_hyb = {"marker": "s", "color": "#0072B2", "linewidth": 2.5, "markersize": 7}
+    
+    # --- Plot 1: Latency ---
+    ax1.plot(valid_lens, times_mha_s, label="MHA (FlashAttention)", **style_mha)
+    ax1.plot(valid_lens, times_hyb_s, label="HOFA (Ours)", **style_hyb)
+    ax1.set_xscale("log", base=2)
+    ax1.set_yscale("log", base=10) 
+    ax1.xaxis.set_major_formatter(formatter_x)
+    ax1.yaxis.set_major_formatter(formatter_y)
+    ax1.set_xticks(valid_lens)
+    ax1.set_xlabel("Sequence Length ($N$)")
+    ax1.set_ylabel("Fwd+Bwd Latency [s]")
+    ax1.set_title("Training Latency Scaling")
+    ax1.grid(True, which="both", linestyle=":", alpha=0.6)
+
+    # Convert MB to GB
+    mems_mha_gb = [m / 1024 for m in mems_mha]
+    mems_hyb_gb = [m / 1024 for m in mems_hyb]
+
+    # --- Plot 2: Memory ---
+    ax2.plot(valid_lens, mems_mha_gb, label="MHA (FlashAttention)", **style_mha)
+    ax2.plot(valid_lens, mems_hyb_gb, label="HOFA (Ours)", **style_hyb)
+    ax2.set_xscale("log", base=2)
+    ax2.set_yscale("log", base=10) 
+    ax2.xaxis.set_major_formatter(formatter_x)
+    ax2.yaxis.set_major_formatter(formatter_y)
+    ax2.set_yticks([0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 4.0])
+    ax2.set_xticks(valid_lens)
+    ax2.set_xlabel("Sequence Length ($N$)")
+    ax2.set_ylabel("Peak VRAM [GB]")
+    ax2.set_title("Training Memory Scaling")
+    ax2.grid(True, which="both", linestyle=":", alpha=0.6)
+    
+    handles, labels = ax1.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.05), ncol=2, frameon=False, fontsize=12)
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.85) 
+    
+    plot_path = "data/plots/profiling/profile_training.pdf"
+    os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+    print(f"\nProfile plot saved to {plot_path}")
+    plt.close()
+
+
 
 if __name__ == "__main__":
     main()

@@ -257,6 +257,7 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     ax2.set_yscale('log', base=10) 
     ax2.xaxis.set_major_formatter(formatter_x)
     ax2.yaxis.set_major_formatter(formatter_y)
+    ax2.set_yticks([0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 4.0])
     ax2.set_xticks(valid_lens)
     ax2.set_xlabel('Sequence Length ($N$)')
     ax2.set_ylabel('Peak VRAM [GB]')
@@ -318,4 +319,4 @@ if __name__ == "__main__":
     
     model_cfg = ModelConfig(r=16)
     config = PrefillExperimentConfig(model_config=model_cfg)
-    run_profiling_experiment(config=config, force_rerun=True)
+    run_profiling_experiment(config=config, force_rerun=False)
