@@ -296,8 +296,8 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     ax3.xaxis.set_major_formatter(formatter_x)
     ax3.set_xticks(vl_speed)
     ax3.set_xlabel('Sequence Length ($N$)')
-    ax3.set_ylabel(rf'Speedup ($\times$ over FlashAttention)')
-    ax3.set_title('Hybrid advantage grows\nwith sequence length')
+    ax3.set_ylabel(rf'Speedup ($\times$ over MHA)')
+    ax3.set_title('Prefill Speedup over MHA')
     ax3.grid(True, linestyle=':', alpha=0.6)
     
     handles, labels = ax1.get_legend_handles_labels()

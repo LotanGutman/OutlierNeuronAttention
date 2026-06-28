@@ -175,6 +175,66 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     ax1.set_title('Decoding Throughput')
     ax1.grid(True, linestyle=':', alpha=0.6)
 
+    # Inset zoom for Decoding Throughput (ax1)
+    from matplotlib.patches import ConnectionPatch
+    ax1_ins = ax1.inset_axes([0.42, 0.48, 0.45, 0.45])
+    ax1_ins.patch.set_facecolor('white')
+    ax1_ins.patch.set_alpha(0.95)
+    for spine in ax1_ins.spines.values():
+        spine.set_linewidth(1.5)
+        
+    ax1_ins.plot(valid_mha_lens, valid_mha_times, marker='o', color='#D55E00', lw=2.5)
+    ax1_ins.plot(valid_hyb_lens, valid_hyb_times, marker='s', color='#0072B2', lw=2.5)
+    ax1_ins.set_xscale('log', base=2)
+    ax1_ins.set_yscale('log', base=10)
+    
+    zoom_start_len = 16384
+    zoom_end_len = max(valid_mha_lens) if valid_mha_lens else 131072
+    if zoom_start_len in lens and zoom_end_len in lens:
+        ax1_ins.set_xlim(zoom_start_len * 0.85, zoom_end_len * 1.15)
+        
+        idx_start = lens.index(zoom_start_len)
+        idx_end = lens.index(zoom_end_len)
+        
+        min_y = min(valid_mha_times[idx_end], valid_hyb_times[idx_end]) if idx_end < len(valid_mha_times) and idx_end < len(valid_hyb_times) else 10
+        max_y = max(valid_mha_times[idx_start], valid_hyb_times[idx_start]) if idx_start < len(valid_mha_times) and idx_start < len(valid_hyb_times) else 1000
+        ax1_ins.set_ylim(min_y * 0.5, max_y * 1.5)
+        
+        ax1_ins.xaxis.set_major_formatter(formatter_x)
+        
+        ticks_ins = [zoom_start_len]
+        mid_len = zoom_start_len * 4
+        if mid_len < zoom_end_len:
+            ticks_ins.append(mid_len)
+        ticks_ins.append(zoom_end_len)
+        ax1_ins.set_xticks(ticks_ins)
+        
+        ax1_ins.tick_params(axis='both', which='major', labelsize=10)
+        ax1_ins.grid(True, which="both", linestyle=':', alpha=0.4)
+        
+        if idx_end < len(valid_mha_times) and idx_end < len(valid_hyb_times):
+            val_mha = valid_mha_times[idx_end]
+            val_hyb = valid_hyb_times[idx_end]
+            improvement = (val_hyb - val_mha) / val_mha * 100.0
+            ax1_ins.annotate(
+                '', xy=(zoom_end_len, val_hyb), xytext=(zoom_end_len, val_mha),
+                arrowprops=dict(arrowstyle="<->", color='black', lw=1.5)
+            )
+            ax1_ins.text(zoom_end_len * 1.15, (val_mha * val_hyb) ** 0.5, f'+{improvement:.1f}%', 
+                         color='black', va='center', ha='left', fontsize=12, fontweight='bold', clip_on=False)
+                         
+        y_start = min_y
+        con1 = ConnectionPatch(xyA=(zoom_start_len, ax1_ins.get_ylim()[0]), xyB=(zoom_start_len, y_start), 
+                               coordsA="data", coordsB="data", 
+                               axesA=ax1_ins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
+        ax1.add_artist(con1)
+        
+        y_end = max_y
+        con2 = ConnectionPatch(xyA=(zoom_end_len, ax1_ins.get_ylim()[0]), xyB=(zoom_end_len, y_end), 
+                               coordsA="data", coordsB="data", 
+                               axesA=ax1_ins, axesB=ax1, color="gray", alpha=0.6, lw=1.5)
+        ax1.add_artist(con2)
+
     ax2.plot(lens, c_mha, marker='o', color='#D55E00', lw=2.5, label='MHA')
     ax2.plot(lens, c_hyb, marker='s', color='#0072B2', lw=2.5, label='HOFA, r = 16 (Ours)')
     
@@ -185,6 +245,21 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     ax2.set_ylabel('KV Cache Size (GB)')
     ax2.set_title('KV Cache Footprint')
     ax2.grid(True, linestyle=':', alpha=0.6)
+
+    # Add two-sided arrow for KV Cache Size improvement
+    max_len = max(lens)
+    idx_max = lens.index(max_len)
+    if not np.isnan(c_mha[idx_max]) and not np.isnan(c_hyb[idx_max]) and c_hyb[idx_max] > 0:
+        val_mha = c_mha[idx_max]
+        val_hyb = c_hyb[idx_max]
+        improvement = (val_mha - val_hyb) / val_mha * 100.0
+        
+        ax2.annotate(
+            '', xy=(max_len, val_hyb), xytext=(max_len, val_mha),
+            arrowprops=dict(arrowstyle="<->", color='black', lw=1.5)
+        )
+        ax2.text(max_len * 1.15, (val_mha + val_hyb) / 2, f'-{improvement:.1f}%', 
+                 color='black', va='center', ha='left', fontsize=12, fontweight='bold', clip_on=False)
 
     # --- Plot 3: Speedup ---
     speedups = [t_hyb[i] / t_mha[i] for i in range(len(lens))]
