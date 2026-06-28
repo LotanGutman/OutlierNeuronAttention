@@ -108,21 +108,26 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # We pass the full Q and K to the kernels along with the routing indices.
         # This completely avoids O(N * d) memory overhead from .gather()
         
-        Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.r, self.chunk_size)
-        del gate_logits, log_gamma
-        
-        sm_scale = (self.d_head / self.r) ** 0.5
-        
-        # Apply inlier norm and scale
-        Y_I = self.inlier_norm(Y_I) * self.gla_scale
-        
-        # Pre-allocate Final Output and blend the pre-scaled Y_I
-        Y_Final = ((1.0 - mix_g) * Y_I)
-        
-        # Run exact attention, adding mix_g * exact directly into Y_Final via True Kernel Fusion
-        exact_attention_triton(Q, K, V, self.r, sm_scale, mix_g.squeeze(-1), out=Y_Final)
-        del Q, K, V, Y_I
-        
+        if self.training:
+            from src.hofa_bwd_kernels import HOFAAttentionFunction
+            Y_Final = HOFAAttentionFunction.apply(Q, K, V, gate_logits, mix_g, self.gla_scale, self.r, self.chunk_size)
+            del Q, K, V
+        else:
+            Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.r, self.chunk_size)
+            del gate_logits, log_gamma
+            
+            sm_scale = (self.d_head / self.r) ** 0.5
+            
+            # Apply inlier norm and scale
+            Y_I = self.inlier_norm(Y_I) * self.gla_scale
+            
+            # Pre-allocate Final Output and blend the pre-scaled Y_I
+            Y_Final = ((1.0 - mix_g) * Y_I)
+            
+            # Run exact attention, adding mix_g * exact directly into Y_Final via True Kernel Fusion
+            exact_attention_triton(Q, K, V, self.r, sm_scale, mix_g.squeeze(-1), out=Y_Final)
+            del Q, K, V, Y_I
+            
         Y = Y_Final
         
         # Merge heads

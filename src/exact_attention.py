@@ -98,8 +98,28 @@ def exact_attention_triton(q, k, v, r, sm_scale, mix_g, out=None):
     if out is None:
         out = torch.zeros_like(v)
     
+    BLOCK_DMODEL_V = triton.next_power_of_2(D_v)
+    BLOCK_DMODEL_QK = max(triton.next_power_of_2(r), 16)
+    
+    # Query actual GPU shared memory to pick safe block sizes.
+    try:
+        _props = triton.runtime.driver.active.utils.get_device_properties(0)
+        max_sram = _props["max_shared_mem"]
+    except (AttributeError, KeyError):
+        max_sram = torch.cuda.get_device_properties(q.device).shared_memory_per_block_optin
+    
+    # Estimate peak SRAM: acc[M,V]*4 + q[M,QK]*2 + k[N,QK]*2 + v[N,V]*2 + qk[M,N]*4
     BLOCK_M = 128
     BLOCK_N = 64
+    while BLOCK_M > 16:
+        est = (BLOCK_M * BLOCK_DMODEL_V * 4 + BLOCK_M * BLOCK_DMODEL_QK * 2
+               + BLOCK_N * BLOCK_DMODEL_QK * 2 + BLOCK_N * BLOCK_DMODEL_V * 2
+               + BLOCK_M * BLOCK_N * 4)
+        if est <= max_sram:
+            break
+        BLOCK_M //= 2
+        BLOCK_N //= 2
+    
     grid = (triton.cdiv(N_CTX, BLOCK_M), Z * H)
     
     _fwd_kernel[grid](
@@ -112,7 +132,7 @@ def exact_attention_triton(q, k, v, r, sm_scale, mix_g, out=None):
         mix_g.stride(0), mix_g.stride(1), mix_g.stride(2),
         Z, H, N_CTX, r,
         BLOCK_DMODEL_QK=max(triton.next_power_of_2(r), 16),
-        BLOCK_DMODEL_V=triton.next_power_of_2(D_v),
+        BLOCK_DMODEL_V=BLOCK_DMODEL_V,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
         num_warps=4,

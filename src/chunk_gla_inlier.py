@@ -67,7 +67,8 @@ def chunk_gla_fwd_kernel(
         g_cumsum = tl.cumsum(g_c, axis=0)
 
         diff = g_cumsum[:, None] - g_cumsum[None, :]
-        mask = tl.math.exp(diff) * tl.where(offsets_c[:, None] >= offsets_c[None, :], 1.0, 0.0)
+        diff = tl.where(offsets_c[:, None] >= offsets_c[None, :], diff, -float('inf'))
+        mask = tl.math.exp(diff)
 
 
 
@@ -129,7 +130,7 @@ class ChunkGLAInlier(torch.autograd.Function):
             K.stride(0), K.stride(1), K.stride(2), K.stride(3),
             V.stride(0), V.stride(1), V.stride(2), V.stride(3),
             log_gamma.stride(0), log_gamma.stride(1), log_gamma.stride(2),
-            states_in.stride(0), states_in.stride(1), states_in.stride(2), states_in.stride(3), states_in.stride(4),
+            states_in.stride(2), states_in.stride(0), states_in.stride(1), states_in.stride(3), states_in.stride(4),
             Y.stride(0), Y.stride(1), Y.stride(2), Y.stride(3),
             REQUIRES_GRAD=requires_grad
         )
