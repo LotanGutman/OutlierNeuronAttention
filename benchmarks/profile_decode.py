@@ -188,7 +188,7 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     ax1_ins.set_xscale('log', base=2)
     ax1_ins.set_yscale('log', base=10)
     
-    zoom_start_len = 16384
+    zoom_start_len = 65536
     zoom_end_len = max(valid_mha_lens) if valid_mha_lens else 131072
     if zoom_start_len in lens and zoom_end_len in lens:
         ax1_ins.set_xlim(zoom_start_len * 0.85, zoom_end_len * 1.15)
