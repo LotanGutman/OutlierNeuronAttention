@@ -162,7 +162,7 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     valid_hyb_times = [t for t in t_hyb if not np.isnan(t)]
     
     ax1.plot(valid_mha_lens, valid_mha_times, marker='o', color='#D55E00', lw=2.5, label='MHA')
-    ax1.plot(valid_hyb_lens, valid_hyb_times, marker='s', color='#0072B2', lw=2.5, label='HOFA (Ours)')
+    ax1.plot(valid_hyb_lens, valid_hyb_times, marker='s', color='#0072B2', lw=2.5, label='HOFA, r = 16 (Ours)')
     
     ax1.set_xscale('log', base=2)
     ax1.xaxis.set_major_formatter(formatter_x)
@@ -176,7 +176,7 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     ax1.grid(True, linestyle=':', alpha=0.6)
 
     ax2.plot(lens, c_mha, marker='o', color='#D55E00', lw=2.5, label='MHA')
-    ax2.plot(lens, c_hyb, marker='s', color='#0072B2', lw=2.5, label='HOFA (Ours)')
+    ax2.plot(lens, c_hyb, marker='s', color='#0072B2', lw=2.5, label='HOFA, r = 16 (Ours)')
     
     ax2.set_xscale('log', base=2)
     ax2.xaxis.set_major_formatter(formatter_x)

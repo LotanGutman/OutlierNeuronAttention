@@ -1,6 +1,6 @@
 """
 Profiling: Triton-Optimized HOFA vs. Standard MHA (FlashAttention).
-Measures forward-pass time (ms) and peak VRAM (GB) for seq lengths 512 to 524288.
+Measures forward-pass time (ms) and forward FLOPs for seq lengths up to 131k.
 """
 import torch
 import torch.nn.functional as F
@@ -8,25 +8,31 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
 import numpy as np
+from torch.utils.flop_counter import FlopCounterMode
 from src.HybridOutlierFactorizedAttention import HybridOutlierFactorizedAttention
 from src.config import ModelConfig, TrainingConfig
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 
 from benchmarks.benchmarks_configs import CACHE_PATH, PrefillExperimentConfig
 
-class StandardMHAWrapper:
+class StandardMHAWrapper(nn.Module):
     def __init__(self, attn_module):
+        super().__init__()
         self.d_head = attn_module.d_head
     
-    def __call__(self, x):
+    def forward(self, x):
         B, N, D = x.shape
         scale_factor = self.d_head ** 0.25
-        # x maps directly to Q, K, V since we killed the linear projections
         Q = (x / scale_factor).view(B, N, -1, self.d_head).transpose(1, 2)
         K = (x / scale_factor).view(B, N, -1, self.d_head).transpose(1, 2)
         V = x.view(B, N, -1, self.d_head).transpose(1, 2)
         Y = F.scaled_dot_product_attention(Q, K, V, is_causal=True, scale=1.0)
         return Y.transpose(1, 2).reshape(B, N, D)
+
+def count_flops_fwd(model, x):
+    with FlopCounterMode(display=False) as flop_counter:
+        _ = model(x)
+    return flop_counter.get_total_flops()
 
 def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperimentConfig(), warmup_steps=3, active_steps=10, force_rerun=True, save_results=True):
     model_cfg = config.model_config
@@ -39,31 +45,27 @@ def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperiment
     model_cfg.refresh_steps = 999999999
     hybrid_attn = HybridOutlierFactorizedAttention(model_cfg).to(device).eval()
     
-    # (Static routing doesn't need to update indices)
-    
-    # Replace the linear layers with Identity to instantly skip the O(N * D^2) compute
     hybrid_attn.W_q = nn.Identity()
     hybrid_attn.W_k = nn.Identity()
     hybrid_attn.W_v = nn.Identity()
             
-    mha = StandardMHAWrapper(hybrid_attn)
+    mha = StandardMHAWrapper(hybrid_attn).to(device).eval()
     
     if os.path.exists(cache_path) and not force_rerun:
         print(f"Loading cached results from {cache_path}")
         data = torch.load(cache_path)
-        times_mha, times_hyb, mems_mha, mems_hyb, valid_lens = data
+        times_mha, times_hyb, flops_mha, flops_hyb, valid_lens = data
     else:
         times_mha, times_hyb = [], []
-        mems_mha, mems_hyb = [], []
+        flops_mha, flops_hyb = [], []
         valid_lens = []
         
-        print(f"{'seq_len':<8} | {'MHA Time':<10} | {'MHA Mem':<10} | {'Hyb Time':<10} | {'Hyb Mem':<10}")
-        print("-" * 60)
+        print(f"{'seq_len':<8} | {'MHA Time':<10} | {'MHA FLOPs':<15} | {'Hyb Time':<10} | {'Hyb FLOPs':<15}")
+        print("-" * 70)
 
         for sl in seq_lengths:
-            torch.cuda.empty_cache() # Clean slate only once per seq length
+            torch.cuda.empty_cache() 
             
-            # Scale down x to prevent exponential blowup since Q=K=V now
             x = torch.randn(1, sl, model_cfg.d_model, device=device, dtype=torch.bfloat16) * 0.1
             
             # --- Standard MHA ---
@@ -71,8 +73,6 @@ def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperiment
                 with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
                     _ = mha(x)
                     torch.cuda.synchronize()
-                    
-                    torch.cuda.reset_peak_memory_stats()
                     
                     for _ in range(warmup_steps):
                         _ = mha(x)
@@ -88,10 +88,12 @@ def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperiment
                     torch.cuda.synchronize()
                     
                     t_mha = start.elapsed_time(end) / active_steps
-                    m_mha = torch.cuda.max_memory_allocated() / (1024**3)
+                    
+                    # Count FLOPs
+                    f_mha = count_flops_fwd(mha, x)
                     
                 times_mha.append(t_mha)
-                mems_mha.append(m_mha)
+                flops_mha.append(f_mha)
                 valid_lens.append(sl)
                 
             except torch.cuda.OutOfMemoryError:
@@ -103,8 +105,6 @@ def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperiment
                 with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
                     _ = hybrid_attn(x)
                     torch.cuda.synchronize()
-                    
-                    torch.cuda.reset_peak_memory_stats()
                     
                     for _ in range(warmup_steps):
                         _ = hybrid_attn(x)
@@ -120,27 +120,25 @@ def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperiment
                     torch.cuda.synchronize()
                     
                     t_hyb = start.elapsed_time(end) / active_steps
-                    m_hyb = torch.cuda.max_memory_allocated() / (1024**3)
+                    
+                    # Count FLOPs
+                    f_hyb = count_flops_fwd(hybrid_attn, x)
                     
                 times_hyb.append(t_hyb)
-                mems_hyb.append(m_hyb)
+                flops_hyb.append(f_hyb)
                 
             except torch.cuda.OutOfMemoryError:
                 print(f"Hybrid OOM at seq_len={sl}")
                 break
                 
-            print(f"{sl:<8d} | {t_mha:8.3f} ms | {m_mha:.3f} GB | {t_hyb:8.3f} ms | {m_hyb:.3f} GB")
+            print(f"{sl:<8d} | {t_mha:8.3f} ms | {f_mha:<15} | {t_hyb:8.3f} ms | {f_hyb:<15}")
             del x
 
         if save_results:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            torch.save((times_mha, times_hyb, mems_mha, mems_hyb, valid_lens), cache_path)
+            torch.save((times_mha, times_hyb, flops_mha, flops_hyb, valid_lens), cache_path)
 
-    plot_profile_results(data=(times_mha, times_hyb, mems_mha, mems_hyb, valid_lens), cache_path=cache_path, save_plot=save_results)
-
-
-
-
+    plot_profile_results(data=(times_mha, times_hyb, flops_mha, flops_hyb, valid_lens), cache_path=cache_path, save_plot=save_results)
 
 def plot_profile_results(data=None, cache_path=None, save_plot=True):
     import numpy as np
@@ -155,7 +153,7 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
             return
         data = torch.load(cache_path)
 
-    times_mha, times_hyb, mems_mha, mems_hyb, valid_lens = data
+    times_mha, times_hyb, flops_mha, flops_hyb, valid_lens = data
 
     if not valid_lens:
         return
@@ -186,7 +184,7 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     
     # --- Plot 1: Latency (Linear Y for the massive gap) ---
     ax1.plot(vl1, times_mha_s, label='MHA (FlashAttention)', **style_mha)
-    ax1.plot(vl2, times_hyb_s, label='HOFA (Ours)', **style_hyb)
+    ax1.plot(vl2, times_hyb_s, label='HOFA, r = 16 (Ours)', **style_hyb)
     ax1.set_xscale('log', base=2)
     ax1.set_yscale('linear') # Restored to linear for the big visual gap
     ax1.xaxis.set_major_formatter(formatter_x)
@@ -194,7 +192,7 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     ax1.set_xticks(valid_lens)
     ax1.set_xlabel('Sequence Length ($N$)')
     ax1.set_ylabel('Forward Pass Latency [s]')
-    ax1.set_title('Computational Scaling')
+    ax1.set_title('Computational Scaling (Time)')
     ax1.grid(True, which="both", linestyle=':', alpha=0.6)
 
     # Inset zoom
@@ -212,7 +210,7 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     
     common_len = min(len(times_mha_s), len(times_hyb_s))
     if common_len > 0:
-        zoom_seq_len = min(262144, valid_lens[common_len - 1])
+        zoom_seq_len = min(65536, valid_lens[common_len - 1])
         zoom_idx = valid_lens.index(zoom_seq_len)
         axins.set_xlim(512 * 0.85, zoom_seq_len * 1.15)
         zoom_max_y = max(times_mha_s[zoom_idx], times_hyb_s[zoom_idx])
@@ -250,18 +248,19 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
             ax1.text(max_len * 1.15, (val_mha + val_hyb) / 2, f'+{improvement:.1f}%', 
                      color='black', va='center', ha='left', fontsize=12, fontweight='bold')
     
-    # --- Plot 2: Memory (Log Y to show parallel scaling lines) ---
-    ax2.plot(valid_lens[:len(mems_mha)], mems_mha, label='MHA (FlashAttention)', **style_mha)
-    ax2.plot(valid_lens[:len(mems_hyb)], mems_hyb, label='HOFA (Ours)', **style_hyb)
+    # --- Plot 2: Forward FLOPs (Log Y to show parallel scaling lines) ---
+    flops_mha_g = [f / 1e9 for f in flops_mha]
+    flops_hyb_g = [f / 1e9 for f in flops_hyb]
+
+    ax2.plot(valid_lens[:len(flops_mha_g)], flops_mha_g, label='MHA (FlashAttention)', **style_mha)
+    ax2.plot(valid_lens[:len(flops_hyb_g)], flops_hyb_g, label='HOFA, r = 16 (Ours)', **style_hyb)
     ax2.set_xscale('log', base=2)
     ax2.set_yscale('log', base=10) 
     ax2.xaxis.set_major_formatter(formatter_x)
-    ax2.yaxis.set_major_formatter(formatter_y)
-    ax2.set_yticks([0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 4.0])
     ax2.set_xticks(valid_lens)
     ax2.set_xlabel('Sequence Length ($N$)')
-    ax2.set_ylabel('Peak VRAM [GB]')
-    ax2.set_title('Memory Scaling')
+    ax2.set_ylabel('Forward Compute [GFLOPs]')
+    ax2.set_title('Computational Scaling (FLOPs)')
     ax2.grid(True, which="both", linestyle=':', alpha=0.6)
     
     min_len = min(len(times_mha), len(times_hyb))
@@ -319,4 +318,4 @@ if __name__ == "__main__":
     
     model_cfg = ModelConfig(r=16)
     config = PrefillExperimentConfig(model_config=model_cfg)
-    run_profiling_experiment(config=config, force_rerun=False)
+    run_profiling_experiment(config=config, force_rerun=True)

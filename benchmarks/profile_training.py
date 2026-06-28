@@ -127,7 +127,7 @@ def plot_training_results(results):
     style_hyb = {"marker": "s", "color": "#0072B2", "linewidth": 2.5, "markersize": 7}
     
     ax.plot(valid_lens, flops_mha_g, label="MHA (FlashAttention)", **style_mha)
-    ax.plot(valid_lens, flops_hyb_g, label="HOFA (Ours)", **style_hyb)
+    ax.plot(valid_lens, flops_hyb_g, label="HOFA, r = 16 (Ours)", **style_hyb)
     
     ax.set_xscale("log", base=2)
     ax.set_yscale("log", base=10) 
@@ -151,7 +151,7 @@ def plot_training_results(results):
 
 def main():
     config = TrainingExperimentConfig()
-    results = run_profiling_experiment(config, force_rerun=True)
+    results = run_profiling_experiment(config, force_rerun=False)
     plot_training_results(results)
 
 if __name__ == "__main__":
