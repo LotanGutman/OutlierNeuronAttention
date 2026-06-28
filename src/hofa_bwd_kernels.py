@@ -2,7 +2,44 @@ import torch
 import triton
 import triton.language as tl
 import torch.nn.functional as F
+from src.modules.triton_utils import get_device_max_sram, get_hofa_bwd_chunk_size
 
+def hofa_bwd_early_prune(configs, named_args, **kwargs):
+    device = named_args['Q_ptr'].device
+    max_sram = get_device_max_sram(device)
+    
+    j_padded = named_args.get('j_padded', kwargs.get('j_padded'))
+    d_head_padded = named_args.get('d_head_padded', kwargs.get('d_head_padded'))
+    chunk_size = named_args.get('CHUNK_SIZE', kwargs.get('CHUNK_SIZE'))
+    
+    state_bytes = j_padded * d_head_padded * 4
+    
+    pruned_configs = []
+    for config in configs:
+        block_m = config.kwargs['BLOCK_M']
+        if block_m != chunk_size:
+            continue
+            
+        chunk_bytes = 8 * block_m**2 + (4 * j_padded + 10 * d_head_padded) * block_m
+        if state_bytes + chunk_bytes <= max_sram:
+            pruned_configs.append(config)
+            
+    return pruned_configs
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 16}, num_warps=2, num_stages=2),
+        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128}, num_warps=8, num_stages=2),
+    ],
+    key=['N', 'r', 'j', 'd_head'],
+    prune_configs_by={
+        'early_config_prune': hofa_bwd_early_prune,
+        'perf_model': None,
+        'top_k': None
+    }
+)
 @triton.jit
 def hofa_bwd_router_kernel(
     Q_ptr, K_ptr, V_ptr, log_gamma_ptr, states_in_ptr,
@@ -28,7 +65,8 @@ def hofa_bwd_router_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_DMODEL_QK: tl.constexpr,
     BLOCK_DMODEL_V: tl.constexpr,
-    BLOCK_N: tl.constexpr
+    BLOCK_N: tl.constexpr,
+    CHUNK_SIZE: tl.constexpr
 ):
     pid_u = tl.program_id(0)
     pid_bh = tl.program_id(1)
@@ -193,6 +231,21 @@ def hofa_bwd_router_kernel(
             tl.store(dq_j_ptr_i, dQ_J_i.to(dQ_ptr.dtype.element_ty), mask=mask_j)
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 16}, num_warps=2, num_stages=2),
+        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128}, num_warps=8, num_stages=2),
+    ],
+    key=['N', 'r', 'j', 'd_head'],
+    prune_configs_by={
+        'early_config_prune': hofa_bwd_early_prune,
+        'perf_model': None,
+        'top_k': None
+    },
+    restore_value=['dQ_ptr']
+)
 @triton.jit
 def hofa_bwd_monolithic_kernel(
     Q_ptr, K_ptr, V_ptr, log_gamma_ptr, states_in_ptr,
@@ -218,7 +271,8 @@ def hofa_bwd_monolithic_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_DMODEL_QK: tl.constexpr,
     BLOCK_DMODEL_V: tl.constexpr,
-    BLOCK_N: tl.constexpr
+    BLOCK_N: tl.constexpr,
+    CHUNK_SIZE: tl.constexpr
 ):
     pid_v = tl.program_id(0)
     pid_bh = tl.program_id(1)
@@ -442,24 +496,10 @@ class HOFAAttentionFunction(torch.autograd.Function):
         d_head_padded = 1 << (d_head - 1).bit_length()
         d_head_padded = max(d_head_padded, 16)
         
-        # Adaptively cap chunk_size to prevent SRAM overflow.
-        # Query the actual GPU's max shared memory via Triton runtime.
-        try:
-            _props = triton.runtime.driver.active.utils.get_device_properties(0)
-            max_sram = _props["max_shared_mem"]
-        except (AttributeError, KeyError):
-            # Fallback: use PyTorch's device properties
-            max_sram = torch.cuda.get_device_properties(device).shared_memory_per_block_optin
-        
-        # Estimate the GLA kernel's peak SRAM footprint:
-        #   State matrix S:  j_padded * d_head_padded * 4  (float32, persistent)
-        #   Chunk buffers:   ~8*C^2 + (4*j_padded + 10*d_head_padded)*C bytes
-        state_bytes = j_padded * d_head_padded * 4
-        while chunk_size > 16:
-            chunk_bytes = 8 * chunk_size**2 + (4 * j_padded + 10 * d_head_padded) * chunk_size
-            if state_bytes + chunk_bytes <= max_sram:
-                break
-            chunk_size //= 2
+        # Query device max shared memory using helper utility
+        max_sram = get_device_max_sram(device)
+        # Compute safe chunk size using helper utility
+        chunk_size = get_hofa_bwd_chunk_size(j_padded, d_head_padded, max_sram, initial_chunk_size=chunk_size)
         
         log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
         
@@ -556,10 +596,9 @@ class HOFAAttentionFunction(torch.autograd.Function):
             LSE.stride(0), LSE.stride(1), LSE.stride(2),
             1e-5, sm_scale,
             H=H,
-            BLOCK_M=chunk_size,
             BLOCK_DMODEL_QK=max(triton.next_power_of_2(r), 16),
             BLOCK_DMODEL_V=d_head_padded,
-            BLOCK_N=chunk_size
+            CHUNK_SIZE=chunk_size
         )
         
         dK = torch.zeros_like(K)
@@ -589,10 +628,9 @@ class HOFAAttentionFunction(torch.autograd.Function):
             dlog_gamma.stride(0), dlog_gamma.stride(1), dlog_gamma.stride(2),
             sm_scale,
             H=H,
-            BLOCK_M=chunk_size,
             BLOCK_DMODEL_QK=max(triton.next_power_of_2(r), 16),
             BLOCK_DMODEL_V=d_head_padded,
-            BLOCK_N=chunk_size
+            CHUNK_SIZE=chunk_size
         )
         
         rms = torch.rsqrt(Y_GLA.pow(2).sum(dim=-1, keepdim=True) / d_head + 1e-5)

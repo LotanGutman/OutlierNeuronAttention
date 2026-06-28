@@ -313,9 +313,9 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     plt.close()
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--override', action='store_true', help='Force rerun instead of loading cache')
-    args = parser.parse_args()
+    from src.config import ModelConfig
+    from benchmarks.benchmarks_configs import PrefillExperimentConfig
     
-    run_profiling_experiment(force_rerun=args.override)
+    model_cfg = ModelConfig(r=16)
+    config = PrefillExperimentConfig(model_config=model_cfg)
+    run_profiling_experiment(config=config, force_rerun=True)

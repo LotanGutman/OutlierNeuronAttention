@@ -31,3 +31,29 @@ A high-precision FP32 testing suite (`test_hofa_bwd.py`) verifies the correct op
 - `src/HybridOutlierFactorizedAttention.py`: Main HOFA model class containing the PyTorch wrapper and custom autograd function binding.
 - `src/hofa_bwd_kernels.py`: The high-performance Triton forward and backward kernels alongside helper functions.
 - `test_hofa_bwd.py`: High-precision validation and verification test script.
+
+## Project Plan (From PROJECT.md)
+
+### Architecture
+- **HOFA (Hybrid Outlier-Factorized Attention)** splits attention computation into:
+  - An outlier pathway (exact attention, implemented via custom Triton kernels for high performance).
+  - An inlier pathway (Gated Linear Attention, GLA scan).
+- The exact attention kernel in `src/exact_attention.py` handles the forward pass.
+- The backward pass kernels are in `src/hofa_bwd_kernels.py`.
+
+### Milestones
+| # | Name | Scope | Dependencies | Status | Conversation ID |
+|---|------|-------|-------------|--------|-----------------|
+| 1 | Exploration & Analysis | Investigate existing Triton kernels, autotuning reference, and planning Split-K | None | DONE | 07564746-063e-4776-9c53-a614f8c5cc43 |
+| 2 | Utility Refactoring & Split-K | Create triton_utils.py, implement Split-K forward pass, apply autotuning decorators | M1 | DONE | 796c0359-12c9-43aa-ab46-7d699a5e6aac |
+| 3 | Profiling script | Implement benchmarks/profile_hofa.py | M2 | DONE | TBD |
+| 4 | Verification & Audit | Run correctness verification (test_hofa_bwd.py) and integrity audits | M3 | DONE | TBD |
+
+### Interface Contracts
+#### `src/modules/triton_utils.py`
+- Exposes utility functions to calculate GPU-specific hardware parameters (like shared memory / SRAM bounds) dynamically.
+- Used by both `src/exact_attention.py` and `src/hofa_bwd_kernels.py`.
+
+#### `src/exact_attention.py`
+- Exact forward attention kernel, now supporting `Split-K` sequence parallelization.
+- Cleanly integrates with autotuning configurations.
