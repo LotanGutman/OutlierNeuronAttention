@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Union, List, Tuple
 import torch
 
 @dataclass
@@ -6,7 +7,7 @@ class ModelConfig:
     d_model: int = 384
     num_heads: int = 6
     num_layers: int = 6
-    r: int = 8
+    r: Union[int, List[int], Tuple[int, ...]] = 8
     block_size: int = 1024
     tokenizer_name: str = "gpt2"
     refresh_steps: int = 100

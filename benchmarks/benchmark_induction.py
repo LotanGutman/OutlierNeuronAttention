@@ -6,9 +6,9 @@ import numpy as np
 from dataclasses import dataclass, field
 
 from src.config import ModelConfig
-from modules.benchmark_utils import GenericBenchmarkLM, AttentionType, adjust_learning_rate
+from src.modules.benchmark_utils import GenericBenchmarkLM, AttentionType, adjust_learning_rate
 from benchmarks.benchmarks_configs import InductionExperimentConfig
-from modules.checkpointing import save_checkpoint, load_checkpoint
+from src.modules.checkpointing import save_checkpoint, load_checkpoint
 from interrupt_util.interrupts import GracefulInterruptHandler
 
 def generate_induction_seqs(batch_size, seq_len, vocab_size, device):

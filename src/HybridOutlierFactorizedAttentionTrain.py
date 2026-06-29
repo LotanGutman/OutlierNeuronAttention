@@ -1,10 +1,11 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from src.config import ModelConfig
 from fla.ops.gla import chunk_gla
-from modules.modules import RotaryEmbedding, apply_rotary_pos_emb
+from src.modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 class HybridOutlierFactorizedAttention(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
@@ -23,6 +24,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # Gate projection uses full Q,K (before routing) for stability
         self.gate_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
+        self.gate_proj._is_gate = True
 
         nn.init.constant_(self.gate_proj.bias, -1.0)
         nn.init.zeros_(self.gate_proj.weight)
@@ -35,6 +37,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # Dynamic mixing gate between exact and linear pathways
         self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
+        self.mix_proj._is_gate = True
         nn.init.zeros_(self.mix_proj.weight)
         nn.init.constant_(self.mix_proj.bias, 0.0) # Initializes mix_g to 0.5 to allow gradients to both pathways
 
@@ -45,6 +48,14 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # Inlier normalization and learned LayerScale for the GLA pathway
         self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)
         self.gla_scale = nn.Parameter(torch.ones(1, self.num_heads, 1, self.d_head))
+
+        std = 0.02
+        res_std = std / math.sqrt(2 * model_cfg.num_layers)
+        
+        nn.init.normal_(self.W_q.weight, std=std)
+        nn.init.normal_(self.W_k.weight, std=std)
+        nn.init.normal_(self.W_v.weight, std=std)
+        nn.init.normal_(self.out_proj.weight, std=res_std)
 
     def _compute_gates(self, Q, K):
         """
@@ -226,6 +237,15 @@ class TransformerBlock(nn.Module):
             nn.GELU(),
             nn.Linear(4 * model_cfg.d_model, model_cfg.d_model)
         )
+        
+        std = 0.02
+        res_std = std / math.sqrt(2 * model_cfg.num_layers)
+        nn.init.normal_(self.mlp[0].weight, std=std)
+        if self.mlp[0].bias is not None:
+            nn.init.zeros_(self.mlp[0].bias)
+        nn.init.normal_(self.mlp[2].weight, std=res_std)
+        if self.mlp[2].bias is not None:
+            nn.init.zeros_(self.mlp[2].bias)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -237,11 +257,22 @@ class SubwordLM(nn.Module):
     def __init__(self, vocab_size: int, model_cfg: ModelConfig):
         super().__init__()
         self.token_emb = nn.Embedding(vocab_size, model_cfg.d_model)
-        self.layers = nn.ModuleList([
-            TransformerBlock(model_cfg) for _ in range(model_cfg.num_layers)
-        ])
+        
+        r_list = model_cfg.r if isinstance(model_cfg.r, (list, tuple)) else [model_cfg.r] * model_cfg.num_layers
+        assert len(r_list) == model_cfg.num_layers, f"Length of r ({len(r_list)}) must match num_layers ({model_cfg.num_layers})"
+        
+        import copy
+        self.layers = nn.ModuleList()
+        for layer_idx in range(model_cfg.num_layers):
+            layer_cfg = copy.copy(model_cfg)
+            layer_cfg.r = r_list[layer_idx]
+            self.layers.append(TransformerBlock(layer_cfg))
+            
         self.ln_f = nn.LayerNorm(model_cfg.d_model)
         self.lm_head = nn.Linear(model_cfg.d_model, vocab_size, bias=False)
+        
+        nn.init.normal_(self.lm_head.weight, std=0.02)
+        
         self.token_emb.weight = self.lm_head.weight
 
     def forward(self, x, targets=None):

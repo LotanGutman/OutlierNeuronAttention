@@ -90,7 +90,7 @@ class InferenceEngine:
 
         print(f"Loaded checkpoint from {path}")
     
-    def generate(self, prompt: str = "", max_new_tokens: int = 100, temperature: float = 0.8, top_k: int = 50):
+    def generate(self, prompt: str = "", max_new_tokens: int = 100, temperature: float = 0.8, top_k: int = 50, stream: bool = False):
         """Generate text from a prompt. If prompt is empty, start from eot token."""
         self.model.eval()
         if prompt:
@@ -101,14 +101,25 @@ class InferenceEngine:
         context = torch.tensor([ids], dtype=torch.long, device=self.device)
         generated = []
         
+        cache_O_list = None
+        state_I_list = None
+        
         with torch.no_grad():
-            for _ in range(max_new_tokens):
-                # crop to block_size (maximum sequence length supported by pos embeddings)
-                x = context[:, -self.model_cfg.block_size:]
-                
-                # Use autocast for bfloat16 inference (matches training precision)
+            # 1. Prefill phase (token by token because forward_step requires N=1)
+            for i in range(context.shape[1]):
+                x = context[:, i:i+1]
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    logits, _ = self.model(x)
+                    logits, cache_O_list, state_I_list = self.model.forward_step(
+                        x, cache_O_list, state_I_list
+                    )
+                if torch.isnan(logits).any():
+                    print(f"NaN detected in prefill step {i}!")
+                    import sys; sys.exit(1)
+            
+            # 2. Generation phase
+            for _ in range(max_new_tokens):
+                # Sanitize logits to prevent CUDA asserts in untrained models (NaNs or Infs)
+                logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
                 
                 logits = logits[:, -1, :] / temperature
                 
@@ -122,7 +133,17 @@ class InferenceEngine:
                 context = torch.cat([context, next_token], dim=1)
                 generated.append(next_token.item())
                 
-        return self.tokenizer.decode(generated)
+                if stream:
+                    yield next_token.item()
+                    
+                x = next_token
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    logits, cache_O_list, state_I_list = self.model.forward_step(
+                        x, cache_O_list, state_I_list
+                    )
+                
+        if not stream:
+            return self.tokenizer.decode(generated)
 
     @torch.no_grad()
     def get_attention_output(self, input_ids: torch.Tensor):

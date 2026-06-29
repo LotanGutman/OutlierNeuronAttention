@@ -6,7 +6,7 @@ from src.config import ModelConfig
 from src.chunk_gla_inlier import chunk_gla_inlier_fwd
 from src.exact_attention import exact_attention_triton
 from src.hofa_decode_triton import fused_hofa_decode
-from modules.modules import RotaryEmbedding, apply_rotary_pos_emb
+from src.modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 class HybridOutlierFactorizedAttention(nn.Module):
     def __init__(self, model_cfg: ModelConfig):
@@ -196,8 +196,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
             seq_idx = cache_seq_len if cache_seq_len is not None else (cache_O[0].shape[2] if cache_O is not None else 0)
             cos, sin = self.rotary_emb(seq_idx + 1)
             # Only slice the last token for RoPE
-            cos = cos[:, -1:]
-            sin = sin[:, -1:]
+            cos = cos[-1:, :]
+            sin = sin[-1:, :]
             
             Q_O, K_O = apply_rotary_pos_emb(Q[..., :self.r], K[..., :self.r], cos, sin)
             Q[..., :self.r] = Q_O
@@ -260,14 +260,28 @@ class TransformerBlock(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+    def forward_step(self, x, cache_O=None, state_I=None, cache_seq_len=None):
+        x_attn, new_cache_O, new_state_I = self.attn.forward_step(self.ln_1(x), cache_O, state_I, cache_seq_len)
+        x = x + x_attn
+        x = x + self.mlp(self.ln_2(x))
+        return x, new_cache_O, new_state_I
+
 
 class SubwordLM(nn.Module):
     def __init__(self, vocab_size: int, model_cfg: ModelConfig):
         super().__init__()
         self.token_emb = nn.Embedding(vocab_size, model_cfg.d_model)
-        self.layers = nn.ModuleList([
-            TransformerBlock(model_cfg) for _ in range(model_cfg.num_layers)
-        ])
+        
+        r_list = model_cfg.r if isinstance(model_cfg.r, (list, tuple)) else [model_cfg.r] * model_cfg.num_layers
+        assert len(r_list) == model_cfg.num_layers, f"Length of r ({len(r_list)}) must match num_layers ({model_cfg.num_layers})"
+        
+        import copy
+        self.layers = nn.ModuleList()
+        for layer_idx in range(model_cfg.num_layers):
+            layer_cfg = copy.copy(model_cfg)
+            layer_cfg.r = r_list[layer_idx]
+            self.layers.append(TransformerBlock(layer_cfg))
+            
         self.ln_f = nn.LayerNorm(model_cfg.d_model)
         self.lm_head = nn.Linear(model_cfg.d_model, vocab_size, bias=False)
         self.token_emb.weight = self.lm_head.weight
@@ -283,3 +297,24 @@ class SubwordLM(nn.Module):
         if targets is not None:
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
         return logits, loss
+
+    def forward_step(self, x, cache_O_list=None, state_I_list=None, cache_seq_len=None):
+        B, N = x.shape
+        x = self.token_emb(x)
+        
+        new_cache_O_list = []
+        new_state_I_list = []
+        
+        for i, layer in enumerate(self.layers):
+            c_O = cache_O_list[i] if cache_O_list is not None else None
+            s_I = state_I_list[i] if state_I_list is not None else None
+            
+            x, nc_O, ns_I = layer.forward_step(x, c_O, s_I, cache_seq_len)
+            
+            new_cache_O_list.append(nc_O)
+            new_state_I_list.append(ns_I)
+            
+        x = self.ln_f(x)
+        logits = self.lm_head(x)
+        return logits, new_cache_O_list, new_state_I_list
+

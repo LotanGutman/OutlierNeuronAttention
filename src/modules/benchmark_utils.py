@@ -7,7 +7,7 @@ import numpy as np
 from src.HybridOutlierFactorizedAttentionTrain import HybridOutlierFactorizedAttention
 from fla.layers import DeltaNet, GatedLinearAttention as GLA
 from mamba_ssm import Mamba2
-from modules.modules import RotaryEmbedding, apply_rotary_pos_emb
+from src.modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 
 
