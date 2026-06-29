@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from src.config import ModelConfig
-from src.chunk_gla_inlier import ChunkGLAInlier
+from src.chunk_gla_inlier import chunk_gla_inlier_fwd
 from src.exact_attention import exact_attention_triton
 from src.hofa_decode_triton import fused_hofa_decode
 from modules.modules import RotaryEmbedding, apply_rotary_pos_emb
@@ -75,7 +75,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if self.r == 0:
             gate_logits, _ = self._compute_gates(Q, K)
             log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
-            Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.r, self.chunk_size)
+            Y_I = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
             del gate_logits, log_gamma
             Y_I = self.inlier_norm(Y_I) * self.gla_scale
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
@@ -108,26 +108,21 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # We pass the full Q and K to the kernels along with the routing indices.
         # This completely avoids O(N * d) memory overhead from .gather()
         
-        if self.training:
-            from src.hofa_bwd_kernels import HOFAAttentionFunction
-            Y_Final = HOFAAttentionFunction.apply(Q, K, V, gate_logits, mix_g, self.gla_scale, self.r, self.chunk_size)
-            del Q, K, V
-        else:
-            Y_I = ChunkGLAInlier.apply(Q, K, V, log_gamma, self.r, self.chunk_size)
-            del gate_logits, log_gamma
-            
-            sm_scale = (self.d_head / self.r) ** 0.5
-            
-            # Apply inlier norm and scale
-            Y_I = self.inlier_norm(Y_I) * self.gla_scale
-            
-            # Pre-allocate Final Output and blend the pre-scaled Y_I
-            Y_Final = ((1.0 - mix_g) * Y_I)
-            
-            # Run exact attention, adding mix_g * exact directly into Y_Final via True Kernel Fusion
-            exact_attention_triton(Q, K, V, self.r, sm_scale, mix_g.squeeze(-1), out=Y_Final)
-            del Q, K, V, Y_I
-            
+        Y_I = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
+        del gate_logits, log_gamma
+        
+        sm_scale = (self.d_head / self.r) ** 0.5
+        
+        # Apply inlier norm and scale
+        Y_I = self.inlier_norm(Y_I) * self.gla_scale
+        
+        # Pre-allocate Final Output and blend the pre-scaled Y_I
+        Y_Final = ((1.0 - mix_g) * Y_I)
+        
+        # Run exact attention, adding mix_g * exact directly into Y_Final via True Kernel Fusion
+        exact_attention_triton(Q, K, V, self.r, sm_scale, mix_g.squeeze(-1), out=Y_Final)
+        del Q, K, V, Y_I
+        
         Y = Y_Final
         
         # Merge heads
@@ -281,7 +276,7 @@ class SubwordLM(nn.Module):
         B, N = x.shape
         x = self.token_emb(x)
         for layer in self.layers:
-            x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant=False)
+            x = layer(x)
         x = self.ln_f(x)
         logits = self.lm_head(x)
         loss = None
