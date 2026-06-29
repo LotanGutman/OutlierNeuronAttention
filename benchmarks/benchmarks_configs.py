@@ -34,7 +34,7 @@ class InductionExperimentConfig:
     seq_len: int = 1024
     vocab_size: int = 8192
     train_steps: int = 20000
-    learning_rate: float = 3e-3
+    learning_rate: float = 1e-3
     weight_decay: float = 0.01
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"

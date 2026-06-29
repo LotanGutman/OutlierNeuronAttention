@@ -126,5 +126,5 @@ def plot_feature_norm_disparity():
     print("\nFeature norm disparity plot successfully saved to data/plots/routing/feature_norm_disparity.pdf")
 
 if __name__ == "__main__":
-    # plot_unified_trendline()
-    plot_feature_norm_disparity()
+    plot_unified_trendline()
+    # plot_feature_norm_disparity()

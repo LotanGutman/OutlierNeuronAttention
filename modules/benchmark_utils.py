@@ -128,7 +128,13 @@ class GenericBenchmarkLM(nn.Module):
             return logits, None
 
 
+import math
+
 def adjust_learning_rate(optimizer, step, total_steps, base_lr, warmup_steps):
-    lr = base_lr * min(1.0, step / warmup_steps)
+    if step < warmup_steps:
+        lr = base_lr * (step / warmup_steps)
+    else:
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        lr = base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr

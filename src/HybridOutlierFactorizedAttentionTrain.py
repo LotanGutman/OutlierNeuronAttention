@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from src.config import ModelConfig
 from fla.ops.gla import chunk_gla
 from modules.modules import RotaryEmbedding, apply_rotary_pos_emb
@@ -15,7 +16,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.j = self.d_head - self.r
         self.chunk_size = model_cfg.chunk_size
 
-        if self.r > 0 and (self.r & (self.r - 1)) != 0:
+        self.is_power_of_2 = (self.r & (self.r - 1)) == 0
+        if self.r > 0 and not self.is_power_of_2:
             import warnings
             warnings.warn(f"HOFA efficiency warning: r={self.r} is not a power of 2. Triton kernels will pad it to the next power of 2, wasting computation.")
 
@@ -97,7 +99,19 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Q_O, K_O = apply_rotary_pos_emb(Q_O, K_O, cos, sin)
 
         sm_scale = (self.d_head / self.r) ** 0.5
-        Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=sm_scale)
+        
+        if not self.is_power_of_2:
+            # MemEfficient attention requires head dim to be a multiple of 8
+            pad_len = (8 - (self.r % 8)) % 8
+            if pad_len > 0:
+                Q_O_padded = F.pad(Q_O, (0, pad_len))
+                K_O_padded = F.pad(K_O, (0, pad_len))
+            else:
+                Q_O_padded, K_O_padded = Q_O, K_O
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+                Y_O = F.scaled_dot_product_attention(Q_O_padded, K_O_padded, V, is_causal=True, scale=sm_scale)
+        else:
+            Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=sm_scale)
 
         # ----- inlier gated linear attention -----
         Q_J = Q[..., self.r:]
