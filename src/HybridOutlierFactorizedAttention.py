@@ -159,9 +159,13 @@ class HybridOutlierFactorizedAttention(nn.Module):
             state_I_bmm = state_I.view(B * self.num_heads, self.j, self.d_head)
             gamma_bmm = gamma.view(B * self.num_heads, 1, 1)
 
-            Y_I = torch.bmm(q_bmm, state_I_bmm).view(B, self.num_heads, 1, self.d_head)
-            Y_I = self.inlier_norm(Y_I) * self.gla_scale
+            # Inclusive Causality: Update state FIRST (matches training kernel's >= mask)
             state_I_new_bmm = torch.baddbmm(state_I_bmm * gamma_bmm, k_bmm, v_bmm)
+
+            # Compute output using the newly updated state
+            Y_I = torch.bmm(q_bmm, state_I_new_bmm).view(B, self.num_heads, 1, self.d_head)
+            Y_I = self.inlier_norm(Y_I) * self.gla_scale
+
             state_I_new = state_I_new_bmm.view(B, self.num_heads, self.j, self.d_head)
             
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)

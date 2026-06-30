@@ -19,7 +19,8 @@ def _fused_hofa_decode_kernel(
     stride_q_b, stride_q_h, stride_q_n, stride_q_d,
     stride_k_b, stride_k_h, stride_k_n, stride_k_d,
     stride_v_b, stride_v_h, stride_v_n, stride_v_d,
-    cache_stride_b, cache_stride_h, cache_stride_sl, cache_stride_d,
+    cache_k_stride_b, cache_k_stride_h, cache_k_stride_sl, cache_k_stride_d,
+    cache_v_stride_b, cache_v_stride_h, cache_v_stride_sl, cache_v_stride_d,
     state_stride_b, state_stride_h, state_stride_j, state_stride_d,
     stride_lg_b, stride_lg_h, stride_lg_n,
     stride_mg_b, stride_mg_h, stride_mg_n,
@@ -64,13 +65,16 @@ def _fused_hofa_decode_kernel(
     k_J = tl.load(K + batch_idx * stride_k_b + head_idx * stride_k_h + offs_j * stride_k_d, mask=mask_j, other=0.0)
     q_J = tl.load(Q + batch_idx * stride_q_b + head_idx * stride_q_h + offs_j * stride_q_d, mask=mask_j, other=0.0)
 
-    y_i = tl.sum(q_J[:, None] * state, axis=0)
-
+    # Inclusive Causality: Update state with current token FIRST (matches training kernel's >= mask)
     state_new = gamma * state + k_J[:, None] * v_step[None, :]
+
+    # Compute output using the newly updated state
+    y_i = tl.sum(q_J[:, None] * state_new, axis=0)
+
     tl.store(state_ptrs, state_new, mask=mask_j_2d)
 
-    cache_base_k = Cache_K + batch_idx * cache_stride_b + head_idx * cache_stride_h
-    cache_base_v = Cache_V + batch_idx * cache_stride_b + head_idx * cache_stride_h
+    cache_base_k = Cache_K + batch_idx * cache_k_stride_b + head_idx * cache_k_stride_h
+    cache_base_v = Cache_V + batch_idx * cache_v_stride_b + head_idx * cache_v_stride_h
 
     m_i = tl.full([1], -float('inf'), dtype=tl.float32)
     l_i = tl.zeros([1], dtype=tl.float32)
@@ -85,8 +89,8 @@ def _fused_hofa_decode_kernel(
         offs_n = start_n + tl.arange(0, BLOCK_SEQ)
         mask_n = offs_n < seq_len
 
-        k_ptrs = cache_base_k + offs_n[:, None] * cache_stride_sl + offs_r[None, :] * cache_stride_d
-        v_ptrs = cache_base_v + offs_n[:, None] * cache_stride_sl + offs_d_2d * cache_stride_d
+        k_ptrs = cache_base_k + offs_n[:, None] * cache_k_stride_sl + offs_r[None, :] * cache_k_stride_d
+        v_ptrs = cache_base_v + offs_n[:, None] * cache_v_stride_sl + offs_d_2d * cache_v_stride_d
         
         k_O_block = tl.load(k_ptrs, mask=mask_n[:, None] & mask_r[None, :], other=0.0)
         v_block = tl.load(v_ptrs, mask=mask_n[:, None], other=0.0)
@@ -126,7 +130,6 @@ def fused_hofa_decode(
     assert N == 1
 
     Y = torch.empty_like(q)
-    state_I_new = torch.empty_like(state_I)
 
     BLOCK_HEADS = 1
     BLOCK_SEQ = 128
@@ -143,12 +146,13 @@ def fused_hofa_decode(
         state_I,
         log_gamma, mix_g,
         norm_w,
-        Y, state_I_new,
+        Y, state_I,
         R, seq_len, sm_scale,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),
         cache_k.stride(0), cache_k.stride(1), cache_k.stride(2), cache_k.stride(3),
+        cache_v.stride(0), cache_v.stride(1), cache_v.stride(2), cache_v.stride(3),
         state_I.stride(0), state_I.stride(1), state_I.stride(2), state_I.stride(3),
         log_gamma.stride(0), log_gamma.stride(1), log_gamma.stride(2),
         mix_g.stride(0), mix_g.stride(1), mix_g.stride(2),
@@ -162,4 +166,4 @@ def fused_hofa_decode(
         J_PAD=J_PAD
     )
 
-    return Y, state_I_new
+    return Y, state_I

@@ -1,4 +1,5 @@
 import os
+from matplotlib.pyplot import text
 import torch
 from src.inference import InferenceEngine
 from training.training_configs import LanguageModelingExperimentConfig
@@ -34,14 +35,21 @@ def main():
                 continue
                 
             print(f"\n[Prompt]: {prompt}")
-            print("[Generated]:", end=" ", flush=True)
+            print("[Generated]: ", end="", flush=True)
+            
+            generated_tokens = []
+            prev_text = ""
             
             # Stream the generated tokens
             for token in engine.generate(prompt=prompt, max_new_tokens=100, temperature=0.8, top_k=50, stream=True):
-                # decode single token. Note: with BPE this may occasionally print
-                # replacement chars for partial UTF-8, but it works fine for a smoke test
-                chunk = engine.tokenizer.decode([token])
-                print(chunk, end="", flush=True)
+                generated_tokens.append(token)
+
+                full_text = engine.tokenizer.decode(generated_tokens)
+
+                new_chunk = full_text[len(prev_text):]
+                print(new_chunk, end="", flush=True)
+
+                prev_text = full_text
             
             print() # newline after generation is complete
             

@@ -310,9 +310,4 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     print("Saved plot to data/plots/profiling/profile_decode.pdf")
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--override', action='store_true', help='Force rerun instead of loading cache')
-    args = parser.parse_args()
-    
-    run_decode_profiling(force_rerun=args.override)
+    run_decode_profiling(force_rerun=True, save_results=True)

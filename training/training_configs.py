@@ -19,7 +19,7 @@ class LanguageModelingExperimentConfig:
     gradient_accumulation_steps: int = 8  # 4 * 8 = 32
     seq_len: int = 1024
     vocab_size: int = 50257  # gpt2 vocab size
-    train_steps: int = 6000
+    train_steps: int = 30000
     learning_rate: float = 6e-4
     weight_decay: float = 0.1
     warmup_steps: int = 300
