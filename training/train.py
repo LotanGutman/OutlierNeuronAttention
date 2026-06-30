@@ -36,7 +36,7 @@ def load_batch(cache_path, batch_size, seq_len, start_idx):
 def train(model_name: str = "30M", data_cache_path: str = "data/datasets/fineweb_30M_cache.bin"):
     config = LanguageModelingExperimentConfig()
     
-    cache_path = f"data/datasets/{model_name}_cache.bin"
+    cache_path: str = f"data/datasets/fineweb_{model_name}_cache.bin"
     checkpoint_dir = f"data/training/{model_name}"
     os.makedirs(checkpoint_dir, exist_ok=True)
     

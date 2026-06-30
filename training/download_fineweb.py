@@ -21,7 +21,7 @@ def download_and_tokenize(
     dataset_name: str = "HuggingFaceFW/fineweb-edu",
     dataset_config: str = "sample-10BT",
     split: str = "train",
-    max_tokens: int = 600_000_000,
+    max_tokens: int = 1_000_000_000,
     tokenizer_name: str = "gpt2"
 ):
     """
