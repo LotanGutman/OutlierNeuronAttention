@@ -29,3 +29,4 @@ class LanguageModelingExperimentConfig:
     save_every: int = 250
     grad_clip_norm: float = 1.0
     use_mixed_precision: bool = True
+

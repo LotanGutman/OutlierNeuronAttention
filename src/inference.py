@@ -6,7 +6,7 @@ import os
 from src.HybridOutlierFactorizedAttention import SubwordLM
 from src.config import ModelConfig, TrainingConfig
 
-DEBUG_MODE = True  # Set to True to enable debug prints
+DEBUG_MODE = False  # Set to True to enable debug prints
 
 class InferenceEngine:
     def __init__(self, model_cfg: ModelConfig, train_cfg: TrainingConfig, checkpoint_path: str = None):
@@ -169,6 +169,9 @@ class InferenceEngine:
                 
                 probs = F.softmax(logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
+
+                if next_token.item() == self.tokenizer.eot_token:
+                    break
                 
                 context = torch.cat([context, next_token], dim=1)
                 generated.append(next_token.item())
