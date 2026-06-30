@@ -33,11 +33,9 @@ def load_batch(cache_path, batch_size, seq_len, start_idx):
     
     return x, y, start_idx + tokens_needed
 
-def train(model_name: str = "30M", data_cache_path: str = "data/datasets/fineweb_30M_cache.bin"):
-    config = LanguageModelingExperimentConfig()
-    
-    cache_path: str = f"data/datasets/fineweb_{model_name}_cache.bin"
-    checkpoint_dir = f"data/training/{model_name}"
+def train(config: LanguageModelingExperimentConfig):
+    cache_path: str = f"data/datasets/data_{config.model_name}_cache.bin"
+    checkpoint_dir = f"data/training/{config.model_name}"
     os.makedirs(checkpoint_dir, exist_ok=True)
     
     if not os.path.exists(cache_path):
@@ -89,7 +87,7 @@ def train(model_name: str = "30M", data_cache_path: str = "data/datasets/fineweb
     interrupt_handler = GracefulInterruptHandler()
     interrupt_handler.attach()
     
-    print(f"Starting {model_name} HOFA training for {config.train_steps} steps...")
+    print(f"Starting {config.model_name} HOFA training for {config.train_steps} steps...")
     
     model.train()
     
@@ -173,4 +171,5 @@ def train(model_name: str = "30M", data_cache_path: str = "data/datasets/fineweb
         print(f"Final checkpoint saved to {save_path}.")
 
 if __name__ == "__main__":
-    train()
+    config = LanguageModelingExperimentConfig()
+    train(config)

@@ -4,6 +4,10 @@ from src.config import ModelConfig
 
 @dataclass
 class LanguageModelingExperimentConfig:
+    # Model identity — change model_name to scale up/down (e.g. "100M")
+    model_name: str = "30M"
+
+    # Architecture
     model_config: ModelConfig = field(
         default_factory=lambda: ModelConfig(
             d_model=384,
@@ -14,6 +18,13 @@ class LanguageModelingExperimentConfig:
             block_size=1024
         )
     )
+
+    # Dataset / caching
+    dataset_name: str = "HuggingFaceFW/fineweb-edu"
+    dataset_config: str = "sample-10BT"
+    max_tokens: int = 1_000_000_000  # how many tokens to download & cache
+
+    # Training hyperparameters
     batch_size: int = 32
     micro_batch_size: int = 4
     gradient_accumulation_steps: int = 8  # 4 * 8 = 32

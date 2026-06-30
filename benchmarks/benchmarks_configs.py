@@ -5,14 +5,14 @@ src/config.py is reserved purely for model and training configs.
 
 from dataclasses import dataclass, field
 import torch
-from src.config import ModelConfig, TrainingConfig
+from src.config import ModelConfig
 
 CACHE_PATH = "data/experiments_cache"
 
 @dataclass
 class PrefillExperimentConfig:
     model_config: ModelConfig = field(default_factory=ModelConfig)
-    train_cfg: TrainingConfig = field(default_factory=TrainingConfig)
+    seed: int = 42
     seq_lengths: tuple[int, ...] = (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072)
     cache_file_name: str = "profile_prefill_results.pt"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"

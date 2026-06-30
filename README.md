@@ -1,59 +1,133 @@
 # Hybrid Outlier-Factorized Attention (HOFA)
 
-This repository contains the implementation of Hybrid Outlier-Factorized Attention (HOFA), featuring a custom, highly optimized Triton backward pass that completely eliminates intermediate HBM allocations for mathematical exactness and performance.
+HOFA is an attention mechanism that splits each head's feature dimension into two pathways: an **outlier / exact pathway** (first `r` dims — standard SDPA) and an **inlier / linear pathway** (remaining `j = d_head - r` dims — Gated Linear Attention). A learned token-level mixing gate blends the two outputs. RoPE is applied **only** to the exact dimensions.
 
-## Architecture: Fully Fused Triton Backward Pass
+This gives **O(N) memory scaling** with strictly better recall than pure linear attention, at a fraction of full softmax attention's cost.
 
-The backward pass replaces a naive PyTorch implementation with custom Triton kernels to prevent intermediate HBM allocations for $Y_O$ and $Y_I$, prevent `tl.atomic_add` collisions on $dV$ and $dK$, and avoid numerical instability in the bfloat16 GLA pathway.
+---
 
-### The 1-Kernel Monolithic Approach
-The implementation utilizes a **Monolithic K-Parallel Backward Kernel**. 
-To achieve sub-FlashAttention latency, we accumulate $dK$ and $dV$ natively in SRAM without cross-block `tl.atomic_add` collisions on massive sequence dimensions. This strictly requires a Key-Parallel grid.
+## How It Works
 
-- **On-the-Fly `dS` Accumulation:** Instead of materializing `dS` to HBM, the block maintains the recurrent gradient state `dS` directly in SRAM, accumulating it sequentially as it iterates backwards through future $Q$ blocks.
-- **Outlier Pathway:** Computes exact SDPA gradients ($dQ_O, dK_O, dV_O$).
-- **Inlier Pathway:** Computes GLA gradients ($dQ_I, dK_I, dV_I, d\log\gamma$).
-- **Dynamic SRAM Profiling:** Instead of relying on hardcoded bounds, the kernel uses `triton.runtime.driver.active.utils.get_device_properties` to query actual GPU hardware limits and adaptively bounds chunk sizes to prevent SRAM overflow, making it fully portable across hardware profiles like RTX 4060 vs A100.
-- **Numerical Safety:** Applies strict clamp `gamma_clamped = tl.maximum(gamma, 1e-6)` before computing $\log(\gamma)$ to prevent $-\inf$ NaNs in bfloat16. 
+For each head, given Q, K, V ∈ ℝ^(B × H × N × d_head) with r < d_head:
 
-### Forward-Recompute Router 
-The gradient of the dynamic routing gate ($d\_mix\_g = dY_{out} \cdot (Y_O - Y_I)$) requires the exact outputs of both pathways. However, saving $Y_O$ and $Y_I$ during the forward pass breaks the $O(N)$ memory scaling for massive sequences. 
+| Pathway | Dimensions | Mechanism | RoPE |
+|---|---|---|---|
+| **Outlier** `Y_O` | Q[:r], K[:r], V | Softmax attention (FlashAttention / Triton) | ✅ |
+| **Inlier** `Y_I` | Q[r:], K[r:], V | Gated Linear Attention (chunked linear recurrence) | ❌ |
 
-The router kernel runs a Q-Parallel block-by-block recomputation of $Y_O$ and $Y_I$ exclusively in SRAM, computes the element-wise gradient $d\_mix\_g$, and immediately discards the intermediate states, achieving a strict $O(N)$ memory footprint.
+```
+gate_logits = W_gate([Q, K])     → γ = σ(gate_logits)   (GLA decay)
+mix_logits  = W_mix([Q, K])      → mix_g = σ(mix_logits) (pathway blend)
+Y_out = mix_g · Y_O + (1 - mix_g) · Y_I
+```
 
-## Verification
-A high-precision FP32 testing suite (`test_hofa_bwd.py`) verifies the correct operation of the Triton backward kernels. It compares eager PyTorch accumulated gradients against the Triton operations. It validates:
-- Standard block sizes (e.g. $N=128, d=64, r=16$)
-- Stress tests activating dynamic block downscaling (e.g. $N=256, d=128, r=64$)
-- Edge cases specifically guaranteeing `log_gamma` limits without producing NaNs when $g \approx 1.0$.
+Because `r` is small relative to `d_head`, the exact attention cost is **O(N · r)** not **O(N · d_head)**, and the GLA pathway is **O(N)** in memory.
 
-## Code Layout
-- `src/HybridOutlierFactorizedAttention.py`: Main HOFA model class containing the PyTorch wrapper and custom autograd function binding.
-- `src/hofa_bwd_kernels.py`: The high-performance Triton forward and backward kernels alongside helper functions.
-- `test_hofa_bwd.py`: High-precision validation and verification test script.
+---
 
-## Project Plan (From PROJECT.md)
+## Training vs. Inference
 
-### Architecture
-- **HOFA (Hybrid Outlier-Factorized Attention)** splits attention computation into:
-  - An outlier pathway (exact attention, implemented via custom Triton kernels for high performance).
-  - An inlier pathway (Gated Linear Attention, GLA scan).
-- The exact attention kernel in `src/exact_attention.py` handles the forward pass.
-- The backward pass kernels are in `src/hofa_bwd_kernels.py`.
+The codebase has two separate HOFA implementations:
 
-### Milestones
-| # | Name | Scope | Dependencies | Status | Conversation ID |
-|---|------|-------|-------------|--------|-----------------|
-| 1 | Exploration & Analysis | Investigate existing Triton kernels, autotuning reference, and planning Split-K | None | DONE | 07564746-063e-4776-9c53-a614f8c5cc43 |
-| 2 | Utility Refactoring & Split-K | Create triton_utils.py, implement Split-K forward pass, apply autotuning decorators | M1 | DONE | 796c0359-12c9-43aa-ab46-7d699a5e6aac |
-| 3 | Profiling script | Implement benchmarks/profile_hofa.py | M2 | DONE | TBD |
-| 4 | Verification & Audit | Run correctness verification (test_hofa_bwd.py) and integrity audits | M3 | DONE | TBD |
+### `src/HybridOutlierFactorizedAttentionTrain.py` (Training)
+- Uses `fla.ops.gla.chunk_gla` for the inlier GLA pathway (gradients handled by the `fla` library).
+- Uses PyTorch `scaled_dot_product_attention` for the exact pathway.
+- Gradient checkpointing via `torch.utils.checkpoint.checkpoint`.
+- Weight initialization (GPT-2 style: std=0.02, residual branches scaled by 1/√(2·num_layers)).
+- 30M parameter language model training pipeline (FineWeb-Edu).
 
-### Interface Contracts
-#### `src/modules/triton_utils.py`
-- Exposes utility functions to calculate GPU-specific hardware parameters (like shared memory / SRAM bounds) dynamically.
-- Used by both `src/exact_attention.py` and `src/hofa_bwd_kernels.py`.
+### `src/HybridOutlierFactorizedAttention.py` (Inference / Decode)
+- Custom Triton kernel `chunk_gla_inlier_fwd` for the GLA forward pass (no gradients needed).
+- Custom Triton kernel `exact_attention_triton` for exact attention (with optional Split-K for long sequences, auto-tuned with early SRAM pruning).
+- Fused decode kernel `fused_hofa_decode` that combines online-softmax exact attention, GLA state update, inlier RMSNorm + LayerScale, and pathway blending in a **single Triton kernel**.
 
-#### `src/exact_attention.py`
-- Exact forward attention kernel, now supporting `Split-K` sequence parallelization.
-- Cleanly integrates with autotuning configurations.
+---
+
+## Repository Layout
+
+```
+src/
+├── HybridOutlierFactorizedAttention.py        # Inference-optimized HOFA (custom Triton kernels)
+├── HybridOutlierFactorizedAttentionTrain.py   # Training-optimized HOFA (fla library)
+├── exact_attention.py                         # Triton exact-attention kernel (Split-K, autotuned)
+├── chunk_gla_inlier.py                        # Triton chunked GLA forward kernel (inference)
+├── hofa_decode_triton.py                      # Fused Triton decode kernel
+├── config.py                                  # ModelConfig dataclass
+├── inference.py                               # InferenceEngine (generation loop)
+└── modules/
+    ├── modules.py                             # RotaryEmbedding, rotate_half, apply_rotary_pos_emb
+    ├── triton_utils.py                        # SRAM querying, block-size calculation
+    ├── checkpointing.py                       # save_checkpoint / load_checkpoint
+    └── benchmark_utils.py                     # GenericBenchmarkLM, StandardMHA, build_attention
+
+training/
+├── training_config.py                         # LanguageModelingExperimentConfig (model_name, dataset, hparams)
+├── train.py                                   # 30M training loop (FineWeb-Edu)
+├── download_fineweb.py                        # FineWeb-Edu download & tokenization
+├── inference.py                               # CLI interactive generation for trained models
+└── plot_training.py                           # Training metrics plotting (loss / LR curves)
+
+benchmarks/
+├── benchmarks_configs.py                      # Experiment config dataclasses
+├── benchmark_induction.py                     # Induction head training (MHA vs HOFA vs GLA vs Mamba)
+├── benchmark_K_eff.py                         # Effective attention-mass measurement on real LLMs
+├── profile_prefill.py                         # Prefill latency + FLOPs (MHA vs HOFA)
+├── profile_decode.py                          # Decode throughput + KV-cache footprint
+└── plotting/
+    ├── plot_induction.py                      # Induction head convergence plots
+    ├── plot_K_eff.py                          # Attention-mass heatmaps
+    └── plot_layerwise.py                      # Per-layer regime stacking plots
+
+main.py                                         # CLI entry point (download-data | train | infer | plot)
+```
+
+---
+
+## Key Results (so far)
+
+### Induction Head Task
+HOFA matches standard MHA accuracy when `r ≥ ceil(log₂(V))` (where V = vocab size). Below that bound the exact pathway cannot disambiguate the token space and accuracy collapses — exactly as predicted by theory.
+
+| Model | Acc @ vocab=8K, seq=1024 |
+|---|---|
+| MHA | ~100% |
+| HOFA r=16 | ~100% |
+| HOFA r=14 | ~100% |
+| HOFA r=12 | ~85% (below bound) |
+| GLA (pure) | ~55% |
+
+### Prefill Scaling
+HOFA's exact pathway is bounded at `r` dimensions, so FLOPs scale as **O(N · r)** rather than **O(N · d_head)**. This yields 2-3× speedup over standard MHA at 131K sequence length, with the gap widening at longer contexts.
+
+### Memory Footprint
+Strict **O(N)** memory during training — no materialization of full attention matrices. The exact pathway uses softmax merging (online softmax) and the GLA pathway maintains only a compact recurrent state `S ∈ ℝ^(j × d_head)`.
+
+---
+
+## Getting Started
+
+```bash
+# 1. Download and cache the dataset
+python main.py download-data
+
+# 2. Train the 30M model
+python main.py train
+
+# 3. Plot training metrics
+python main.py plot
+
+# 4. Interactive generation
+python main.py infer
+```
+
+The experiment config lives in `training/training_config.py`. To scale to a larger model, change `model_name` (e.g. to `"100M"`) and update the architecture hyperparameters — the cache paths, checkpoint directories, and plot directories all derive from `model_name`.
+
+---
+
+## Dependencies
+
+- PyTorch ≥ 2.4
+- Triton (latest nightly for Hopper support)
+- `fla` (flash-linear-attention) — for training GLA pathway
+- `tiktoken`, `datasets`, `tqdm`
+- `matplotlib`, `numpy` (for plotting and analysis)

@@ -15,19 +15,18 @@ import numpy as np
 import tiktoken
 from datasets import load_dataset
 from tqdm import tqdm
+from training.training_config import LanguageModelingExperimentConfig
 
-def download_and_tokenize(
-    cache_path: str = "data/datasets/fineweb_30M_cache.bin",
-    dataset_name: str = "HuggingFaceFW/fineweb-edu",
-    dataset_config: str = "sample-10BT",
-    split: str = "train",
-    max_tokens: int = 1_000_000_000,
-    tokenizer_name: str = "gpt2"
-):
+def download_and_tokenize(config: LanguageModelingExperimentConfig):
     """
     Downloads and tokenizes FineWeb-Edu, saving the tokens into a binary file.
     If the binary file already exists and has the required size, it skips downloading.
     """
+    cache_path = f"data/datasets/data_{config.model_name}_cache.bin"
+    max_tokens = config.max_tokens
+    dataset_name = config.dataset_name
+    dataset_config = config.dataset_config
+
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     
     # Check if we already have enough tokens
@@ -89,4 +88,5 @@ def download_and_tokenize(
     return cache_path
 
 if __name__ == "__main__":
-    download_and_tokenize()
+    config = LanguageModelingExperimentConfig()
+    download_and_tokenize(config)

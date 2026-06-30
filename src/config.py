@@ -20,24 +20,3 @@ class ModelConfig:
     def d_head(self) -> int:
         return self.d_model // self.num_heads
 
-@dataclass
-class TrainingConfig:
-    dataset_name: str = "roneneldan/TinyStories"
-    tokenized_cache: str = "data/tokenized_data.pkl"
-    train_cache: str = "data/train_tokens.pkl"
-    val_cache: str = "data/val_tokens.pkl"
-    val_split_ratio: float = 0.9
-    max_tokens: int = 50_000_000
-    batch_size: int = 2
-    grad_accum_steps: int = 8
-    max_iters: int = 5000
-    eval_interval: int = 175
-    save_interval: int = 250
-    checkpoint_min_time: int = 600
-    learning_rate: float = 6e-4
-    weight_decay: float = 0.1
-    eta_min: float = 1e-5
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    checkpoint_dir: str = "./checkpoints"
-    compile_model: bool = False
-    seed: int = 42

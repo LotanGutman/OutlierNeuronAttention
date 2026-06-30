@@ -1,8 +1,10 @@
 import os
 import torch
 import matplotlib.pyplot as plt
+from training.training_config import LanguageModelingExperimentConfig
 
-def plot_training_metrics(model_name: str = "30M"):
+def plot_training_metrics(config: LanguageModelingExperimentConfig):
+    model_name = config.model_name
     checkpoint_path = f"data/training/{model_name}/checkpoint.pt"
     plot_dir = f"data/plots/training/{model_name}"
     
@@ -65,4 +67,5 @@ def plot_training_metrics(model_name: str = "30M"):
     print(f"Saved LR schedule plot to {lr_plot_path}")
 
 if __name__ == "__main__":
-    plot_training_metrics()
+    config = LanguageModelingExperimentConfig()
+    plot_training_metrics(config)

@@ -4,24 +4,23 @@ import torch.nn.functional as F
 import tiktoken
 import os
 from src.HybridOutlierFactorizedAttention import SubwordLM
-from src.config import ModelConfig, TrainingConfig
 
 DEBUG_MODE = False  # Set to True to enable debug prints
 
 class InferenceEngine:
-    def __init__(self, model_cfg: ModelConfig, train_cfg: TrainingConfig, checkpoint_path: str = None):
-        self.model_cfg = model_cfg
-        self.train_cfg = train_cfg
-        self.device = torch.device(train_cfg.device)
-        self.tokenizer = tiktoken.get_encoding(model_cfg.tokenizer_name)
+    def __init__(self, experiment_cfg, checkpoint_path: str = None):
+        self.model_cfg = experiment_cfg.model_config
+        self.device = torch.device(experiment_cfg.device)
+        self.model_name = experiment_cfg.model_name
+        self.tokenizer = tiktoken.get_encoding(self.model_cfg.tokenizer_name)
         self.vocab_size = self.tokenizer.n_vocab
 
-        self.model = SubwordLM(self.vocab_size, model_cfg).to(self.device)
+        self.model = SubwordLM(self.vocab_size, self.model_cfg).to(self.device)
         self.model.eval()
 
         if checkpoint_path is None:
-            # find the latest checkpoint in the checkpoint directory
-            checkpoint_path = self._find_latest_checkpoint(train_cfg.checkpoint_dir)
+            checkpoint_dir = f"data/training/{self.model_name}"
+            checkpoint_path = self._find_latest_checkpoint(checkpoint_dir)
         else:
             checkpoint_path = self._resolve_path(checkpoint_path)
             
@@ -195,22 +194,3 @@ class InferenceEngine:
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             logits, _ = self.model(input_ids)
         return logits
-
-# Example usage:
-"""
-from src.config import ModelConfig, TrainingConfig
-from src.inference import InferenceEngine
-
-model_cfg = ModelConfig()
-train_cfg = TrainingConfig()
-engine = InferenceEngine(model_cfg, train_cfg)
-
-print("Model loaded. Enter a prompt (or 'exit' to quit):")
-while True:
-    prompt = input(">> ")
-    if prompt.lower() in ['exit', 'quit']:
-        break
-    output = engine.generate(prompt=prompt, max_new_tokens=200, temperature=0.8)
-    print(output)
-    print("-" * 50)
-"""

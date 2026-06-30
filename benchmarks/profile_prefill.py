@@ -10,7 +10,7 @@ import os
 import numpy as np
 from torch.utils.flop_counter import FlopCounterMode
 from src.HybridOutlierFactorizedAttention import HybridOutlierFactorizedAttention
-from src.config import ModelConfig, TrainingConfig
+from src.config import ModelConfig
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 
 from benchmarks.benchmarks_configs import CACHE_PATH, PrefillExperimentConfig
@@ -36,13 +36,11 @@ def count_flops_fwd(model, x):
 
 def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperimentConfig(), warmup_steps=3, active_steps=10, force_rerun=True, save_results=True):
     model_cfg = config.model_config
-    train_cfg = config.train_cfg
     cache_path = os.path.join(CACHE_PATH, config.cache_file_name)
     device = torch.device(config.device)
-    torch.manual_seed(train_cfg.seed)
+    torch.manual_seed(config.seed)
     seq_lengths = config.seq_lengths
     
-    model_cfg.refresh_steps = 999999999
     hybrid_attn = HybridOutlierFactorizedAttention(model_cfg).to(device).eval()
     
     hybrid_attn.W_q = nn.Identity()
