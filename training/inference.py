@@ -2,25 +2,25 @@ import os
 from matplotlib.pyplot import text
 import torch
 from src.inference import InferenceEngine
-from training.training_configs import LanguageModelingExperimentConfig
+from training.training_config import LanguageModelingExperimentConfig
 from src.config import TrainingConfig
 
-def main():
+def do_inference(model_name: str = "30M"):
     config = LanguageModelingExperimentConfig()
     
     # We create a dummy TrainingConfig just for the InferenceEngine to find the directory
     # and know the device
     train_cfg = TrainingConfig(
         device=config.device,
-        checkpoint_dir="data/training/30M"
+        checkpoint_dir=f"data/training/{model_name}"
     )
     
     checkpoint_path = os.path.join(train_cfg.checkpoint_dir, "checkpoint.pt")
     if not os.path.exists(checkpoint_path):
-        print(f"No checkpoint found at {checkpoint_path}. Please run train_30M.py first.")
+        print(f"No checkpoint found at {checkpoint_path}. Please run train.py for {model_name} first.")
         return
         
-    print("Loading 30M HOFA model from checkpoint...")
+    print(f"Loading {model_name} HOFA model from checkpoint...")
     engine = InferenceEngine(config.model_config, train_cfg, checkpoint_path=checkpoint_path)
     
     print("\nModel loaded successfully! Heterogeneous decoding loop initialized.")
@@ -60,4 +60,4 @@ def main():
             print(f"\nError during generation: {e}")
 
 if __name__ == "__main__":
-    main()
+    do_inference()

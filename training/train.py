@@ -4,7 +4,7 @@ import math
 import torch
 import numpy as np
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
-from training.training_configs import LanguageModelingExperimentConfig
+from training.training_config import LanguageModelingExperimentConfig
 from interrupt_util.interrupts import GracefulInterruptHandler
 from src.modules.benchmark_utils import adjust_learning_rate
 
@@ -33,11 +33,11 @@ def load_batch(cache_path, batch_size, seq_len, start_idx):
     
     return x, y, start_idx + tokens_needed
 
-def main():
+def train(model_name: str = "30M", data_cache_path: str = "data/datasets/fineweb_30M_cache.bin"):
     config = LanguageModelingExperimentConfig()
     
-    cache_path = "data/datasets/fineweb_30M_cache.bin"
-    checkpoint_dir = "data/training/30M"
+    cache_path = f"data/datasets/{model_name}_cache.bin"
+    checkpoint_dir = f"data/training/{model_name}"
     os.makedirs(checkpoint_dir, exist_ok=True)
     
     if not os.path.exists(cache_path):
@@ -89,7 +89,7 @@ def main():
     interrupt_handler = GracefulInterruptHandler()
     interrupt_handler.attach()
     
-    print(f"Starting 30M HOFA Smoke Test for {config.train_steps} steps...")
+    print(f"Starting {model_name} HOFA training for {config.train_steps} steps...")
     
     model.train()
     
@@ -173,4 +173,4 @@ def main():
         print(f"Final checkpoint saved to {save_path}.")
 
 if __name__ == "__main__":
-    main()
+    train()

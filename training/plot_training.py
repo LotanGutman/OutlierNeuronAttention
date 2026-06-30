@@ -2,9 +2,9 @@ import os
 import torch
 import matplotlib.pyplot as plt
 
-def main():
-    checkpoint_path = "data/training/30M/checkpoint.pt"
-    plot_dir = "data/plots/training/30M"
+def plot_training_metrics(model_name: str = "30M"):
+    checkpoint_path = f"data/training/{model_name}/checkpoint.pt"
+    plot_dir = f"data/plots/training/{model_name}"
     
     if not os.path.exists(checkpoint_path):
         print(f"Error: No checkpoint found at {checkpoint_path}")
@@ -38,7 +38,7 @@ def main():
         smoothed = [sum(losses[i:i+50])/50 for i in range(len(losses)-50)]
         plt.plot(tokens[25:-25], smoothed, color='red', linewidth=2, label='Smoothed (window=50)')
         
-    plt.title("30M HOFA Smoke Test: Loss vs. Tokens")
+    plt.title(f"{model_name} HOFA: Loss vs. Tokens")
     plt.xlabel("Processed Tokens")
     plt.ylabel("Cross Entropy Loss")
     plt.grid(True, linestyle='--', alpha=0.6)
@@ -53,7 +53,7 @@ def main():
     # 2. Plot Learning Rate vs Tokens
     plt.figure(figsize=(10, 6))
     plt.plot(tokens, lrs, color='orange', linewidth=2)
-    plt.title("30M HOFA Smoke Test: Learning Rate Schedule")
+    plt.title(f"{model_name} HOFA: Learning Rate Schedule")
     plt.xlabel("Processed Tokens")
     plt.ylabel("Learning Rate")
     plt.grid(True, linestyle='--', alpha=0.6)
@@ -65,4 +65,4 @@ def main():
     print(f"Saved LR schedule plot to {lr_plot_path}")
 
 if __name__ == "__main__":
-    main()
+    plot_training_metrics()
