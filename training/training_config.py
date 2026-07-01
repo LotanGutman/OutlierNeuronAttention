@@ -89,11 +89,11 @@ def make_70M_pure_mha() -> LanguageModelingExperimentConfig:
 
 
 def make_125M_hofa() -> LanguageModelingExperimentConfig:
-    """125M HOFA."""
+    """125M HOFA. d_head=128 (768/6)."""
     return LanguageModelingExperimentConfig(
         model_name="125M",
         model_config=ModelConfig(
-            d_model=768, num_heads=12, num_layers=12,
+            d_model=768, num_heads=6, num_layers=12,
             r=[64, 32, 16, 16, 16, 16, 16, 16, 16, 16, 32, 64],
             use_rope=True, block_size=1024,
         ),
@@ -106,11 +106,11 @@ def make_125M_hofa() -> LanguageModelingExperimentConfig:
 
 
 def make_125M_mha() -> LanguageModelingExperimentConfig:
-    """125M pure MHA baseline."""
+    """125M pure MHA baseline. r=d_head=128."""
     return LanguageModelingExperimentConfig(
         model_name="125M_MHA",
         model_config=ModelConfig(
-            d_model=768, num_heads=12, num_layers=12, r=64,
+            d_model=768, num_heads=6, num_layers=12, r=128,
             use_rope=True, block_size=1024,
         ),
         max_tokens=5_000_000_000,
@@ -122,11 +122,11 @@ def make_125M_mha() -> LanguageModelingExperimentConfig:
 
 
 def make_350M_hofa() -> LanguageModelingExperimentConfig:
-    """350M HOFA."""
+    """350M HOFA. d_head=128 (1024/8)."""
     return LanguageModelingExperimentConfig(
         model_name="350M",
         model_config=ModelConfig(
-            d_model=1024, num_heads=16, num_layers=24,
+            d_model=1024, num_heads=8, num_layers=24,
             r=[64, 32] + [16] * 20 + [32, 64],
             use_rope=True, block_size=1024,
         ),
@@ -139,11 +139,11 @@ def make_350M_hofa() -> LanguageModelingExperimentConfig:
 
 
 def make_350M_mha() -> LanguageModelingExperimentConfig:
-    """350M pure MHA baseline."""
+    """350M pure MHA baseline. r=d_head=128."""
     return LanguageModelingExperimentConfig(
         model_name="350M_MHA",
         model_config=ModelConfig(
-            d_model=1024, num_heads=16, num_layers=24, r=64,
+            d_model=1024, num_heads=8, num_layers=24, r=128,
             use_rope=True, block_size=1024,
         ),
         max_tokens=14_000_000_000,
