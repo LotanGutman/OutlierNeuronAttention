@@ -73,7 +73,7 @@ def _70M_base(**overrides) -> LanguageModelingExperimentConfig:
 
 def make_70M_HOFA(r: int) -> LanguageModelingExperimentConfig:
     """70M with uniform r across all layers. r=0 → pure GLA."""
-    name_suffix = "pure_GLA" if r == 0 else f"r{r}"
+    name_suffix = "GLA_r0" if r == 0 else f"HOFA_r{r}"
     return _70M_base(model_name=f"70M_{name_suffix}", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=r,
         use_rope=True, block_size=1024,
@@ -82,7 +82,7 @@ def make_70M_HOFA(r: int) -> LanguageModelingExperimentConfig:
 
 def make_70M_pure_mha() -> LanguageModelingExperimentConfig:
     """Ablation: r=d_head=64 everywhere (pure MHA, no GLA)."""
-    return _70M_base(model_name="70M_pure_MHA", model_config=ModelConfig(
+    return _70M_base(model_name="70M_MHA", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=64,
         use_rope=True, block_size=1024,
     ))
@@ -91,7 +91,7 @@ def make_70M_pure_mha() -> LanguageModelingExperimentConfig:
 def make_125M_hofa() -> LanguageModelingExperimentConfig:
     """125M HOFA. d_head=128 (768/6)."""
     return LanguageModelingExperimentConfig(
-        model_name="125M",
+        model_name="125M_HOFA",
         model_config=ModelConfig(
             d_model=768, num_heads=6, num_layers=12,
             r=[64, 32, 16, 16, 16, 16, 16, 16, 16, 16, 32, 64],
@@ -124,7 +124,7 @@ def make_125M_mha() -> LanguageModelingExperimentConfig:
 def make_350M_hofa() -> LanguageModelingExperimentConfig:
     """350M HOFA. d_head=128 (1024/8)."""
     return LanguageModelingExperimentConfig(
-        model_name="350M",
+        model_name="350M_HOFA",
         model_config=ModelConfig(
             d_model=1024, num_heads=8, num_layers=24,
             r=[64, 32] + [16] * 20 + [32, 64],
