@@ -2,6 +2,7 @@ import os
 import time
 import math
 import torch
+torch.set_float32_matmul_precision('high')
 import numpy as np
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
 from training.training_config import LanguageModelingExperimentConfig

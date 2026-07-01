@@ -11,9 +11,8 @@ from matplotlib.ticker import FuncFormatter
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 
-@torch.compile(mode="reduce-overhead", fullgraph=True)
 def hofa_decode_step(q_O, k_O_cache, v_cache, q_J, k_J, v_J, state_I, gamma, seq_idx):
-    # Slice view (Fast in compiled graph)
+    # Slice
     k_past = k_O_cache[:, :, :seq_idx+1, :]
     v_past = v_cache[:, :, :seq_idx+1, :]
     
