@@ -54,6 +54,28 @@ class DecodeExperimentConfig:
     cache_file_name: str = "profile_decode_results.pt"
 
 @dataclass
+class LongDistancePPLConfig:
+    """Long-distance perplexity evaluation (Child et al. 2019)."""
+    model_name: str = "30M"
+    batch_size: int = 16
+    seq_len: int = 1024
+    distance_threshold: int = 512
+    rare_token_threshold: int = 500
+    num_batches: int = 100
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_file_name: str = "long_distance_ppl_results.pt"
+
+@dataclass
+class DistanceMetricConfig:
+    """Effective attention distance evaluation (Child et al. 2019)."""
+    model_name: str = "30M"
+    batch_size: int = 4
+    seq_len: int = 1024
+    num_sequences: int = 1024
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_file_name: str = "distance_metric_results.pt"
+
+@dataclass
 class KEffExperimentConfig:
     num_sequences: int = 100
     seq_len: int = 1024
