@@ -40,9 +40,9 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
             print(f"Found cache with {current_tokens} tokens, but requested {max_tokens}. Rebuilding...")
 
     print(f"Loading {dataset_name} ({dataset_config}) in streaming mode...")
-    dataset = load_dataset(dataset_name, name=dataset_config, split=split, streaming=True)
-    
-    enc = tiktoken.get_encoding(tokenizer_name)
+    dataset = load_dataset(dataset_name, name=dataset_config, split="train", streaming=True)
+
+    enc = tiktoken.get_encoding(config.model_config.tokenizer_name)
     eot_token = enc.eot_token
     
     print(f"Tokenizing and caching up to {max_tokens} tokens to {cache_path}...")

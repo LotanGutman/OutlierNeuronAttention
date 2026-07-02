@@ -3,68 +3,163 @@ import torch
 import matplotlib.pyplot as plt
 from training.training_config import LanguageModelingExperimentConfig
 
+
+def moving_average(values, window=50):
+    """Simple moving average."""
+    if len(values) < window:
+        return None
+
+    return [
+        sum(values[i:i + window]) / window
+        for i in range(len(values) - window + 1)
+    ]
+
+
 def plot_training_metrics(config: LanguageModelingExperimentConfig):
     model_name = config.model_name
     checkpoint_path = f"data/training/{model_name}/checkpoint.pt"
     plot_dir = f"data/plots/training/{model_name}"
-    
+
     if not os.path.exists(checkpoint_path):
         print(f"Error: No checkpoint found at {checkpoint_path}")
         return
-        
+
     os.makedirs(plot_dir, exist_ok=True)
-    
+
     print(f"Loading metrics from {checkpoint_path}...")
+
     try:
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        metrics = ckpt.get('metrics', None)
-        
-        if metrics is None or len(metrics.get('processed_tokens', [])) == 0:
+        metrics = ckpt.get("metrics", None)
+
+        if metrics is None or len(metrics.get("processed_tokens", [])) == 0:
             print("No metrics found in checkpoint or metrics are empty.")
             return
-            
+
     except Exception as e:
         print(f"Failed to load checkpoint: {e}")
         return
-        
-    tokens = metrics['processed_tokens']
-    losses = metrics['loss']
-    lrs = metrics['learning_rate']
-    
-    # 1. Plot Loss vs Tokens
+
+    tokens = metrics["processed_tokens"]
+    losses = metrics["loss"]
+    lrs = metrics["learning_rate"]
+
+    # ------------------------------------------------------------------
+    # Compute smoothed loss
+    # ------------------------------------------------------------------
+
+    smooth_window = 150
+    smoothed = moving_average(losses, smooth_window)
+
+    if smoothed is not None:
+        offset = smooth_window // 2
+        smooth_tokens = tokens[offset:offset + len(smoothed)]
+    else:
+        smooth_tokens = None
+
+    # ------------------------------------------------------------------
+    # 1. Loss vs Tokens (Linear X-axis)
+    # ------------------------------------------------------------------
+
     plt.figure(figsize=(10, 6))
-    plt.plot(tokens, losses, alpha=0.8, color='blue', label='Training Loss')
-    
-    # Optional: Plot a smoothed trendline
-    if len(losses) > 100:
-        smoothed = [sum(losses[i:i+50])/50 for i in range(len(losses)-50)]
-        plt.plot(tokens[25:-25], smoothed, color='red', linewidth=2, label='Smoothed (window=50)')
-        
+
+    plt.plot(
+        tokens,
+        losses,
+        color="blue",
+        alpha=0.8,
+        linewidth=1,
+        label="Training Loss",
+    )
+
+    if smoothed is not None:
+        plt.plot(
+            smooth_tokens,
+            smoothed,
+            color="red",
+            linewidth=2,
+            label=f"Smoothed (window={smooth_window})",
+        )
+
     plt.title(f"{model_name} HOFA: Loss vs. Tokens")
     plt.xlabel("Processed Tokens")
     plt.ylabel("Cross Entropy Loss")
-    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.grid(True, linestyle="--", alpha=0.6)
     plt.legend()
     plt.tight_layout()
-    
-    loss_plot_path = os.path.join(plot_dir, "loss_vs_tokens.pdf")
-    plt.savefig(loss_plot_path)
+
+    linear_loss_path = os.path.join(plot_dir, "loss_vs_tokens.pdf")
+    plt.savefig(linear_loss_path)
     plt.close()
-    print(f"Saved Loss plot to {loss_plot_path}")
-    
-    # 2. Plot Learning Rate vs Tokens
+
+    print(f"Saved linear loss plot to {linear_loss_path}")
+
+    # ------------------------------------------------------------------
+    # 2. Loss vs Tokens (Log X-axis)
+    # ------------------------------------------------------------------
+
     plt.figure(figsize=(10, 6))
-    plt.plot(tokens, lrs, color='orange', linewidth=2)
+
+    plt.plot(
+        tokens,
+        losses,
+        color="blue",
+        alpha=0.8,
+        linewidth=1,
+        label="Training Loss",
+    )
+
+    if smoothed is not None:
+        plt.plot(
+            smooth_tokens,
+            smoothed,
+            color="red",
+            linewidth=2,
+            label=f"Smoothed (window={smooth_window})",
+        )
+
+    plt.xscale("log")
+    plt.ylim(3.0, 6.0)
+    plt.xlim(10**7, tokens[-1])
+
+    plt.title(f"{model_name} HOFA: Loss vs. Tokens (Log X)")
+    plt.xlabel("Processed Tokens (log scale)")
+    plt.ylabel("Cross Entropy Loss")
+    plt.grid(True, which="both", linestyle="--", alpha=0.6)
+    plt.legend()
+    plt.tight_layout()
+
+    log_loss_path = os.path.join(plot_dir, "loss_vs_tokens_logx.pdf")
+    plt.savefig(log_loss_path)
+    plt.close()
+
+    print(f"Saved log-x loss plot to {log_loss_path}")
+
+    # ------------------------------------------------------------------
+    # 3. Learning Rate vs Tokens
+    # ------------------------------------------------------------------
+
+    plt.figure(figsize=(10, 6))
+
+    plt.plot(
+        tokens,
+        lrs,
+        color="orange",
+        linewidth=2,
+    )
+
     plt.title(f"{model_name} HOFA: Learning Rate Schedule")
     plt.xlabel("Processed Tokens")
     plt.ylabel("Learning Rate")
-    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.grid(True, linestyle="--", alpha=0.6)
     plt.tight_layout()
-    
+
     lr_plot_path = os.path.join(plot_dir, "lr_vs_tokens.pdf")
     plt.savefig(lr_plot_path)
     plt.close()
+
     print(f"Saved LR schedule plot to {lr_plot_path}")
+
 
 if __name__ == "__main__":
     config = LanguageModelingExperimentConfig()
