@@ -62,7 +62,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
                      
         return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
 
-    def forward(self, x):
+    def forward(self, x, return_state=False):
         B, N, D = x.shape
         dtype_in = x.dtype
         scale_factor = self.d_head ** 0.25
@@ -75,16 +75,24 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if self.r == 0:
             gate_logits, _ = self._compute_gates(Q, K)
             log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
-            Y_I = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
+            Y_I, states_out = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
             del gate_logits, log_gamma
             Y_I = self.inlier_norm(Y_I) * self.gla_scale
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
-            return self.out_proj(Y_out).to(dtype_in)
+            Y_out = self.out_proj(Y_out).to(dtype_in)
+            if return_state:
+                state_I = states_out[:, :, :self.j, :self.d_head]
+                return Y_out, None, state_I
+            return Y_out
 
         if self.r == self.d_head:
             Y = F.scaled_dot_product_attention(Q, K, V, is_causal=True, scale=1.0)
             Y = Y.transpose(1, 2).reshape(B, N, D)
-            return self.out_proj(Y).to(dtype_in)
+            Y_out = self.out_proj(Y).to(dtype_in)
+            if return_state:
+                cache_O = (K.contiguous(), V.contiguous())
+                return Y_out, cache_O, None
+            return Y_out
 
         # ----- obtain routing indices -----
         # (Static routing removed indices fetching)
@@ -98,7 +106,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Q_O = Q[..., :self.r]
             K_O = K[..., :self.r]
             Q_O_rotated, K_O_rotated = apply_rotary_pos_emb(Q_O, K_O, cos, sin)
-            
+
             # In-place update to prevent massive tensor duplication
             Q[..., :self.r] = Q_O_rotated
             K[..., :self.r] = K_O_rotated
@@ -107,27 +115,36 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # Pseudo-Fused Kernel Execution
         # We pass the full Q and K to the kernels along with the routing indices.
         # This completely avoids O(N * d) memory overhead from .gather()
-        
-        Y_I = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
+
+        # Save for cache export before K is consumed by exact kernel
+        if return_state:
+            K_cache = K[..., :self.r].contiguous()
+            V_cache = V.contiguous()
+
+        Y_I, states_out = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
         del gate_logits, log_gamma
-        
+
         sm_scale = (self.d_head / self.r) ** 0.5
-        
+
         # Apply inlier norm and scale
         Y_I = self.inlier_norm(Y_I) * self.gla_scale
-        
+
         # Pre-allocate Final Output and blend the pre-scaled Y_I
         Y_Final = ((1.0 - mix_g) * Y_I)
-        
+
         # Run exact attention, adding mix_g * exact directly into Y_Final via True Kernel Fusion
         exact_attention_triton(Q, K, V, self.r, sm_scale, mix_g.squeeze(-1), out=Y_Final)
         del Q, K, V, Y_I
-        
+
         Y = Y_Final
-        
+
         # Merge heads
         Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
-        return self.out_proj(Y).to(dtype_in)
+        Y_out = self.out_proj(Y).to(dtype_in)
+        if return_state:
+            state_I = states_out[:, :, :self.j, :self.d_head]
+            return Y_out, (K_cache, V_cache), state_I
+        return Y_out
 
     def forward_step(self, x, cache_O=None, state_I=None, cache_seq_len=None):
         """Single - step autoregressive decoding."""
@@ -259,7 +276,12 @@ class TransformerBlock(nn.Module):
             nn.Linear(4 * model_cfg.d_model, model_cfg.d_model)
         )
 
-    def forward(self, x):
+    def forward(self, x, return_state=False):
+        if return_state:
+            attn_out, cache_O, state_I = self.attn(self.ln_1(x), return_state=True)
+            x = x + attn_out
+            x = x + self.mlp(self.ln_2(x))
+            return x, cache_O, state_I
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
@@ -290,9 +312,19 @@ class SubwordLM(nn.Module):
         self.lm_head = nn.Linear(model_cfg.d_model, vocab_size, bias=False)
         self.token_emb.weight = self.lm_head.weight
 
-    def forward(self, x, targets=None):
+    def forward(self, x, targets=None, return_state=False):
         B, N = x.shape
         x = self.token_emb(x)
+        if return_state:
+            cache_O_list = []
+            state_I_list = []
+            for layer in self.layers:
+                x, c, s = layer(x, return_state=True)
+                cache_O_list.append(c)
+                state_I_list.append(s)
+            x = self.ln_f(x)
+            logits = self.lm_head(x)
+            return logits, cache_O_list, state_I_list
         for layer in self.layers:
             x = layer(x)
         x = self.ln_f(x)

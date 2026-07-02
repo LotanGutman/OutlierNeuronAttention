@@ -106,22 +106,12 @@ class InferenceEngine:
             
         context = torch.tensor([ids], dtype=torch.long, device=self.device)
         generated = []
-        
-        cache_O_list = None
-        state_I_list = None
-        
+
         with torch.no_grad():
-            # 1. Prefill phase (token by token because forward_step requires N=1)
-            for i in range(context.shape[1]):
-                x = context[:, i:i+1]
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    logits, cache_O_list, state_I_list = self.model.forward_step(
-                        x, cache_O_list, state_I_list
-                    )
-                if torch.isnan(logits).any():
-                    print(f"NaN detected in prefill step {i}!")
-                    import sys; sys.exit(1)
-            
+            # 1. Prefill phase (one-shot parallel forward)
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                logits, cache_O_list, state_I_list = self.model(context, return_state=True)
+
             # 2. Generation phase
             for step in range(max_new_tokens):
                 # --- DEBUG: Check the integrity of the state and cache ---

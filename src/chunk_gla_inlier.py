@@ -7,9 +7,10 @@ import torch.nn.functional as F
 @triton.jit
 def chunk_gla_fwd_kernel(
     Q_ptr, K_ptr, V_ptr, log_gamma_ptr,
-    states_in_ptr,           
-    Y_ptr,                   
-    N, chunk_size: tl.constexpr, 
+    states_in_ptr,
+    Y_ptr,
+    states_out_ptr,
+    N, chunk_size: tl.constexpr,
     r: tl.constexpr, j, j_padded: tl.constexpr, d_head, d_head_padded: tl.constexpr,
     stride_q_b, stride_q_h, stride_q_n, stride_q_d,
     stride_k_b, stride_k_h, stride_k_n, stride_k_d,
@@ -17,6 +18,7 @@ def chunk_gla_fwd_kernel(
     stride_log_gamma_b, stride_log_gamma_h, stride_log_gamma_n,
     stride_state_u, stride_state_in_b, stride_state_in_h, stride_state_in_j, stride_state_in_d,
     stride_y_b, stride_y_h, stride_y_n, stride_y_d,
+    stride_state_out_b, stride_state_out_h, stride_state_out_j, stride_state_out_d,
     REQUIRES_GRAD: tl.constexpr
 ):
     pid_b = tl.program_id(0)
@@ -87,9 +89,15 @@ def chunk_gla_fwd_kernel(
 
         k_decay = tl.math.exp(g_cumsum_last - g_cumsum)
         K_c_decayed = K_c * k_decay[:, None] * tl.where(mask_t[:, None], 1.0, 0.0)
-        
+
         S_update = tl.dot(tl.trans(K_c_decayed.to(Q_c.dtype)), V_c, allow_tf32=False)
         S = S * tl.math.exp(g_cumsum_last) + S_update
+
+    # Export final recurrent state
+    state_out_ptrs = states_out_ptr \
+        + pid_b * stride_state_out_b + pid_h * stride_state_out_h \
+        + offsets_j[:, None] * stride_state_out_j + offsets_d[None, :] * stride_state_out_d
+    tl.store(state_out_ptrs, S, mask=mask_j[:, None] & mask_d[None, :])
 
 
 def chunk_gla_inlier_fwd(Q, K, V, log_gamma, r, chunk_size):
@@ -100,23 +108,25 @@ def chunk_gla_inlier_fwd(Q, K, V, log_gamma, r, chunk_size):
     B, H, N, d_head = Q.shape
     j = d_head - r
     device = Q.device
-    
+
     j_padded = 1 << (j - 1).bit_length()
     j_padded = max(j_padded, 16)
     d_head_padded = 1 << (d_head - 1).bit_length()
     d_head_padded = max(d_head_padded, 16)
 
     Y = torch.zeros(B, H, N, d_head, dtype=Q.dtype, device=device)
-    
+    states_out = torch.zeros(B, H, j_padded, d_head_padded, dtype=torch.float32, device=device)
+
     # We always assume no gradients in the inference script
     states_in = torch.empty(1, 1, 1, 1, 1, device=device, dtype=torch.float32)
-        
+
     grid = (B, H)
-    
+
     chunk_gla_fwd_kernel[grid](
         Q, K, V, log_gamma,
         states_in,
         Y,
+        states_out,
         N, chunk_size,
         r, j, j_padded, d_head, d_head_padded,
         Q.stride(0), Q.stride(1), Q.stride(2), Q.stride(3),
@@ -125,7 +135,8 @@ def chunk_gla_inlier_fwd(Q, K, V, log_gamma, r, chunk_size):
         log_gamma.stride(0), log_gamma.stride(1), log_gamma.stride(2),
         states_in.stride(2), states_in.stride(0), states_in.stride(1), states_in.stride(3), states_in.stride(4),
         Y.stride(0), Y.stride(1), Y.stride(2), Y.stride(3),
+        states_out.stride(0), states_out.stride(1), states_out.stride(2), states_out.stride(3),
         REQUIRES_GRAD=False
     )
-        
-    return Y
+
+    return Y, states_out
