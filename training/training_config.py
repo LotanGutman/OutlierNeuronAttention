@@ -42,6 +42,9 @@ class LanguageModelingExperimentConfig:
     grad_clip_norm: float = 1.0
     use_mixed_precision: bool = True
 
+    val_every: int = 1000
+    val_num_batches: int = 50
+
 
 # ──────────────────────────────────────────────
 # Pre-defined experiment configurations

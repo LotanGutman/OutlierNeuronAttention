@@ -30,7 +30,7 @@ def do_inference(config: LanguageModelingExperimentConfig):
             prev_text = ""
             
             # Stream the generated tokens
-            for token in engine.generate(prompt=prompt, max_new_tokens=100, temperature=0.8, top_k=50, stream=True):
+            for token in engine.generate(prompt=prompt, max_new_tokens=100, temperature=0.1, top_k=5, stream=True):
                 generated_tokens.append(token)
 
                 full_text = engine.tokenizer.decode(generated_tokens)

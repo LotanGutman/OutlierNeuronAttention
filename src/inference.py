@@ -96,7 +96,7 @@ class InferenceEngine:
 
         print(f"Loaded checkpoint from {path}")
     
-    def generate(self, prompt: str = "", max_new_tokens: int = 100, temperature: float = 0.8, top_k: int = 50, stream: bool = False):
+    def generate(self, prompt: str = "", max_new_tokens: int = 100, temperature: float = 0.8, top_k: int = 50, repetition_penalty = 1.15, stream: bool = False):
         """Generate text from a prompt. If prompt is empty, start from eot token."""
         self.model.eval()
         if prompt:
@@ -151,6 +151,12 @@ class InferenceEngine:
                     print(f"Logits: {logits}")
                 
                 logits = logits[:, -1, :] / temperature
+
+                for past_token in set(generated):
+                    if logits[0, past_token] < 0:
+                        logits[0, past_token] *= repetition_penalty
+                    else:
+                        logits[0, past_token] /= repetition_penalty
                 
                 if top_k > 0:
                     v, _ = torch.topk(logits, top_k)

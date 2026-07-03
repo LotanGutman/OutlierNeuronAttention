@@ -17,15 +17,27 @@ from datasets import load_dataset
 from tqdm import tqdm
 from training.training_config import LanguageModelingExperimentConfig
 
-def download_and_tokenize(config: LanguageModelingExperimentConfig):
+def download_and_tokenize(config: LanguageModelingExperimentConfig, split: str = "train", num_batches: int = 25):
     """
-    Downloads and tokenizes FineWeb-Edu, saving the tokens into a binary file.
-    If the binary file already exists and has the required size, it skips downloading.
+        Downloads and tokenizes FineWeb-Edu in streaming mode, saving tokens into a binary file.
+
+        - `split` can be "train" or "validation".
+        - For `train` the function uses `config.max_tokens` as the target token count.
+        - For `validation` `num_batches` (default 25) is used and the target token count is
+            `num_batches * config.batch_size * config.seq_len`.
+
     """
-    cache_path = f"data/datasets/data_{config.model_name}_cache.bin"
-    max_tokens = config.max_tokens
     dataset_name = config.dataset_name
     dataset_config = config.dataset_config
+
+    if split == "train":
+        cache_path = f"data/datasets/data_{config.model_name}_cache.bin"
+        max_tokens = config.max_tokens
+    elif split in ("val", "validation"):
+        cache_path = f"data/datasets/data_{config.model_name}_val_cache.bin"
+        max_tokens = int(num_batches) * int(config.batch_size) * int(config.seq_len)
+    else:
+        raise ValueError(f"Unknown split: {split}. Use 'train' or 'validation'.")
 
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     
@@ -39,8 +51,15 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
         else:
             print(f"Found cache with {current_tokens} tokens, but requested {max_tokens}. Rebuilding...")
 
-    print(f"Loading {dataset_name} ({dataset_config}) in streaming mode...")
-    dataset = load_dataset(dataset_name, name=dataset_config, split="train", streaming=True)
+    desired_split = "train" if split == "train" else "validation"
+    print(f"Loading {dataset_name} ({dataset_config}) split={desired_split} in streaming mode...")
+    try:
+        dataset = load_dataset(dataset_name, name=dataset_config, split=desired_split, streaming=True)
+        load_split = desired_split
+    except ValueError as e:
+        print(f"Requested split '{desired_split}' not available; falling back to 'train'. ({e})")
+        dataset = load_dataset(dataset_name, name=dataset_config, split="train", streaming=True)
+        load_split = "train (fallback)"
 
     enc = tiktoken.get_encoding(config.model_config.tokenizer_name)
     eot_token = enc.eot_token
@@ -58,24 +77,27 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
     with open(tmp_path, "wb") as f:
         with tqdm(total=max_tokens, unit="tok") as pbar:
             for example in dataset:
+                # dataset examples may have different text keys; assume 'text'
                 text = example["text"]
                 tokens = enc.encode_ordinary(text)
-                tokens.append(eot_token)
-                
+                # add an explicit EOT if tokenizer provides one
+                if eot_token is not None:
+                    tokens.append(eot_token)
+
                 for token in tokens:
                     buffer[buffer_idx] = token
                     buffer_idx += 1
                     total_tokens += 1
-                    
+
                     if buffer_idx == buffer_size:
                         f.write(buffer.tobytes())
                         buffer_idx = 0
-                        
+
                     if total_tokens >= max_tokens:
                         break
-                
+
                 pbar.update(len(tokens))
-                
+
                 if total_tokens >= max_tokens:
                     break
                     

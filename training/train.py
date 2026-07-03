@@ -8,6 +8,7 @@ from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
 from training.training_config import LanguageModelingExperimentConfig
 from interrupt_util.interrupts import GracefulInterruptHandler
 from src.modules.benchmark_utils import adjust_learning_rate
+from training.modules.eval import compute_val_ppl_from_cache
 
 def load_batch(cache_path, batch_size, seq_len, start_idx):
     # Returns (x, y), next_start_idx
@@ -36,11 +37,12 @@ def load_batch(cache_path, batch_size, seq_len, start_idx):
 
 def train(config: LanguageModelingExperimentConfig):
     cache_path: str = f"data/datasets/data_{config.model_name}_cache.bin"
+    val_cache_path: str = f"data/datasets/data_{config.model_name}_val_cache.bin"
     checkpoint_dir = f"data/training/{config.model_name}"
     os.makedirs(checkpoint_dir, exist_ok=True)
     
-    if not os.path.exists(cache_path):
-        raise FileNotFoundError(f"Dataset cache not found at {cache_path}. Run download script first.")
+    if not os.path.exists(cache_path) or not os.path.exists(val_cache_path):
+        raise FileNotFoundError(f"Dataset cache not found at {cache_path} or {val_cache_path}. Run download script first.")
         
     torch.manual_seed(config.seed)
     torch.cuda.manual_seed_all(config.seed)
@@ -62,7 +64,11 @@ def train(config: LanguageModelingExperimentConfig):
         'processed_tokens': [],
         'loss': [],
         'learning_rate': [],
-        'step_times': []
+        'step_times': [],
+        # validation keys
+        'val_steps': [],
+        'val_tokens': [],
+        'val_ppl': []
     }
     
     start_step = 0
@@ -75,11 +81,16 @@ def train(config: LanguageModelingExperimentConfig):
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        
         if 'metrics' in ckpt:
-            metrics = ckpt['metrics']
+            old_metrics = ckpt['metrics']
+            for key, value in old_metrics.items():
+                if key in metrics:  # Only update keys that already exist in our template
+                    metrics[key] = value
+        
         if 'step' in ckpt:
             start_step = ckpt['step']
-            
+        
         total_processed_tokens = start_step * config.batch_size * config.seq_len
         start_idx = total_processed_tokens
         print(f"Resumed successfully from step {start_step}.")
@@ -130,6 +141,22 @@ def train(config: LanguageModelingExperimentConfig):
             metrics['loss'].append(step_loss)
             metrics['learning_rate'].append(optimizer.param_groups[0]['lr'])
             metrics['step_times'].append(dt)
+
+            # Validation perplexity
+            if step % config.val_every == 0:
+                val_ppl = compute_val_ppl_from_cache(
+                    val_cache_path, model,
+                    batch_size=config.micro_batch_size,   # same micro batch for consistency
+                    seq_len=config.seq_len,
+                    num_batches=config.val_num_batches,
+                    device=device
+                )
+                if val_ppl is not None:
+                    metrics['val_steps'].append(step)
+                    metrics['val_tokens'].append(total_processed_tokens)
+                    metrics['val_ppl'].append(val_ppl)
+                    print(f"\n[Val @ step {step}] Perplexity: {val_ppl:.3f}")
+            
             
             if step > 0 and step % config.print_every == 0:
                 print(f"\r\033[KStep {step:4d} | Loss: {step_loss:.4f} | LR: {optimizer.param_groups[0]['lr']:.2e} | Time: {dt:.3f}s | Tokens: {total_processed_tokens}")
@@ -166,7 +193,7 @@ def train(config: LanguageModelingExperimentConfig):
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'metrics': metrics,
-            'step': step
+            'step': step,
         }, temp_path)
         os.replace(temp_path, save_path)
         print(f"Final checkpoint saved to {save_path}.")

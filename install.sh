@@ -26,3 +26,6 @@ pip install \
     tiktoken==0.13.0 \
     tqdm==4.67.3 \
     transformers==4.52.4
+
+pip install lm-eval
+pip install accelerate
