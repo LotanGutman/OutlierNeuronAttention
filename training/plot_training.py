@@ -1,4 +1,5 @@
 import os
+import math
 import torch
 import matplotlib.pyplot as plt
 from training.training_config import LanguageModelingExperimentConfig
@@ -42,21 +43,24 @@ def plot_training_metrics(config: LanguageModelingExperimentConfig):
     # --- Extract training data ---
     tokens = metrics["processed_tokens"]
     losses = metrics["loss"]
-    lrs = metrics["learning_rate"]
 
-    # --- Extract validation data (if it exists) ---
+    # --- Extract validation data ---
     val_tokens = metrics.get("val_tokens", [])
     val_ppl = metrics.get("val_ppl", [])
 
-    # Drop the first validation point
+    # Drop the first validation point (often noisy / JIT artifact)
     if len(val_tokens) > 1:
         val_tokens = val_tokens[1:]
         val_ppl = val_ppl[1:]
 
     has_val = len(val_tokens) > 0 and len(val_ppl) > 0
 
+    # Compute validation CE loss from perplexity: CE = log(PPL)
+    if has_val:
+        val_loss = [math.log(p) for p in val_ppl]
+
     # ------------------------------------------------------------------
-    # Compute smoothed loss
+    # Compute smoothed training loss (for Plot 1 only)
     # ------------------------------------------------------------------
     smooth_window = 150
     smoothed = moving_average(losses, smooth_window)
@@ -68,107 +72,88 @@ def plot_training_metrics(config: LanguageModelingExperimentConfig):
         smooth_tokens = None
 
     # ------------------------------------------------------------------
-    # 1. Loss vs Tokens (Linear X-axis)
+    # Plot 1: Training Loss vs Tokens (Log X-axis) – RAW + SMOOTHED
     # ------------------------------------------------------------------
     plt.figure(figsize=(10, 6))
 
+    # Raw training loss
     plt.plot(
         tokens,
         losses,
         color="blue",
-        alpha=0.8,
-        linewidth=1,
-        label="Training Loss",
+        alpha=0.6,
+        linewidth=0.8,
+        label="Training Loss (raw)",
     )
 
+    # Smoothed training loss
     if smoothed is not None:
         plt.plot(
             smooth_tokens,
             smoothed,
             color="red",
             linewidth=2,
-            label=f"Smoothed (window={smooth_window})",
-        )
-
-    plt.title(f"{model_name} HOFA: Loss vs. Tokens")
-    plt.xlabel("Processed Tokens")
-    plt.ylabel("Cross Entropy Loss")
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.legend()
-    plt.tight_layout()
-
-    linear_loss_path = os.path.join(plot_dir, "loss_vs_tokens.pdf")
-    plt.savefig(linear_loss_path)
-    plt.close()
-
-    print(f"Saved linear loss plot to {linear_loss_path}")
-
-    # ------------------------------------------------------------------
-    # 2. Loss vs Tokens (Log X-axis)
-    # ------------------------------------------------------------------
-    plt.figure(figsize=(10, 6))
-
-    plt.plot(
-        tokens,
-        losses,
-        color="blue",
-        alpha=0.8,
-        linewidth=1,
-        label="Training Loss",
-    )
-
-    if smoothed is not None:
-        plt.plot(
-            smooth_tokens,
-            smoothed,
-            color="red",
-            linewidth=2,
-            label=f"Smoothed (window={smooth_window})",
+            label=f"Training Loss (smoothed, window={smooth_window})",
         )
 
     plt.xscale("log")
-    plt.ylim(3.0, 6.0)
-    plt.xlim(10**7, tokens[-1])
+    plt.ylim(3.0, 6.0)          # Adjust if your losses are outside this range
+    plt.xlim(10**7, tokens[-1])  # Start after warmup
 
-    plt.title(f"{model_name} HOFA: Loss vs. Tokens (Log X)")
+    plt.title(f"{model_name} HOFA: Training Loss vs. Tokens (Log X)")
     plt.xlabel("Processed Tokens (log scale)")
     plt.ylabel("Cross Entropy Loss")
-    plt.grid(True, which="both", linestyle="--", alpha=0.6)
+    plt.grid(True, which="both", linestyle="--", alpha=0.4)
     plt.legend()
     plt.tight_layout()
 
-    log_loss_path = os.path.join(plot_dir, "loss_vs_tokens_logx.pdf")
-    plt.savefig(log_loss_path)
+    plot1_path = os.path.join(plot_dir, "loss_vs_tokens_logx.pdf")
+    plt.savefig(plot1_path)
     plt.close()
-
-    print(f"Saved log-x loss plot to {log_loss_path}")
-
-    # ------------------------------------------------------------------
-    # 3. Learning Rate vs Tokens
-    # ------------------------------------------------------------------
-    plt.figure(figsize=(10, 6))
-
-    plt.plot(
-        tokens,
-        lrs,
-        color="orange",
-        linewidth=2,
-    )
-
-    plt.title(f"{model_name} HOFA: Learning Rate Schedule")
-    plt.xlabel("Processed Tokens")
-    plt.ylabel("Learning Rate")
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.tight_layout()
-
-    lr_plot_path = os.path.join(plot_dir, "lr_vs_tokens.pdf")
-    plt.savefig(lr_plot_path)
-    plt.close()
-
-    print(f"Saved LR schedule plot to {lr_plot_path}")
+    print(f"Saved Plot 1 (raw + smoothed loss, log-x) to {plot1_path}")
 
     # ------------------------------------------------------------------
-    # 4. NEW: Validation Perplexity (Standalone)
+    # Plot 2: RAW Training Loss + Validation CE Loss (Linear X-axis)
+    # ------------------------------------------------------------------
+    if has_val:
+        plt.figure(figsize=(10, 6))
+
+        # Training loss (raw) – NO smoothing
+        plt.plot(
+            tokens,
+            losses,
+            color="red",
+            alpha=0.6,
+            linewidth=0.8,
+            label="Training Loss (raw)",
+        )
+
+        # Validation loss (log of perplexity)
+        plt.plot(
+            val_tokens,
+            val_loss,
+            color="green",
+            marker="o",
+            markersize=4,
+            linewidth=1.5,
+            linestyle="-",
+            label="Validation Loss (log PPL)",
+        )
+
+        plt.title(f"{model_name} HOFA: Training & Validation Loss (Linear X)")
+        plt.xlabel("Processed Tokens")
+        plt.ylabel("Cross Entropy Loss")
+        plt.grid(True, linestyle="--", alpha=0.4)
+        plt.legend()
+        plt.tight_layout()
+
+        plot2_path = os.path.join(plot_dir, "loss_and_val_loss_vs_tokens.pdf")
+        plt.savefig(plot2_path)
+        plt.close()
+        print(f"Saved Plot 2 (raw train loss + val loss) to {plot2_path}")
+
+    # ------------------------------------------------------------------
+    # Plot 3: Validation Perplexity only (Linear X-axis)
     # ------------------------------------------------------------------
     if has_val:
         plt.figure(figsize=(10, 6))
@@ -180,71 +165,21 @@ def plot_training_metrics(config: LanguageModelingExperimentConfig):
             marker="o",
             markersize=4,
             linewidth=1.5,
+            linestyle="-",
             label="Validation Perplexity",
         )
 
         plt.title(f"{model_name} HOFA: Validation Perplexity")
         plt.xlabel("Processed Tokens")
         plt.ylabel("Perplexity")
-        plt.grid(True, linestyle="--", alpha=0.6)
+        plt.grid(True, linestyle="--", alpha=0.4)
         plt.legend()
         plt.tight_layout()
 
-        val_ppl_path = os.path.join(plot_dir, "val_ppl_vs_tokens.pdf")
-        plt.savefig(val_ppl_path)
+        plot3_path = os.path.join(plot_dir, "val_ppl_vs_tokens.pdf")
+        plt.savefig(plot3_path)
         plt.close()
-
-        print(f"Saved validation PPL plot to {val_ppl_path}")
-
-    # ------------------------------------------------------------------
-    # 5. NEW: Combined Training Loss + Validation Perplexity (Twin Axes)
-    # ------------------------------------------------------------------
-    if has_val and smoothed is not None:
-        fig, ax1 = plt.subplots(figsize=(10, 6))
-
-        # Left y-axis: Training Loss
-        color1 = "red"
-        ax1.set_xlabel("Processed Tokens")
-        ax1.set_ylabel("Cross Entropy Loss", color=color1)
-        ax1.plot(
-            smooth_tokens,
-            smoothed,
-            color=color1,
-            linewidth=2,
-            label="Training Loss (smoothed)",
-        )
-        ax1.tick_params(axis="y", labelcolor=color1)
-        ax1.grid(True, linestyle="--", alpha=0.3)
-
-        # Right y-axis: Validation Perplexity
-        ax2 = ax1.twinx()
-        color2 = "green"
-        ax2.set_ylabel("Validation Perplexity", color=color2)
-        ax2.plot(
-            val_tokens,
-            val_ppl,
-            color=color2,
-            marker="o",
-            markersize=5,
-            linewidth=1.5,
-            linestyle="-",
-            label="Validation Perplexity",
-        )
-        ax2.tick_params(axis="y", labelcolor=color2)
-
-        # Add legends (combine both axes)
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
-
-        plt.title(f"{model_name} HOFA: Training Loss & Validation Perplexity")
-        fig.tight_layout()
-
-        combined_path = os.path.join(plot_dir, "loss_and_val_ppl_vs_tokens.pdf")
-        plt.savefig(combined_path)
-        plt.close()
-
-        print(f"Saved combined Loss + Validation PPL plot to {combined_path}")
+        print(f"Saved Plot 3 (val PPL) to {plot3_path}")
 
     print("All plots generated successfully.")
 
