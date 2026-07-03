@@ -36,8 +36,9 @@ def load_batch(cache_path, batch_size, seq_len, start_idx):
     return x, y, start_idx + tokens_needed
 
 def train(config: LanguageModelingExperimentConfig):
-    cache_path: str = f"data/datasets/data_{config.model_name}_cache.bin"
-    val_cache_path: str = f"data/datasets/data_{config.model_name}_val_cache.bin"
+    model_size = config.model_name.split('_')[0]
+    cache_path: str = f"data/datasets/data_{model_size}_cache.bin"
+    val_cache_path: str = f"data/datasets/data_{model_size}_val_cache.bin"
     checkpoint_dir = f"data/training/{config.model_name}"
     os.makedirs(checkpoint_dir, exist_ok=True)
     
@@ -90,9 +91,22 @@ def train(config: LanguageModelingExperimentConfig):
         
         if 'step' in ckpt:
             start_step = ckpt['step']
+            
+        if 'rng_state' in ckpt:
+            torch.set_rng_state(ckpt['rng_state'].cpu())
+        if 'cuda_rng_state' in ckpt:
+            torch.cuda.set_rng_state_all([s.cpu() for s in ckpt['cuda_rng_state']])
         
-        total_processed_tokens = start_step * config.batch_size * config.seq_len
-        start_idx = total_processed_tokens
+        if 'total_processed_tokens' in ckpt:
+            total_processed_tokens = ckpt['total_processed_tokens']
+        else:
+            total_processed_tokens = start_step * config.batch_size * config.seq_len
+            
+        if 'start_idx' in ckpt:
+            start_idx = ckpt['start_idx']
+        else:
+            start_idx = total_processed_tokens
+            
         print(f"Resumed successfully from step {start_step}.")
     
     # Initialize interrupt handler
@@ -172,7 +186,9 @@ def train(config: LanguageModelingExperimentConfig):
                     'metrics': metrics,
                     'step': step,
                     'start_idx': start_idx,
-                    'total_processed_tokens': total_processed_tokens
+                    'total_processed_tokens': total_processed_tokens,
+                    'rng_state': torch.get_rng_state(),
+                    'cuda_rng_state': torch.cuda.get_rng_state_all()
                 }, temp_path)
                 os.replace(temp_path, save_path)
                 print(f"Saved intermediate checkpoint at step {step}.")
@@ -194,6 +210,10 @@ def train(config: LanguageModelingExperimentConfig):
             'optimizer_state_dict': optimizer.state_dict(),
             'metrics': metrics,
             'step': step,
+            'start_idx': start_idx,
+            'total_processed_tokens': total_processed_tokens,
+            'rng_state': torch.get_rng_state(),
+            'cuda_rng_state': torch.cuda.get_rng_state_all()
         }, temp_path)
         os.replace(temp_path, save_path)
         print(f"Final checkpoint saved to {save_path}.")

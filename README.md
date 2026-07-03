@@ -32,9 +32,10 @@ The codebase has two separate HOFA implementations:
 ### `src/HybridOutlierFactorizedAttentionTrain.py` (Training)
 - Uses `fla.ops.gla.chunk_gla` for the inlier GLA pathway (gradients handled by the `fla` library).
 - Uses PyTorch `scaled_dot_product_attention` for the exact pathway.
+- Highly memory-optimized PyTorch operations (eliminates `torch.cat` allocations, fused `torch.lerp`, targeted `bf16`/`fp32` casting, removed `F.pad` overhead).
 - Gradient checkpointing via `torch.utils.checkpoint.checkpoint`.
 - Weight initialization (GPT-2 style: std=0.02, residual branches scaled by 1/√(2·num_layers)).
-- 30M parameter language model training pipeline (FineWeb-Edu).
+- Highly scalable language model training pipeline (FineWeb-Edu) with predefined configs for 30M, 70M, 125M, and 350M models.
 
 ### `src/HybridOutlierFactorizedAttention.py` (Inference / Decode)
 - Custom Triton kernel `chunk_gla_inlier_fwd` for the GLA forward pass (no gradients needed).
@@ -120,7 +121,12 @@ python main.py plot
 python main.py infer
 ```
 
-The experiment config lives in `training/training_config.py`. To scale to a larger model, change `model_name` (e.g. to `"100M"`) and update the architecture hyperparameters — the cache paths, checkpoint directories, and plot directories all derive from `model_name`.
+The experiment config lives in `training/training_config.py`. It includes presets for scaling models:
+- `make_30m_pure_gla()`, `make_30m_hofa()`
+- `make_125M_hofa()`, `make_125M_mha()`
+- `make_350M_hofa()`, `make_350M_mha()`
+
+To scale to a larger model, simply change the active config in `main.py`. The pipeline is smart enough to share downloaded datasets (`cache.bin` and `val_cache.bin`) between MHA and HOFA variants of the same size to save disk space and preparation time. Checkpoints and plot directories automatically derive from the full `model_name`.
 
 ---
 

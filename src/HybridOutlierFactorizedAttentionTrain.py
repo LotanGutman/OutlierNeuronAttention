@@ -57,46 +57,58 @@ class HybridOutlierFactorizedAttention(nn.Module):
         nn.init.normal_(self.W_v.weight, std=std)
         nn.init.normal_(self.out_proj.weight, std=res_std)
 
-    def _compute_gates(self, Q, K):
-        """
-        Computes both the GLA decay gate and the token-level mixing gate.
-        Reuses the concatenated QK tensor for zero memory overhead.
-        """
-        qk = torch.cat([Q, K], dim=-1)  # (B, H, N, 2*d_head)
-        
-        gate_logits = torch.einsum('bhnf,hf->bhn', qk, self.gate_proj.weight) + \
-                      self.gate_proj.bias.view(1, self.num_heads, 1)
-                      
-        mix_logits = torch.einsum('bhnf,hf->bhn', qk, self.mix_proj.weight) + \
-                     self.mix_proj.bias.view(1, self.num_heads, 1)
-                     
+    def _compute_gates_optimized(self, Q, K):
+        # Q, K: (B, H, N, d_head)
+        W_g = self.gate_proj.weight  # (H, 2*d_head)
+        W_m = self.mix_proj.weight   # (H, 2*d_head)
+
+        W_g_q, W_g_k = W_g.chunk(2, dim=1)
+        W_m_q, W_m_k = W_m.chunk(2, dim=1)
+
+        gate_logits = torch.einsum('bhnf,hf->bhn', Q, W_g_q) + \
+                      torch.einsum('bhnf,hf->bhn', K, W_g_k) + \
+                      self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+
+        mix_logits = torch.einsum('bhnf,hf->bhn', Q, W_m_q) + \
+                     torch.einsum('bhnf,hf->bhn', K, W_m_k) + \
+                     self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+
         return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
 
     def forward(self, x):
         B, N, D = x.shape
-        dtype_in = x.dtype
         scale_factor = self.d_head ** 0.25
 
         Q = (self.W_q(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
+        # Capture the active dtype AFTER the autocasted linear projection, because 
+        # x.dtype is float32 (Embeddings do not autocast in PyTorch)
+        dtype_in = Q.dtype
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
         # ----- special cases: r = 0 or r = d_head -----
         if self.r == 0:
-            gate_logits, _ = self._compute_gates(Q, K)
+            gate_logits, _ = self._compute_gates_optimized(Q, K)
             log_gamma = F.logsigmoid(-gate_logits)
             log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
-            Y_I, _ = chunk_gla(Q, K, V, g=log_gamma, scale=1.0, output_final_state=False)
-            Y_I = self.inlier_norm(Y_I) * self.gla_scale
+            Y_I, _ = chunk_gla(
+                Q, 
+                K, 
+                V, 
+                g=log_gamma.to(torch.float32), 
+                scale=1.0, 
+                output_final_state=False
+            )
+            Y_I = self.inlier_norm(Y_I.to(dtype_in)).to(dtype_in) * self.gla_scale.to(dtype_in)
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
-            return self.out_proj(Y_out).to(dtype_in)
+            return self.out_proj(Y_out)
 
         if self.r == self.d_head:
             Y = F.scaled_dot_product_attention(Q, K, V, is_causal=True, scale=1.0)
             Y = Y.transpose(1, 2).reshape(B, N, D)
-            return self.out_proj(Y).to(dtype_in)
+            return self.out_proj(Y)
 
-        gate_logits, mix_g = self._compute_gates(Q, K)
+        gate_logits, mix_g = self._compute_gates_optimized(Q, K)
         self.last_mix_g = mix_g.detach()
         log_gamma = F.logsigmoid(-gate_logits)
         log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
@@ -128,42 +140,50 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Q_J = Q[..., self.r:]
         K_J = K[..., self.r:]
 
-        Q_J = F.pad(Q_J, (0, self.r))
-        K_J = F.pad(K_J, (0, self.r))
+        Y_I, _ = chunk_gla(
+            Q_J, 
+            K_J, 
+            V, 
+            g=log_gamma[..., self.r:].to(torch.float32), 
+            scale=1.0, 
+            output_final_state=False
+        )
+        Y_I = self.inlier_norm(Y_I.to(dtype_in)).to(dtype_in) * self.gla_scale.to(dtype_in)
 
-        Y_I, _ = chunk_gla(Q_J, K_J, V, g=log_gamma, scale=1.0, output_final_state=False)
-        Y_I = self.inlier_norm(Y_I) * self.gla_scale
-
-        Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * Y_I)
+        Y_out = torch.lerp(Y_I, Y_O, mix_g)
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
-        return self.out_proj(Y_out).to(dtype_in)
+        return self.out_proj(Y_out)
 
     def forward_step(self, x, cache_O=None, state_I=None):
         """Single-step autoregressive decoding."""
         B, N, D = x.shape
         assert N == 1, "forward_step expects a single token (N=1)"
-        dtype_in = x.dtype
         scale_factor = self.d_head ** 0.25
 
         Q = (self.W_q(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
+        dtype_in = Q.dtype
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
         if self.r == 0:
-            gate_logits, _ = self._compute_gates(Q, K)
+            gate_logits, _ = self._compute_gates_optimized(Q, K)
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
             if state_I is None:
                 state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
-                                      device=x.device, dtype=x.dtype)
+                                      device=x.device, dtype=torch.float32)
             K_s = K.squeeze(2)
             V_s = V.squeeze(2)
 
-            Y_I = torch.einsum('bhi,bhij->bhj', Q.squeeze(2), state_I).unsqueeze(2)
-            Y_I = self.inlier_norm(Y_I) * self.gla_scale
-            state_I_new = gamma * state_I + torch.einsum('bhi,bhj->bhij', K_s, V_s)
+            state_I_new = gamma.to(torch.float32) * state_I + torch.einsum(
+                'bhi,bhj->bhij', 
+                K_s.to(torch.float32), 
+                V_s.to(torch.float32)
+            )
+            Y_I = torch.einsum('bhi,bhij->bhj', Q.squeeze(2).to(torch.float32), state_I_new).unsqueeze(2)
+            Y_I = self.inlier_norm(Y_I.to(dtype_in)).to(dtype_in) * self.gla_scale.to(dtype_in)
 
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
-            return self.out_proj(Y_out).to(dtype_in), None, state_I_new
+            return self.out_proj(Y_out), None, state_I_new
 
         if self.r == self.d_head:
             if cache_O is None:
@@ -174,9 +194,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Y = F.scaled_dot_product_attention(Q, K_past, V_past, is_causal=False, scale=1.0)
             cache_new = (K_past, V_past)
             Y_out = Y.transpose(1, 2).reshape(B, N, D)
-            return self.out_proj(Y_out).to(dtype_in), cache_new, None
+            return self.out_proj(Y_out), cache_new, None
 
-        gate_logits, mix_g = self._compute_gates(Q, K)
+        gate_logits, mix_g = self._compute_gates_optimized(Q, K)
 
         # ----- outlier exact attention -----
         Q_O = Q[..., :self.r]
@@ -212,18 +232,22 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         if state_I is None:
             state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
-                                  device=x.device, dtype=x.dtype)
+                                  device=x.device, dtype=torch.float32)
 
         K_J_s = K_J.squeeze(2)
         V_s = V.squeeze(2)
 
-        state_I = state_I * gamma + torch.einsum('bhd,bhm->bhdm', K_J_s, V_s)
-        Y_I = torch.einsum('bhd,bhdm->bhm', Q_J.squeeze(2), state_I).unsqueeze(2)
-        Y_I = self.inlier_norm(Y_I) * self.gla_scale
+        state_I = state_I * gamma.to(torch.float32) + torch.einsum(
+            'bhd,bhm->bhdm', 
+            K_J_s.to(torch.float32), 
+            V_s.to(torch.float32)
+        )
+        Y_I = torch.einsum('bhd,bhdm->bhm', Q_J.squeeze(2).to(torch.float32), state_I).unsqueeze(2)
+        Y_I = self.inlier_norm(Y_I.to(dtype_in)).to(dtype_in) * self.gla_scale.to(dtype_in)
 
         Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * Y_I)
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
-        return self.out_proj(Y_out).to(dtype_in), cache_O, state_I
+        return self.out_proj(Y_out), cache_O, state_I
 
 
 class TransformerBlock(nn.Module):

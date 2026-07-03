@@ -47,19 +47,22 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)
         self.gla_scale = nn.Parameter(torch.ones(1, self.num_heads, 1, self.d_head))
 
-    def _compute_gates(self, Q, K):
-        """
-        Computes both the GLA decay gate and the token-level mixing gate.
-        Reuses the concatenated QK tensor for zero memory overhead.
-        """
-        qk = torch.cat([Q, K], dim=-1)                      # (B, H, N, 2*d_head)
-        
-        gate_logits = torch.einsum('bhnf,hf->bhn', qk, self.gate_proj.weight) + \
+    def _compute_gates_optimized(self, Q, K):
+        # Q, K: (B, H, N, d_head)
+        W_g = self.gate_proj.weight  # (H, 2*d_head)
+        W_m = self.mix_proj.weight   # (H, 2*d_head)
+
+        W_g_q, W_g_k = W_g.chunk(2, dim=1)
+        W_m_q, W_m_k = W_m.chunk(2, dim=1)
+
+        gate_logits = torch.einsum('bhnf,hf->bhn', Q, W_g_q) + \
+                      torch.einsum('bhnf,hf->bhn', K, W_g_k) + \
                       self.gate_proj.bias.view(1, self.num_heads, 1)
-                      
-        mix_logits = torch.einsum('bhnf,hf->bhn', qk, self.mix_proj.weight) + \
+
+        mix_logits = torch.einsum('bhnf,hf->bhn', Q, W_m_q) + \
+                     torch.einsum('bhnf,hf->bhn', K, W_m_k) + \
                      self.mix_proj.bias.view(1, self.num_heads, 1)
-                     
+
         return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
 
     def forward(self, x, return_state=False):
@@ -73,7 +76,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # ----- special cases: If r=0, fallback to pure GLA
         if self.r == 0:
-            gate_logits, _ = self._compute_gates(Q, K)
+            gate_logits, _ = self._compute_gates_optimized(Q, K)
             log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
             Y_I, states_out = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
             del gate_logits, log_gamma
@@ -97,7 +100,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # ----- obtain routing indices -----
         # (Static routing removed indices fetching)
 
-        gate_logits, mix_g = self._compute_gates(Q, K)
+        gate_logits, mix_g = self._compute_gates_optimized(Q, K)
         log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
 
         # --- Pre-calculate RoPE (Q and K outlier dimensions) ---
@@ -158,11 +161,11 @@ class HybridOutlierFactorizedAttention(nn.Module):
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
         if self.r == 0:
-            gate_logits, _ = self._compute_gates(Q, K)
+            gate_logits, _ = self._compute_gates_optimized(Q, K)
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
             if state_I is None:
                 state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
-                                      device=x.device, dtype=x.dtype)
+                                      device=x.device, dtype=torch.float32)
             K_s = K.squeeze(2)
             V_s = V.squeeze(2)
             
@@ -208,7 +211,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # ----- hybrid step -----
         # Compute gates BEFORE rotating Q and K
-        gate_logits, mix_g = self._compute_gates(Q, K)
+        gate_logits, mix_g = self._compute_gates_optimized(Q, K)
         log_gamma = F.logsigmoid(-gate_logits).squeeze(-1) # (B, H, N)
         mix_g = mix_g.squeeze(-1) # (B, H, N)
         
@@ -243,7 +246,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         if state_I is None:
             state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
-                                  device=x.device, dtype=x.dtype)
+                                  device=x.device, dtype=torch.float32)
 
         sm_scale = (self.d_head / self.r) ** 0.5
         
