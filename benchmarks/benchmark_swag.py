@@ -3,10 +3,12 @@ Evaluate a pretrained HOFA/MHA model on HellaSwag using lm-eval (Python API).
 
 Usage:
     from training.training_config import make_125M_hofa
+    from benchmarks.benchmarks_configs import EvalExperimentConfig
     from benchmarks.benchmark_swag import evaluate_hellaswag
     
     config = make_125M_hofa()
-    evaluate_hellaswag(config, limit=1000)   # or limit=None for full 10k
+    eval_config = EvalExperimentConfig(limit=1000)
+    evaluate_hellaswag(config, eval_config)
 """
 
 import os
@@ -23,8 +25,7 @@ from training.training_config import LanguageModelingExperimentConfig
 import lm_eval
 from lm_eval import simple_evaluate
 import shutil
-
-
+from benchmarks.benchmarks_configs import EvalExperimentConfig
 # ------------------------------------------------------------------
 # 1. Hugging Face wrapper for your custom model
 # ------------------------------------------------------------------
@@ -75,16 +76,14 @@ AutoModelForCausalLM.register(HOFAConfig, HOFAModel)
 # ------------------------------------------------------------------
 def evaluate_hellaswag(
     config: LanguageModelingExperimentConfig,
-    limit: int = 1000,
-    device: str = "cuda"
+    eval_config: EvalExperimentConfig
 ):
     """
     Evaluate a pretrained model (specified by `config`) on HellaSwag.
 
     Args:
         config: LanguageModelingExperimentConfig (e.g., from make_125M_hofa())
-        limit: number of samples to evaluate (None for full 10k)
-        device: "cuda" or "cpu"
+        eval_config: EvalExperimentConfig containing limit, device, and seed.
     """
     model_name = config.model_name
     ckpt_path = f"data/training/{model_name}/checkpoint.pt"
@@ -109,14 +108,17 @@ def evaluate_hellaswag(
     model.save_pretrained(tmp_dir, safe_serialization=False)
 
     # 4. Run lm_eval with auto batching
-    print(f"Evaluating {model_name} on HellaSwag (limit={limit})...")
+    print(f"Evaluating {model_name} on HellaSwag (limit={eval_config.limit}, seed={eval_config.seed})...")
     results = simple_evaluate(
         model="hf",
         model_args=f"pretrained={tmp_dir},tokenizer=gpt2",
         tasks=["hellaswag"],
-        limit=limit,
-        device=device,
-        batch_size="auto"
+        limit=eval_config.limit,
+        device=eval_config.device,
+        batch_size=eval_config.batch_size,
+        numpy_random_seed=eval_config.seed,
+        torch_random_seed=eval_config.seed,
+        fewshot_random_seed=eval_config.seed,
     )
 
     # 5. Extract and print metrics (keys have ",none" appended)
@@ -148,9 +150,8 @@ def evaluate_hellaswag(
 # ------------------------------------------------------------------
 if __name__ == "__main__":
     from training.training_config import make_125M_hofa
+    from benchmarks.benchmarks_configs import EvalExperimentConfig
 
     config = make_125M_hofa()
-    evaluate_hellaswag(
-        config,
-        limit=1000,        # change to None for full 10k
-    )
+    eval_config = EvalExperimentConfig(limit=1000) # change to None for full 10k
+    evaluate_hellaswag(config, eval_config)

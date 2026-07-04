@@ -56,7 +56,6 @@ class DecodeExperimentConfig:
 @dataclass
 class LongDistancePPLConfig:
     """Long-distance perplexity evaluation (Child et al. 2019)."""
-    model_name: str = "30M"
     batch_size: int = 16
     seq_len: int = 1024
     distance_threshold: int = 512
@@ -90,5 +89,12 @@ class KEffExperimentConfig:
     dataset_config: str = "sample-10BT"
     dataset_split: str = "train"
     cache_file_name: str = "layerwise_cumsum_results.pkl"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
-
+@dataclass
+class EvalExperimentConfig:
+    """Configuration for zero-shot evaluations (HellaSwag, LAMBADA, etc.)."""
+    limit: int | None = 1000
+    seed: int = 42
+    batch_size: str | int = "auto"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"

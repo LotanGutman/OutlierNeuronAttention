@@ -42,10 +42,14 @@ def get_long_distance_mask(input_ids, distance_threshold=512, rare_token_thresho
     return mask
 
 
-def run_long_distance_ppl(config: LongDistancePPLConfig = LongDistancePPLConfig(), force_rerun=False):
+def run_long_distance_ppl(
+    train_cfg: LanguageModelingExperimentConfig,
+    config: LongDistancePPLConfig = LongDistancePPLConfig(), 
+    force_rerun=False
+):
     device = torch.device(config.device)
-    model_name = config.model_name
-    cache_path_out = os.path.join(CACHE_PATH, config.cache_file_name)
+    model_name = train_cfg.model_name
+    cache_path_out = os.path.join(CACHE_PATH, f"{model_name}_{config.cache_file_name}")
 
     # skip eval if cached
     if not force_rerun and os.path.exists(cache_path_out):
@@ -55,12 +59,12 @@ def run_long_distance_ppl(config: LongDistancePPLConfig = LongDistancePPLConfig(
         return
 
     # ── data cache ───────────────────────────────────────────────────
-    data_cache = f"data/datasets/data_{model_name}_cache.bin"
+    model_size = model_name.split('_')[0]
+    data_cache = f"data/datasets/data_{model_size}_val_cache.bin"
     if not os.path.exists(data_cache):
         raise FileNotFoundError(f"Data cache not found at {data_cache}")
 
     # ── build model ──────────────────────────────────────────────────
-    train_cfg = LanguageModelingExperimentConfig()
     model = SubwordLM(train_cfg.vocab_size, train_cfg.model_config).to(device)
 
     ckpt_path = f"data/training/{model_name}/checkpoint.pt"
@@ -148,4 +152,5 @@ def _print_results(ppl_all, ppl_long, total_tokens_long):
 
 
 if __name__ == "__main__":
-    run_long_distance_ppl()
+    from training.training_config import make_125M_hofa
+    run_long_distance_ppl(make_125M_hofa())
