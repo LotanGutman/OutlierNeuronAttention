@@ -57,11 +57,11 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         gate_logits = torch.einsum('bhnf,hf->bhn', Q, W_g_q) + \
                       torch.einsum('bhnf,hf->bhn', K, W_g_k) + \
-                      self.gate_proj.bias.view(1, self.num_heads, 1)
+                      self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
 
         mix_logits = torch.einsum('bhnf,hf->bhn', Q, W_m_q) + \
                      torch.einsum('bhnf,hf->bhn', K, W_m_k) + \
-                     self.mix_proj.bias.view(1, self.num_heads, 1)
+                     self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
 
         return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
 
@@ -195,7 +195,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             if cache_O is None:
                 K_past, V_past = K, V
                 cache_new = (K_past, V_past)
-            elif cache_seq_len is not None:
+            elif cache_seq_len is not None and cache_O[0].shape[2] > cache_seq_len:
                 cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K
                 cache_O[1][:, :, cache_seq_len:cache_seq_len+1, :] = V
                 K_past = cache_O[0][:, :, :cache_seq_len+1, :]
@@ -232,7 +232,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             K_past, V_past = K[..., :self.r], V
             cache_O_new = (K_past, V_past)
             cache_seq_len = 0
-        elif cache_seq_len is not None:
+        elif cache_seq_len is not None and cache_O[0].shape[2] > cache_seq_len:
             cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K[..., :self.r]
             cache_O[1][:, :, cache_seq_len:cache_seq_len+1, :] = V
             K_past = cache_O[0]

@@ -90,12 +90,11 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
             log_gamma = F.logsigmoid(-gate_logits)
-            log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
             Y_I, _ = chunk_gla(
-                Q, 
-                K, 
-                V, 
-                g=log_gamma.to(torch.float32), 
+                Q.to(torch.float32), 
+                K.to(torch.float32), 
+                V.to(torch.float32), 
+                g=log_gamma.expand(-1, -1, -1, self.d_head).to(torch.float32),
                 scale=1.0, 
                 output_final_state=False
             )
@@ -111,7 +110,6 @@ class HybridOutlierFactorizedAttention(nn.Module):
         gate_logits, mix_g = self._compute_gates_optimized(Q, K)
         self.last_mix_g = mix_g.detach()
         log_gamma = F.logsigmoid(-gate_logits)
-        log_gamma = log_gamma.expand(-1, -1, -1, self.d_head)
 
         # ----- outlier exact attention -----
         Q_O = Q[..., :self.r]
@@ -141,10 +139,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
         K_J = K[..., self.r:]
 
         Y_I, _ = chunk_gla(
-            Q_J, 
-            K_J, 
-            V, 
-            g=log_gamma[..., self.r:].to(torch.float32), 
+            Q_J.to(torch.float32), 
+            K_J.to(torch.float32), 
+            V.to(torch.float32), 
+            g=log_gamma.expand(-1, -1, -1, K_J.shape[-1]).to(torch.float32),
             scale=1.0, 
             output_final_state=False
         )
