@@ -152,7 +152,7 @@ class InferenceEngine:
                 
                 logits = logits[:, -1, :] / temperature
 
-                for past_token in set(generated):
+                for past_token in set(context[0].tolist()):
                     if logits[0, past_token] < 0:
                         logits[0, past_token] *= repetition_penalty
                     else:

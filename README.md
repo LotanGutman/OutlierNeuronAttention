@@ -41,6 +41,7 @@ The codebase has two separate HOFA implementations:
 - Custom Triton kernel `chunk_gla_inlier_fwd` for the GLA forward pass (no gradients needed).
 - Custom Triton kernel `exact_attention_triton` for exact attention (with optional Split-K for long sequences, auto-tuned with early SRAM pruning).
 - Fused decode kernel `fused_hofa_decode` that combines online-softmax exact attention, GLA state update, inlier RMSNorm + LayerScale, and pathway blending in a **single Triton kernel**.
+- Strict mathematical assertions guarantee `float32` and `contiguous` memory layouts for all Triton states from step 0 to completely prevent silent pointer bugs during decoding.
 
 ---
 
@@ -63,7 +64,7 @@ src/
 
 training/
 ├── training_config.py                         # LanguageModelingExperimentConfig (model_name, dataset, hparams)
-├── train.py                                   # 30M training loop (FineWeb-Edu)
+├── train.py                                   # Language modeling training loop (FineWeb-Edu)
 ├── download_fineweb.py                        # FineWeb-Edu download & tokenization
 ├── inference.py                               # CLI interactive generation for trained models
 └── plot_training.py                           # Training metrics plotting (loss / LR curves)
@@ -111,7 +112,7 @@ Strict **O(N)** memory during training — no materialization of full attention 
 # 1. Download and cache the dataset
 python main.py download-data
 
-# 2. Train the 30M model
+# 2. Train the model (defaults to 125M)
 python main.py train
 
 # 3. Plot training metrics

@@ -138,11 +138,21 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Q_J = Q[..., self.r:]
         K_J = K[..., self.r:]
 
+        q_gla = Q_J.to(torch.float32).contiguous()
+        k_gla = K_J.to(torch.float32).contiguous()
+        v_gla = V.to(torch.float32).contiguous()
+        g_gla = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).to(torch.float32).contiguous()
+        
+        assert q_gla.is_contiguous() and q_gla.dtype == torch.float32, "q_gla must be contiguous float32"
+        assert k_gla.is_contiguous() and k_gla.dtype == torch.float32, "k_gla must be contiguous float32"
+        assert v_gla.is_contiguous() and v_gla.dtype == torch.float32, "v_gla must be contiguous float32"
+        assert g_gla.is_contiguous() and g_gla.dtype == torch.float32, "g_gla must be contiguous float32"
+
         Y_I, _ = chunk_gla(
-            Q_J.to(torch.float32), 
-            K_J.to(torch.float32), 
-            V.to(torch.float32), 
-            g=log_gamma.expand(-1, -1, -1, K_J.shape[-1]).to(torch.float32),
+            q_gla, 
+            k_gla, 
+            v_gla, 
+            g=g_gla,
             scale=1.0, 
             output_final_state=False
         )

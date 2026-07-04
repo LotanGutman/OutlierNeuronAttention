@@ -145,7 +145,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Y = Y.transpose(1, 2).reshape(B, N, self.d_model)
         Y_out = self.out_proj(Y).to(dtype_in)
         if return_state:
-            state_I = states_out[:, :, :self.j, :self.d_head]
+            # Native contiguous FP32 state right from step 0
+            state_I = states_out[:, :, :self.j, :self.d_head].contiguous()
             return Y_out, (K_cache, V_cache), state_I
         return Y_out
 
@@ -247,6 +248,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if state_I is None:
             state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
                                   device=x.device, dtype=torch.float32)
+        
+        # Strict assertions to prove state integrity
+        assert state_I.dtype == torch.float32, f"Expected state_I to be float32, got {state_I.dtype}"
+        assert state_I.is_contiguous(), "Expected state_I to be contiguous"
 
         sm_scale = (self.d_head / self.r) ** 0.5
         
