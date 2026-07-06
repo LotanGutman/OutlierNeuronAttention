@@ -7,6 +7,24 @@ def triton_next_power_of_2(n):
         return 1
     return 1 << (n - 1).bit_length()
 
+@triton.autotune(
+    configs=[
+        # BLOCK_SEQ 32
+        triton.Config({'BLOCK_SEQ': 32}, num_warps=2, num_stages=2),
+        triton.Config({'BLOCK_SEQ': 32}, num_warps=2, num_stages=3),
+        # BLOCK_SEQ 64
+        triton.Config({'BLOCK_SEQ': 64}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SEQ': 64}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SEQ': 64}, num_warps=4, num_stages=4),
+        # BLOCK_SEQ 128
+        triton.Config({'BLOCK_SEQ': 128}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SEQ': 128}, num_warps=4, num_stages=4),
+        # BLOCK_SEQ 256
+        triton.Config({'BLOCK_SEQ': 256}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SEQ': 256}, num_warps=8, num_stages=4),
+    ],
+    key=['seq_len']
+)
 @triton.jit
 def _fused_hofa_decode_kernel(
     Q, K, V, 
@@ -38,18 +56,13 @@ def _fused_hofa_decode_kernel(
 
     offs_d = tl.arange(0, D_HEAD)
     
-    q_ptrs = Q + batch_idx * stride_q_b + head_idx * stride_q_h + offs_d * stride_q_d
-    k_step_ptrs = K + batch_idx * stride_k_b + head_idx * stride_k_h + offs_d * stride_k_d
     v_step_ptrs = V + batch_idx * stride_v_b + head_idx * stride_v_h + offs_d * stride_v_d
-
-    q = tl.load(q_ptrs)
-    k_step = tl.load(k_step_ptrs)
-    v_step = tl.load(v_step_ptrs)
+    v_step = tl.load(v_step_ptrs).to(tl.float32)
 
     lg_ptr = Log_Gamma + batch_idx * stride_lg_b + head_idx * stride_lg_h
     mg_ptr = Mix_G + batch_idx * stride_mg_b + head_idx * stride_mg_h
     log_gamma = tl.load(lg_ptr).to(tl.float32)
-    mix_g = tl.load(mg_ptr)
+    mix_g = tl.load(mg_ptr).to(tl.float32)
     gamma = tl.math.exp(log_gamma)
 
     offs_j_2d = tl.arange(0, J_PAD)[:, None]
@@ -57,13 +70,13 @@ def _fused_hofa_decode_kernel(
     mask_j_2d = offs_j_2d < J
     
     state_ptrs = State_I + batch_idx * state_stride_b + head_idx * state_stride_h + offs_j_2d * state_stride_j + offs_d_2d * state_stride_d
-    state = tl.load(state_ptrs, mask=mask_j_2d, other=0.0)
+    state = tl.load(state_ptrs, mask=mask_j_2d, other=0.0).to(tl.float32)
 
     offs_j = R + tl.arange(0, J_PAD)
     mask_j = (offs_j - R) < J
     
-    k_J = tl.load(K + batch_idx * stride_k_b + head_idx * stride_k_h + offs_j * stride_k_d, mask=mask_j, other=0.0)
-    q_J = tl.load(Q + batch_idx * stride_q_b + head_idx * stride_q_h + offs_j * stride_q_d, mask=mask_j, other=0.0)
+    k_J = tl.load(K + batch_idx * stride_k_b + head_idx * stride_k_h + offs_j * stride_k_d, mask=mask_j, other=0.0).to(tl.float32)
+    q_J = tl.load(Q + batch_idx * stride_q_b + head_idx * stride_q_h + offs_j * stride_q_d, mask=mask_j, other=0.0).to(tl.float32)
 
     # Inclusive Causality: Update state with current token FIRST (matches training kernel's >= mask)
     state_new = gamma * state + k_J[:, None] * v_step[None, :]
@@ -71,7 +84,8 @@ def _fused_hofa_decode_kernel(
     # Compute output using the newly updated state
     y_i = tl.sum(q_J[:, None] * state_new, axis=0)
 
-    tl.store(state_ptrs, state_new, mask=mask_j_2d)
+    state_new_ptrs = State_I_new + batch_idx * state_stride_b + head_idx * state_stride_h + offs_j_2d * state_stride_j + offs_d_2d * state_stride_d
+    tl.store(state_new_ptrs, state_new, mask=mask_j_2d)
 
     cache_base_k = Cache_K + batch_idx * cache_k_stride_b + head_idx * cache_k_stride_h
     cache_base_v = Cache_V + batch_idx * cache_v_stride_b + head_idx * cache_v_stride_h
@@ -83,7 +97,7 @@ def _fused_hofa_decode_kernel(
     offs_r = tl.arange(0, R_PAD)
     mask_r = offs_r < R
     q_base = Q + batch_idx * stride_q_b + head_idx * stride_q_h
-    q_O = tl.load(q_base + offs_r * stride_q_d, mask=mask_r, other=0.0)
+    q_O = tl.load(q_base + offs_r * stride_q_d, mask=mask_r, other=0.0).to(tl.float32)
 
     for start_n in range(0, seq_len, BLOCK_SEQ):
         offs_n = start_n + tl.arange(0, BLOCK_SEQ)
@@ -92,8 +106,8 @@ def _fused_hofa_decode_kernel(
         k_ptrs = cache_base_k + offs_n[:, None] * cache_k_stride_sl + offs_r[None, :] * cache_k_stride_d
         v_ptrs = cache_base_v + offs_n[:, None] * cache_v_stride_sl + offs_d_2d * cache_v_stride_d
         
-        k_O_block = tl.load(k_ptrs, mask=mask_n[:, None] & mask_r[None, :], other=0.0)
-        v_block = tl.load(v_ptrs, mask=mask_n[:, None], other=0.0)
+        k_O_block = tl.load(k_ptrs, mask=mask_n[:, None] & mask_r[None, :], other=0.0).to(tl.float32)
+        v_block = tl.load(v_ptrs, mask=mask_n[:, None], other=0.0).to(tl.float32)
 
         attn_scores = tl.sum(q_O[None, :] * k_O_block, axis=1) * sm_scale
         attn_scores = tl.where(mask_n, attn_scores, float('-inf'))
@@ -116,12 +130,12 @@ def _fused_hofa_decode_kernel(
     y_i_norm = y_i * rsqrt * norm_w
 
     y_out = mix_g * y_o + (1.0 - mix_g) * y_i_norm
-    tl.store(Y + batch_idx * stride_y_b + head_idx * stride_y_h + offs_d * stride_y_d, y_out)
+    tl.store(Y + batch_idx * stride_y_b + head_idx * stride_y_h + offs_d * stride_y_d, y_out.to(Y.dtype.element_ty))
 
 def fused_hofa_decode(
     q, k, v, 
     cache_k, cache_v, 
-    state_I, 
+    state_I_in, state_I_out,
     log_gamma, mix_g,
     norm_w,
     R, seq_len, sm_scale
@@ -132,7 +146,6 @@ def fused_hofa_decode(
     Y = torch.empty_like(q)
 
     BLOCK_HEADS = 1
-    BLOCK_SEQ = 128
     D_HEAD = triton.next_power_of_2(D)
     R_PAD = triton.next_power_of_2(R)
     J = D - R
@@ -143,27 +156,26 @@ def fused_hofa_decode(
     _fused_hofa_decode_kernel[grid](
         q, k, v,
         cache_k, cache_v,
-        state_I,
+        state_I_in,
         log_gamma, mix_g,
         norm_w,
-        Y, state_I,
+        Y, state_I_out,
         R, seq_len, sm_scale,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),
         cache_k.stride(0), cache_k.stride(1), cache_k.stride(2), cache_k.stride(3),
         cache_v.stride(0), cache_v.stride(1), cache_v.stride(2), cache_v.stride(3),
-        state_I.stride(0), state_I.stride(1), state_I.stride(2), state_I.stride(3),
+        state_I_in.stride(0), state_I_in.stride(1), state_I_in.stride(2), state_I_in.stride(3),
         log_gamma.stride(0), log_gamma.stride(1), log_gamma.stride(2),
         mix_g.stride(0), mix_g.stride(1), mix_g.stride(2),
         norm_w.stride(0), norm_w.stride(1),
         Y.stride(0), Y.stride(1), Y.stride(2), Y.stride(3),
         BLOCK_HEADS=BLOCK_HEADS,
-        BLOCK_SEQ=BLOCK_SEQ,
         D_HEAD=D_HEAD,
         R_PAD=R_PAD,
         J=J,
         J_PAD=J_PAD
     )
 
-    return Y, state_I
+    return Y

@@ -147,7 +147,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if return_state:
             # Native contiguous FP32 state right from step 0
             state_I = states_out[:, :, :self.j, :self.d_head].contiguous()
-            return Y_out, (K_cache, V_cache), state_I
+            state_I_out = torch.empty_like(state_I)
+            return Y_out, (K_cache, V_cache), (state_I, state_I_out)
         return Y_out
 
     def forward_step(self, x, cache_O=None, state_I=None, cache_seq_len=None):
@@ -246,21 +247,25 @@ class HybridOutlierFactorizedAttention(nn.Module):
             cache_seq_len = K_past.shape[2] - 1
 
         if state_I is None:
-            state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
-                                  device=x.device, dtype=torch.float32)
+            state_I = (
+                torch.zeros(B, self.num_heads, self.j, self.d_head, device=x.device, dtype=torch.float32),
+                torch.empty(B, self.num_heads, self.j, self.d_head, device=x.device, dtype=torch.float32)
+            )
+        
+        state_in, state_out = state_I
         
         # Strict assertions to prove state integrity
-        assert state_I.dtype == torch.float32, f"Expected state_I to be float32, got {state_I.dtype}"
-        assert state_I.is_contiguous(), "Expected state_I to be contiguous"
+        assert state_in.dtype == torch.float32, f"Expected state_in to be float32, got {state_in.dtype}"
+        assert state_in.is_contiguous(), "Expected state_in to be contiguous"
 
         sm_scale = (self.d_head / self.r) ** 0.5
         
         norm_w = self.gla_scale.view(self.num_heads, self.d_head)
         
-        Y_out, state_I_new = fused_hofa_decode(
+        Y_out = fused_hofa_decode(
             Q, K, V, 
             cache_O_new[0], cache_O_new[1], 
-            state_I, 
+            state_in, state_out,
             log_gamma, mix_g,
             norm_w,
             self.r,
@@ -269,7 +274,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         )
 
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
-        return self.out_proj(Y_out).to(dtype_in), cache_O_new, state_I_new
+        return self.out_proj(Y_out).to(dtype_in), cache_O_new, (state_out, state_in)
 
 
 class TransformerBlock(nn.Module):

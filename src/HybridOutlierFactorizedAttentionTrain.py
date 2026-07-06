@@ -75,6 +75,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
 
+    @torch.compile(mode="max-autotune")
     def forward(self, x):
         B, N, D = x.shape
         scale_factor = self.d_head ** 0.25
@@ -90,14 +91,26 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
             log_gamma = F.logsigmoid(-gate_logits)
-            Y_I, _ = chunk_gla(
-                Q.to(torch.float32), 
-                K.to(torch.float32), 
-                V.to(torch.float32), 
-                g=log_gamma.expand(-1, -1, -1, self.d_head).to(torch.float32),
+            
+            q_gla_t = Q.transpose(1, 2).to(torch.float32).contiguous()
+            k_gla_t = K.transpose(1, 2).to(torch.float32).contiguous()
+            v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
+            g_gla_t = log_gamma.expand(-1, -1, -1, self.d_head).transpose(1, 2).to(torch.float32).contiguous()
+            
+            assert q_gla_t.is_contiguous() and q_gla_t.dtype == torch.float32, "q_gla_t must be contiguous float32"
+            assert k_gla_t.is_contiguous() and k_gla_t.dtype == torch.float32, "k_gla_t must be contiguous float32"
+            assert v_gla_t.is_contiguous() and v_gla_t.dtype == torch.float32, "v_gla_t must be contiguous float32"
+            assert g_gla_t.is_contiguous() and g_gla_t.dtype == torch.float32, "g_gla_t must be contiguous float32"
+
+            Y_I_t, _ = chunk_gla(
+                q_gla_t, 
+                k_gla_t, 
+                v_gla_t, 
+                g=g_gla_t,
                 scale=1.0, 
                 output_final_state=False
             )
+            Y_I = Y_I_t.transpose(1, 2)
             Y_I = self.inlier_norm(Y_I.to(dtype_in)).to(dtype_in) * self.gla_scale.to(dtype_in)
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out)
@@ -138,24 +151,25 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Q_J = Q[..., self.r:]
         K_J = K[..., self.r:]
 
-        q_gla = Q_J.to(torch.float32).contiguous()
-        k_gla = K_J.to(torch.float32).contiguous()
-        v_gla = V.to(torch.float32).contiguous()
-        g_gla = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).to(torch.float32).contiguous()
+        q_gla_t = Q_J.transpose(1, 2).to(torch.float32).contiguous()
+        k_gla_t = K_J.transpose(1, 2).to(torch.float32).contiguous()
+        v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
+        g_gla_t = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
         
-        assert q_gla.is_contiguous() and q_gla.dtype == torch.float32, "q_gla must be contiguous float32"
-        assert k_gla.is_contiguous() and k_gla.dtype == torch.float32, "k_gla must be contiguous float32"
-        assert v_gla.is_contiguous() and v_gla.dtype == torch.float32, "v_gla must be contiguous float32"
-        assert g_gla.is_contiguous() and g_gla.dtype == torch.float32, "g_gla must be contiguous float32"
+        assert q_gla_t.is_contiguous() and q_gla_t.dtype == torch.float32, "q_gla_t must be contiguous float32"
+        assert k_gla_t.is_contiguous() and k_gla_t.dtype == torch.float32, "k_gla_t must be contiguous float32"
+        assert v_gla_t.is_contiguous() and v_gla_t.dtype == torch.float32, "v_gla_t must be contiguous float32"
+        assert g_gla_t.is_contiguous() and g_gla_t.dtype == torch.float32, "g_gla_t must be contiguous float32"
 
-        Y_I, _ = chunk_gla(
-            q_gla, 
-            k_gla, 
-            v_gla, 
-            g=g_gla,
+        Y_I_t, _ = chunk_gla(
+            q_gla_t, 
+            k_gla_t, 
+            v_gla_t, 
+            g=g_gla_t,
             scale=1.0, 
             output_final_state=False
         )
+        Y_I = Y_I_t.transpose(1, 2)
         Y_I = self.inlier_norm(Y_I.to(dtype_in)).to(dtype_in) * self.gla_scale.to(dtype_in)
 
         Y_out = torch.lerp(Y_I, Y_O, mix_g)

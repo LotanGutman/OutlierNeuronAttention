@@ -109,6 +109,7 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                     v_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
                     
                     state_I = torch.randn(B, H, j, D_head, device=device, dtype=torch.float32)
+                    state_I_out = torch.empty_like(state_I)
                     
                     norm_weight = torch.ones(H, D_head, device=device, dtype=torch.bfloat16)
                     
@@ -119,12 +120,12 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                     sm_scale = (D_head / r) ** 0.5
 
                     for _ in range(config.warmup_steps):
-                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, log_gamma, mix_g, norm_weight, r, sl, sm_scale)
+                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, state_I_out, log_gamma, mix_g, norm_weight, r, sl, sm_scale)
                     torch.cuda.synchronize()
 
                     start.record()
                     for _ in range(config.active_steps):
-                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, log_gamma, mix_g, norm_weight, r, sl, sm_scale)
+                        _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, state_I_out, log_gamma, mix_g, norm_weight, r, sl, sm_scale)
                     end.record()
                     torch.cuda.synchronize()
                     

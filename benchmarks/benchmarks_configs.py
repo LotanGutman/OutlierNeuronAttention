@@ -13,7 +13,7 @@ CACHE_PATH = "data/experiments_cache"
 class PrefillExperimentConfig:
     model_config: ModelConfig = field(default_factory=ModelConfig)
     seed: int = 42
-    seq_lengths: tuple[int, ...] = (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072)
+    seq_lengths: tuple[int, ...] = (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144)
     cache_file_name: str = "profile_prefill_results.pt"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -49,20 +49,9 @@ class DecodeExperimentConfig:
     )
     warmup_steps: int = 10
     active_steps: int = 30
-    seq_lengths: tuple[int, ...] = (512, 1024, 4096, 16384, 32768, 65536, 131072, 196608)
+    seq_lengths: tuple[int, ...] = (512, 1024, 4096, 16384, 32768, 65536, 131072, 196608, 262144)
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     cache_file_name: str = "profile_decode_results.pt"
-
-@dataclass
-class LongDistancePPLConfig:
-    """Long-distance perplexity evaluation (Child et al. 2019)."""
-    batch_size: int = 16
-    seq_len: int = 1024
-    distance_threshold: int = 512
-    rare_token_threshold: int = 500
-    num_batches: int = 100
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    cache_file_name: str = "long_distance_ppl_results.pt"
 
 @dataclass
 class DistanceMetricConfig:

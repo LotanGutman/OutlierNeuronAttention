@@ -112,6 +112,18 @@ class InferenceEngine:
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 logits, cache_O_list, state_I_list = self.model(context, return_state=True)
 
+            cache_seq_len = context.shape[1]
+            
+            # Pre-allocate exact cache for O(1) decoding
+            if cache_O_list is not None:
+                for i, (k_cache, v_cache) in enumerate(cache_O_list):
+                    b, h, seq, d = k_cache.shape
+                    new_k = torch.zeros(b, h, seq + max_new_tokens, d, device=k_cache.device, dtype=k_cache.dtype)
+                    new_v = torch.zeros(b, h, seq + max_new_tokens, v_cache.shape[-1], device=v_cache.device, dtype=v_cache.dtype)
+                    new_k[:, :, :seq, :] = k_cache
+                    new_v[:, :, :seq, :] = v_cache
+                    cache_O_list[i] = (new_k, new_v)
+
             # 2. Generation phase
             for step in range(max_new_tokens):
                 # --- DEBUG: Check the integrity of the state and cache ---
@@ -177,8 +189,9 @@ class InferenceEngine:
                 x = next_token
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     logits, cache_O_list, state_I_list = self.model.forward_step(
-                        x, cache_O_list, state_I_list
+                        x, cache_O_list, state_I_list, cache_seq_len=cache_seq_len
                     )
+                cache_seq_len += 1
                 
         if not stream:
             return self.tokenizer.decode(generated)
