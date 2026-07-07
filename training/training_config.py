@@ -3,10 +3,18 @@ from typing import Union, List, Tuple
 import torch
 from src.config import ModelConfig
 
+"""
+important - 
+the saved dataset cache file will be named accordingly to the model_name before the first "_".
+Therefore it should be set to "30M_{name}" or "...M_{name}" to avoid overwriting the cache file
+when training different models architectures of the same size (require same data)
+"""
+
+
 @dataclass
 class LanguageModelingExperimentConfig:
-    # Model identity — change model_name to scale up/down (e.g. "100M")
-    model_name: str = "30M"
+    # Model identity — change model_name to scale up/down
+    model_name: str = "30M_HOFA"
 
     # Architecture
     model_config: ModelConfig = field(

@@ -1,14 +1,21 @@
-from training.training_config import make_125M_hofa
+from training.training_config import make_125M_hofa, LanguageModelingExperimentConfig
+import sys
+import types
+import torch._dynamo
+torch._dynamo.config.disable = True
+
+
 import argparse
 
 
 def main():
-    config = make_125M_hofa()
+    config = LanguageModelingExperimentConfig() # make_125M_hofa()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     subparsers.add_parser("download-data", help="Download and cache the dataset")
+    
     parser_train = subparsers.add_parser("train", help="Run training, plotting, or evaluation")
     parser_train.add_argument("--plot", action="store_true", help="Plot training metrics")
     parser_train.add_argument("--eval", action="store_true", help="Evaluate on HellaSwag using lm-eval")

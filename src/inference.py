@@ -106,6 +106,7 @@ class InferenceEngine:
             
         context = torch.tensor([ids], dtype=torch.long, device=self.device)
         generated = []
+        seen_tokens = set(ids)
 
         with torch.no_grad():
             # 1. Prefill phase (one-shot parallel forward)
@@ -157,14 +158,15 @@ class InferenceEngine:
                     mix_bias = attn_layer.mix_proj.bias
                     print(f"Mix gate bias mean: {mix_bias.mean().item():.4f}")  # If this is < -2.0, mix_g is near 0
 
-                # Sanitize logits to prevent CUDA asserts in untrained models (NaNs or Infs)
-                if torch.isnan(logits).any() or torch.isinf(logits).any():
-                    print("NaN/Inf detected in logits!")
-                    print(f"Logits: {logits}")
+                if DEBUG_MODE:
+                    # Sanitize logits to prevent CUDA asserts in untrained models (NaNs or Infs)
+                    if torch.isnan(logits).any() or torch.isinf(logits).any():
+                        print("NaN/Inf detected in logits!")
+                        print(f"Logits: {logits}")
                 
                 logits = logits[:, -1, :] / temperature
 
-                for past_token in set(context[0].tolist()):
+                for past_token in seen_tokens:
                     if logits[0, past_token] < 0:
                         logits[0, past_token] *= repetition_penalty
                     else:
@@ -177,14 +179,16 @@ class InferenceEngine:
                 probs = F.softmax(logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
 
-                if next_token.item() == self.tokenizer.eot_token:
+                next_token_id = next_token.item()
+                if next_token_id == self.tokenizer.eot_token:
                     break
                 
                 context = torch.cat([context, next_token], dim=1)
-                generated.append(next_token.item())
+                generated.append(next_token_id)
+                seen_tokens.add(next_token_id)
                 
                 if stream:
-                    yield next_token.item()
+                    yield next_token_id
                     
                 x = next_token
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):

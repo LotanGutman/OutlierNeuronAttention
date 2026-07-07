@@ -23,7 +23,7 @@ def triton_next_power_of_2(n):
         triton.Config({'BLOCK_SEQ': 256}, num_warps=8, num_stages=3),
         triton.Config({'BLOCK_SEQ': 256}, num_warps=8, num_stages=4),
     ],
-    key=['seq_len']
+    key=[]
 )
 @triton.jit
 def _fused_hofa_decode_kernel(

@@ -26,21 +26,32 @@ def do_inference(config: LanguageModelingExperimentConfig):
             print(f"\n[Prompt]: {prompt}")
             print("[Generated]: ", end="", flush=True)
             
+            import time
+            start_time = time.time()
             generated_tokens = []
             prev_text = ""
             
-            # Stream the generated tokens
-            for token in engine.generate(prompt=prompt, max_new_tokens=100, temperature=0.1, top_k=5, stream=True):
-                generated_tokens.append(token)
+            try:
+                # Stream the generated tokens
+                for token in engine.generate(prompt=prompt, max_new_tokens=100, temperature=0.1, top_k=5, stream=True):
+                    generated_tokens.append(token)
 
-                full_text = engine.tokenizer.decode(generated_tokens)
+                    full_text = engine.tokenizer.decode(generated_tokens)
 
-                new_chunk = full_text[len(prev_text):]
-                print(new_chunk, end="", flush=True)
+                    new_chunk = full_text[len(prev_text):]
+                    print(new_chunk, end="", flush=True)
 
-                prev_text = full_text
+                    prev_text = full_text
+            except KeyboardInterrupt:
+                print("\n[Generation Interrupted]")
+            
+            end_time = time.time()
+            elapsed = end_time - start_time
+            num_tokens = len(generated_tokens)
+            tokens_per_sec = num_tokens / elapsed if elapsed > 0 else 0.0
             
             print() # newline after generation is complete
+            print(f"[Speed]: {tokens_per_sec:.2f} tokens/sec ({num_tokens} tokens in {elapsed:.2f}s)")
             
         except KeyboardInterrupt:
             print("\nExiting...")

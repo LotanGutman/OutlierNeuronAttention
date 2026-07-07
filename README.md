@@ -152,6 +152,28 @@ To scale to a larger model, simply change the active config in `main.py`. The pi
 
 ---
 
+## Environment & Compilation Troubleshooting
+
+If you encounter `ImportError` or `triton_key` errors when running the model with `torch.compile(mode="max-autotune")` enabled in `HybridOutlierFactorizedAttentionTrain.py`, it is due to a version conflict between PyTorch 2.4 and the `flash-linear-attention` (`fla`) requirement for newer Triton versions. PyTorch 2.4 bundles an older Triton that breaks compilation when `fla` forces a newer Triton version into the environment. 
+
+**To fix this and restore training speed:**
+Upgrade to a newer PyTorch version (e.g., PyTorch 2.5.1 or a recent Nightly) that natively bundles a Triton version compatible with `fla`. Once upgraded, you should:
+1. Uncomment the `@torch.compile(mode="max-autotune")` decorator in `HybridOutlierFactorizedAttentionTrain.py`.
+2. Remove the `torch._dynamo.config.disable = True` hotfix from `main.py`.
+
+---
+
+## Inference & Autotuning Optimizations
+
+During autoregressive generation, the sequence length increases by 1 for every token. If `seq_len` is included in the `@triton.autotune` `key` arguments for the `fused_hofa_decode_kernel`, Triton will aggressively re-compile and re-autotune the kernel for *every single generated token*, causing severe latency degradation. 
+
+We currently removed `seq_len` from the `autotune` keys to prevent this recompilation, providing a massive generation speedup. 
+
+**Future Optimization (Bucketizing / Padding `seq_len`):** 
+To achieve peak hardware utilization without recompiling every step, we can bring `seq_len` back into the autotuner key but apply a bucketizing or padding trick. Instead of passing the exact `seq_len` to Triton, we can pad it to the nearest power of 2 (or fixed buckets like 128, 256, 512). Triton will only autotune when crossing a bucket boundary, allowing us to maintain optimal block sizes for the current context length without the per-token compilation overhead.
+
+---
+
 ## Dependencies
 
 - PyTorch ≥ 2.4
