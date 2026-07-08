@@ -182,8 +182,13 @@ def train(config: LanguageModelingExperimentConfig):
             if step > 0 and step % config.save_every == 0:
                 save_path = os.path.join(checkpoint_dir, "checkpoint.pt")
                 temp_path = save_path + ".tmp"
+                
+                # cleanup model state dict in case we're using the compiled model (save as "uncompiled")
+                raw_state_dict = model.state_dict()
+                clean_state_dict = {k.replace('_orig_mod.', ''): v for k, v in raw_state_dict.items()}
+
                 torch.save({
-                    'model_state_dict': model.state_dict(),
+                    'model_state_dict': clean_state_dict,
                     'optimizer_state_dict': optimizer.state_dict(),
                     'metrics': metrics,
                     'step': step,
@@ -207,8 +212,13 @@ def train(config: LanguageModelingExperimentConfig):
         interrupt_handler.detach()
         save_path = os.path.join(checkpoint_dir, "checkpoint.pt")
         temp_path = save_path + ".tmp"
+        
+        # same thing, cleanup model
+        raw_state_dict = model.state_dict()
+        clean_state_dict = {k.replace('_orig_mod.', ''): v for k, v in raw_state_dict.items()}
+        
         torch.save({
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': clean_state_dict,
             'optimizer_state_dict': optimizer.state_dict(),
             'metrics': metrics,
             'step': step,
