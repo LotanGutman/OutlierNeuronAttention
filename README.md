@@ -152,25 +152,26 @@ To scale to a larger model, simply change the active config in `main.py`. The pi
 
 ---
 
-## Environment & Compilation Troubleshooting
+## Environment & Compilation Strategy
 
-If you encounter `ImportError` or `triton_key` errors when running the model with `torch.compile(mode="max-autotune")` enabled in `HybridOutlierFactorizedAttentionTrain.py`, it is due to a version conflict between PyTorch 2.4 and the `flash-linear-attention` (`fla`) requirement for newer Triton versions. PyTorch 2.4 bundles an older Triton that breaks compilation when `fla` forces a newer Triton version into the environment. 
+PyTorch 2.0+ `torch.compile` provides massive speedups but introduces significant graph breaks and startup overhead when applied aggressively to individual inner modules (like `@torch.compile(mode="max-autotune")` on an attention class). 
 
-**To fix this and restore training speed:**
-Upgrade to a newer PyTorch version (e.g., PyTorch 2.5.1 or a recent Nightly) that natively bundles a Triton version compatible with `fla`. Once upgraded, you should:
-1. Uncomment the `@torch.compile(mode="max-autotune")` decorator in `HybridOutlierFactorizedAttentionTrain.py`.
-2. Remove the `torch._dynamo.config.disable = True` hotfix from `main.py`.
+To achieve maximum throughput and avoid endless autotune loops, the HOFA training pipeline explicitly avoids compiling inner modules. Instead, the entire model is compiled dynamically in `train.py`:
+```python
+model = torch.compile(model, dynamic=True)
+```
+This enables a single unified execution graph and allows training to start instantly without hanging on kernel benchmarking.
 
----
+**Note on Installation**: The official `install.sh` builds `mamba-ssm` and `causal-conv1d` locally using `--no-build-isolation` to perfectly match the local system's C++ ABI and PyTorch 2.6.0. It also enforces `TORCH_CUDA_ARCH_LIST="native"` to optimize the binary for the host GPU architecture. We explicitly pin `mamba-ssm==2.2.4` to avoid `quack-kernels` dependencies introduced in 2.3+ which cause FP8 initialization crashes on standard PyTorch 2.6.0, and to retain native support for Triton 3.2.0 without requiring hot-patches.
 
 ## Inference & Autotuning Optimizations
 
-During autoregressive generation, the sequence length increases by 1 for every token. If `seq_len` is included in the `@triton.autotune` `key` arguments for the `fused_hofa_decode_kernel`, Triton will aggressively re-compile and re-autotune the kernel for *every single generated token*, causing severe latency degradation. 
+During interactive inference, changing sequence lengths historically triggered catastrophic PyTorch/Triton compilation loops. We have implemented several mitigations to guarantee instant, fluid generation:
 
-We currently removed `seq_len` from the `autotune` keys to prevent this recompilation, providing a massive generation speedup. 
-
-**Future Optimization (Bucketizing / Padding `seq_len`):** 
-To achieve peak hardware utilization without recompiling every step, we can bring `seq_len` back into the autotuner key but apply a bucketizing or padding trick. Instead of passing the exact `seq_len` to Triton, we can pad it to the nearest power of 2 (or fixed buckets like 128, 256, 512). Triton will only autotune when crossing a bucket boundary, allowing us to maintain optimal block sizes for the current context length without the per-token compilation overhead.
+1. **Prefill Autotuning Fix:** In `exact_attention.py`, the sequence length (`N_CTX`) was removed from the `@triton.autotune` key. This prevents Triton from triggering a 5-second GPU benchmark sweep every time you type a prompt of a different length.
+2. **Decode Autotuning Fix:** In `fused_hofa_decode_kernel`, the sequence length is similarly excluded from the tuning keys to prevent recompilation on every single generated token.
+3. **Silent Initialization Warmup:** To ensure the very first prompt is perfectly fluid, `InferenceEngine.__init__` executes a silent 1-token "Warmup" generation in the background immediately after checkpoint loading. This forces Triton to absorb all JIT compilation overhead before the user is ever presented with a prompt.
+4. **Separated Performance Metrics:** The interactive `infer` CLI clearly separates the mathematical Prefill Tokens-Per-Second from the Decode Tokens-Per-Second, allowing precise performance profiling without startup bias.
 
 ---
 

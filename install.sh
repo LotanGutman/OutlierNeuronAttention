@@ -20,10 +20,12 @@ python -m pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 torchaudio==2
 # ------------------------------------------------------------
 # 3. Install Precompiled Mamba & Causal Conv1d
 # ------------------------------------------------------------
-echo "[INFO] Installing Mamba & Causal Conv1d (Precompiled Wheels)..."
-python -m pip install https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.2.post1/causal_conv1d-1.6.2.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
-python -m pip install https://github.com/state-spaces/mamba/releases/download/v2.3.2.post1/mamba_ssm-2.3.2.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
-
+echo "[INFO] Compiling Mamba & Causal Conv1d from Source (This takes ~3 minutes)..."
+export CAUSAL_CONV1D_FORCE_BUILD=TRUE
+export MAMBA_FORCE_BUILD=TRUE
+export TORCH_CUDA_ARCH_LIST="native"
+python -m pip install causal-conv1d==1.6.2.post1 --no-build-isolation --no-deps --no-cache-dir
+python -m pip install mamba-ssm==2.2.4 --no-build-isolation --no-deps --no-cache-dir
 # ------------------------------------------------------------
 # 4. Install Flash Linear Attention
 # ------------------------------------------------------------
@@ -50,11 +52,7 @@ python -m pip install \
     torch==2.6.0+cu124 \
     --extra-index-url https://download.pytorch.org/whl/cu124
 
-# ------------------------------------------------------------
-# 6. Upgrade Triton (Done last to prevent pip from overwriting PyTorch)
-# ------------------------------------------------------------
-echo "[INFO] Upgrading Triton (ignoring dependencies)..."
-python -m pip install "triton>=3.1.0" --upgrade --no-deps
+
 
 # ------------------------------------------------------------
 # 7. Verification

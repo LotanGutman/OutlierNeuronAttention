@@ -35,8 +35,8 @@ class LanguageModelingExperimentConfig:
 
     # Training hyperparameters
     batch_size: int = 32
-    micro_batch_size: int = 4
-    gradient_accumulation_steps: int = 8  # 4 * 8 = 32
+    micro_batch_size: int = 2
+    gradient_accumulation_steps: int = 16  # 2 * 16 = 32
     seq_len: int = 1024
     vocab_size: int = 50257  # gpt2 vocab size
     train_steps: int = 53000

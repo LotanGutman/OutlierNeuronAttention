@@ -184,25 +184,19 @@ def _fwd_kernel(
             qk += tl.dot(q, k, allow_tf32=True)
             qk = qk * sm_scale
             
-            if start_n < start_m * BLOCK_M:
-                m_ij = tl.maximum(m_i, tl.max(qk, 1))
-                p = tl.exp(qk - m_ij[:, None])
-                
-                l_ij = tl.sum(p, 1)
-                alpha = tl.exp(m_i - m_ij)
-            else:
-                # causal mask
-                qk = tl.where(offs_m[:, None] >= offs_n_curr[None, :], qk, float("-inf"))
-                
-                m_ij = tl.maximum(m_i, tl.max(qk, 1))
-                
-                m_ij_safe = tl.where(m_ij == float("-inf"), 0.0, m_ij)
-                p = tl.exp(qk - m_ij_safe[:, None])
-                
-                l_ij = tl.sum(p, 1)
-                
-                m_i_safe = tl.where(m_i == float("-inf"), 0.0, m_i)
-                alpha = tl.exp(m_i_safe - m_ij_safe)
+            # Triton 3.2.0 workaround: avoid if/else branch inside loop to prevent SSA scheduling errors
+            qk_causal = tl.where(offs_m[:, None] >= offs_n_curr[None, :], qk, float("-inf"))
+            is_unmasked = start_n < start_m * BLOCK_M
+            qk_safe = tl.where(is_unmasked, qk, qk_causal)
+            
+            m_ij = tl.maximum(m_i, tl.max(qk_safe, 1))
+            m_ij_safe = tl.where(m_ij == float("-inf"), 0.0, m_ij)
+            p = tl.exp(qk_safe - m_ij_safe[:, None])
+            
+            l_ij = tl.sum(p, 1)
+            
+            m_i_safe = tl.where(m_i == float("-inf"), 0.0, m_i)
+            alpha = tl.exp(m_i_safe - m_ij_safe)
             
             l_i = l_i * alpha + l_ij
             acc = acc * alpha[:, None]

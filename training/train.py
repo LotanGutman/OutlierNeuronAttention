@@ -1,4 +1,5 @@
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import time
 import math
 import torch
@@ -51,7 +52,6 @@ def train(config: LanguageModelingExperimentConfig):
     device = torch.device(config.device)
     model = SubwordLM(config.vocab_size, config.model_config)
     model.to(device)
-    model = torch.compile(model, dynamic=True)
     
     if config.use_mixed_precision:
         pass    
@@ -110,6 +110,7 @@ def train(config: LanguageModelingExperimentConfig):
             
         print(f"Resumed successfully from step {start_step}.")
     
+    model = torch.compile(model, dynamic=True)
     # Initialize interrupt handler
     interrupt_handler = GracefulInterruptHandler()
     interrupt_handler.attach()
