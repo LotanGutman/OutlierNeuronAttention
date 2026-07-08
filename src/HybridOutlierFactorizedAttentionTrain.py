@@ -75,7 +75,6 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
 
-    # @torch.compile(mode="max-autotune")
     def forward(self, x):
         B, N, D = x.shape
         scale_factor = self.d_head ** 0.25

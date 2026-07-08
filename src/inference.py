@@ -26,6 +26,9 @@ class InferenceEngine:
             
         self._load_checkpoint(checkpoint_path)
 
+        print("\n[INFO] Warming up Triton compiler (this may take a few seconds)...")
+        _ = list(self.generate(prompt="Warmup", max_new_tokens=1, stream=False))
+
     def _resolve_path(self, path):
         """Resolves Windows-style paths to WSL paths if running on Linux/WSL."""
         if os.path.exists(path):

@@ -31,7 +31,7 @@ def exact_attn_early_prune(configs, named_args, **kwargs):
         triton.Config({'BLOCK_M': 64, 'BLOCK_N': 32}, num_warps=2, num_stages=2),
         triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32}, num_warps=2, num_stages=2),
     ],
-    key=['N_CTX', 'r'],
+    key=['r'],
     prune_configs_by={
         'early_config_prune': exact_attn_early_prune,
         'perf_model': None,

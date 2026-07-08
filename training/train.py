@@ -51,6 +51,7 @@ def train(config: LanguageModelingExperimentConfig):
     device = torch.device(config.device)
     model = SubwordLM(config.vocab_size, config.model_config)
     model.to(device)
+    model = torch.compile(model, dynamic=True)
     
     if config.use_mixed_precision:
         pass    

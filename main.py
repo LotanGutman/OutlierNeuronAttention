@@ -1,8 +1,6 @@
 from training.training_config import make_125M_hofa, LanguageModelingExperimentConfig
 import sys
 import types
-import torch._dynamo
-torch._dynamo.config.disable = True
 
 
 import argparse
