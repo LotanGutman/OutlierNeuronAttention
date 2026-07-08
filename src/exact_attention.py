@@ -3,6 +3,18 @@ import triton
 import triton.language as tl
 from src.modules.triton_utils import get_device_max_sram, get_exact_attn_block_sizes
 
+def get_bucket(n):
+    if n <= 1024:
+        return 1024
+    elif n <= 4096:
+        return 4096
+    elif n <= 16384:
+        return 16384
+    elif n <= 65536:
+        return 65536
+    else:
+        return 262144
+
 def exact_attn_early_prune(configs, named_args, **kwargs):
     device = named_args['Q'].device
     max_sram = get_device_max_sram(device)
@@ -31,7 +43,7 @@ def exact_attn_early_prune(configs, named_args, **kwargs):
         triton.Config({'BLOCK_M': 64, 'BLOCK_N': 32}, num_warps=2, num_stages=2),
         triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32}, num_warps=2, num_stages=2),
     ],
-    key=['r'],
+    key=['N_CTX_bucket', 'r'],
     prune_configs_by={
         'early_config_prune': exact_attn_early_prune,
         'perf_model': None,
@@ -48,7 +60,7 @@ def _fwd_kernel(
     stride_vz, stride_vh, stride_vn, stride_vk,
     stride_oz, stride_oh, stride_om, stride_on,
     stride_mix_g_b, stride_mix_g_h, stride_mix_g_n,
-    Z, H, N_CTX, r,
+    Z, H, N_CTX, r, N_CTX_bucket,
     Part_Out_ptr, Part_L_ptr, Part_M_ptr,
     stride_part_out_zh, stride_part_out_k, stride_part_out_n, stride_part_out_d,
     stride_part_l_zh, stride_part_l_k, stride_part_l_n,
@@ -185,13 +197,13 @@ def _fwd_kernel(
             qk = qk * sm_scale
             
             # Triton 3.2.0 workaround: avoid if/else branch inside loop to prevent SSA scheduling errors
-            qk_causal = tl.where(offs_m[:, None] >= offs_n_curr[None, :], qk, float("-inf"))
             is_unmasked = start_n < start_m * BLOCK_M
-            qk_safe = tl.where(is_unmasked, qk, qk_causal)
+            mask_safe = (offs_m[:, None] >= offs_n_curr[None, :]) | is_unmasked
+            qk = tl.where(mask_safe, qk, float("-inf"))
             
-            m_ij = tl.maximum(m_i, tl.max(qk_safe, 1))
+            m_ij = tl.maximum(m_i, tl.max(qk, 1))
             m_ij_safe = tl.where(m_ij == float("-inf"), 0.0, m_ij)
-            p = tl.exp(qk_safe - m_ij_safe[:, None])
+            p = tl.exp(qk - m_ij_safe[:, None])
             
             l_ij = tl.sum(p, 1)
             
@@ -295,6 +307,10 @@ def exact_attention_triton(q, k, v, r, sm_scale, mix_g, out=None, split_k=None):
     
     max_sram = get_device_max_sram(q.device)
     
+    # Bucket N_CTX to prevent constant recompilation during variable-length inference prefill,
+    # while still allowing autotuning to choose optimal configs for different context scales.
+    n_ctx_bucket = get_bucket(N_CTX)
+    
     if split_k is None:
         # Compute how much VRAM Split-K partials would cost, and only
         # enable it if the buffers fit comfortably (< 25% of free VRAM).
@@ -327,7 +343,7 @@ def exact_attention_triton(q, k, v, r, sm_scale, mix_g, out=None, split_k=None):
             v.stride(0), v.stride(1), v.stride(2), v.stride(3),
             out.stride(0), out.stride(1), out.stride(2), out.stride(3),
             mix_g.stride(0), mix_g.stride(1), mix_g.stride(2),
-            Z, H, N_CTX, r,
+            Z, H, N_CTX, r, n_ctx_bucket,
             part_out, part_l, part_m,
             part_out.stride(0), part_out.stride(1), part_out.stride(2), part_out.stride(3),
             part_l.stride(0), part_l.stride(1), part_l.stride(2),
@@ -368,7 +384,7 @@ def exact_attention_triton(q, k, v, r, sm_scale, mix_g, out=None, split_k=None):
             v.stride(0), v.stride(1), v.stride(2), v.stride(3),
             out.stride(0), out.stride(1), out.stride(2), out.stride(3),
             mix_g.stride(0), mix_g.stride(1), mix_g.stride(2),
-            Z, H, N_CTX, r,
+            Z, H, N_CTX, r, n_ctx_bucket,
             out, out, out,
             0, 0, 0, 0,
             0, 0, 0,

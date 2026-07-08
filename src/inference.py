@@ -27,7 +27,7 @@ class InferenceEngine:
         self._load_checkpoint(checkpoint_path)
 
         print("\n[INFO] Warming up Triton compiler (this may take a few seconds)...")
-        _ = list(self.generate(prompt="Warmup", max_new_tokens=1, stream=False))
+        _ = list(self.generate(prompt="Warmup", max_new_tokens=5, stream=False))
 
     def _resolve_path(self, path):
         """Resolves Windows-style paths to WSL paths if running on Linux/WSL."""
@@ -169,11 +169,12 @@ class InferenceEngine:
                 
                 logits = logits[:, -1, :] / temperature
 
-                for past_token in seen_tokens:
-                    if logits[0, past_token] < 0:
-                        logits[0, past_token] *= repetition_penalty
-                    else:
-                        logits[0, past_token] /= repetition_penalty
+                # Vectorized repetition penalty (replaces Python for-loop)
+                if seen_tokens:
+                    seen_idx = torch.tensor(list(seen_tokens), device=self.device, dtype=torch.long)
+                    penalty_logits = logits[0, seen_idx]
+                    penalty_logits = torch.where(penalty_logits < 0, penalty_logits * repetition_penalty, penalty_logits / repetition_penalty)
+                    logits[0, seen_idx] = penalty_logits
                 
                 if top_k > 0:
                     v, _ = torch.topk(logits, top_k)
@@ -186,7 +187,6 @@ class InferenceEngine:
                 if next_token_id == self.tokenizer.eot_token:
                     break
                 
-                context = torch.cat([context, next_token], dim=1)
                 generated.append(next_token_id)
                 seen_tokens.add(next_token_id)
                 
