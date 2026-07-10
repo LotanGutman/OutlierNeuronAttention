@@ -1,3 +1,4 @@
+from src.modules import debug_decode
 from training.training_config import make_125M_hofa, LanguageModelingExperimentConfig
 
 
@@ -46,6 +47,8 @@ def main():
         if args.validate:
             from src.modules.validate_inference import validate_inference
             validate_inference(config)
+            from src.modules.debug_decode import debug_decode
+            debug_decode(config)
         elif args.debug:
             from training.inference_debug import do_debug_inference
             do_debug_inference(config)

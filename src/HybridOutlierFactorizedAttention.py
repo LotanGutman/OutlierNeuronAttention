@@ -80,7 +80,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
             log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
             Y_I, states_out = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
             del gate_logits, log_gamma
-            Y_I = self.inlier_norm(Y_I) * self.gla_scale
+            Y_I_float = Y_I.float()
+            Y_I_float = self.inlier_norm(Y_I_float) * self.gla_scale
+            Y_I = Y_I_float.to(Y_I.dtype)
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             Y_out = self.out_proj(Y_out).to(dtype_in)
             if return_state:
@@ -130,7 +132,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
         sm_scale = (self.d_head / self.r) ** 0.5
 
         # Apply inlier norm and scale
-        Y_I = self.inlier_norm(Y_I) * self.gla_scale
+        Y_I_float = Y_I.float()
+        Y_I_float = self.inlier_norm(Y_I_float) * self.gla_scale
+        Y_I = Y_I_float.to(Y_I.dtype)
 
         # Pre-allocate Final Output and blend the pre-scaled Y_I
         Y_Final = ((1.0 - mix_g) * Y_I)
@@ -186,7 +190,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
             # Compute output using the newly updated state
             Y_I = torch.bmm(q_bmm, state_I_new_bmm).view(B, self.num_heads, 1, self.d_head)
-            Y_I = self.inlier_norm(Y_I) * self.gla_scale
+            Y_I_float = Y_I.float()
+            Y_I_float = self.inlier_norm(Y_I_float) * self.gla_scale
+            Y_I = Y_I_float.to(Y_I.dtype)
 
             state_I_new = state_I_new_bmm.view(B, self.num_heads, self.j, self.d_head)
             
