@@ -47,7 +47,17 @@ def main():
     elif args.command == "infer":
         if args.validate:
             from benchmarks.validate_kernels import validate_inference
+            import copy
+            
+            original_r = config.model_config.r if isinstance(config.model_config.r, int) else config.model_config.r[0]
+            print(f"\n{'='*70}\nVALIDATING FOR r = {original_r}\n{'='*70}")
             validate_inference(config, verbose=args.verbose)
+            
+            if original_r != 0:
+                print(f"\n{'='*70}\nVALIDATING FOR r = 0\n{'='*70}")
+                config_r0 = copy.deepcopy(config)
+                config_r0.model_config.r = 0
+                validate_inference(config_r0, verbose=args.verbose)
         elif args.debug:
             from training.inference_debug import do_debug_inference
             do_debug_inference(config)

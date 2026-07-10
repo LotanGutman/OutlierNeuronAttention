@@ -87,7 +87,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Y_out = self.out_proj(Y_out).to(dtype_in)
             if return_state:
                 state_I = states_out[:, :, :self.j, :self.d_head]
-                return Y_out, None, state_I
+                return Y_out, None, (state_I, torch.empty_like(state_I))
             return Y_out
 
         if self.r == self.d_head:
@@ -169,6 +169,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
+            if isinstance(state_I, tuple):
+                state_I = state_I[0]
             if state_I is None:
                 state_I = torch.zeros(B, self.num_heads, self.j, self.d_head,
                                       device=x.device, dtype=torch.float32)
@@ -179,25 +181,25 @@ class HybridOutlierFactorizedAttention(nn.Module):
             # Y_I = torch.einsum('bhj,bhjd->bhd', Q.squeeze(2), state_I).unsqueeze(2)
             # state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', K_s, V_s)
             
-            q_bmm = Q.squeeze(2).view(B * self.num_heads, 1, self.j)
-            k_bmm = K_s.view(B * self.num_heads, self.j, 1)
-            v_bmm = V_s.view(B * self.num_heads, 1, self.d_head)
-            state_I_bmm = state_I.view(B * self.num_heads, self.j, self.d_head)
-            gamma_bmm = gamma.view(B * self.num_heads, 1, 1)
+            q_bmm = Q.squeeze(2).reshape(B * self.num_heads, 1, self.j)
+            k_bmm = K_s.reshape(B * self.num_heads, self.j, 1)
+            v_bmm = V_s.reshape(B * self.num_heads, 1, self.d_head)
+            state_I_bmm = state_I.reshape(B * self.num_heads, self.j, self.d_head)
+            gamma_bmm = gamma.reshape(B * self.num_heads, 1, 1)
 
             # Inclusive Causality: Update state FIRST (matches training kernel's >= mask)
             state_I_new_bmm = torch.baddbmm(state_I_bmm * gamma_bmm, k_bmm, v_bmm)
 
             # Compute output using the newly updated state
-            Y_I = torch.bmm(q_bmm, state_I_new_bmm).view(B, self.num_heads, 1, self.d_head)
+            Y_I = torch.bmm(q_bmm, state_I_new_bmm).reshape(B, self.num_heads, 1, self.d_head)
             Y_I_float = Y_I.float()
             Y_I_float = self.inlier_norm(Y_I_float) * self.gla_scale
             Y_I = Y_I_float.to(Y_I.dtype)
 
-            state_I_new = state_I_new_bmm.view(B, self.num_heads, self.j, self.d_head)
+            state_I_new = state_I_new_bmm.reshape(B, self.num_heads, self.j, self.d_head)
             
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
-            return self.out_proj(Y_out).to(dtype_in), None, state_I_new
+            return self.out_proj(Y_out).to(dtype_in), None, (state_I_new, torch.empty_like(state_I_new))
 
         if self.r == self.d_head:
             if cache_O is None:

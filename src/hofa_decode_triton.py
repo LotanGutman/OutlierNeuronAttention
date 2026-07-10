@@ -10,17 +10,24 @@ def triton_next_power_of_2(n):
 
 @triton.autotune(
     configs=[
-        # BLOCK_SEQ 32
+        # Small chunks (early sequences)
+        triton.Config({'BLOCK_SEQ': 16}, num_warps=1, num_stages=2),
+        triton.Config({'BLOCK_SEQ': 16}, num_warps=2, num_stages=2),
+        triton.Config({'BLOCK_SEQ': 32}, num_warps=1, num_stages=2),
         triton.Config({'BLOCK_SEQ': 32}, num_warps=2, num_stages=2),
         triton.Config({'BLOCK_SEQ': 32}, num_warps=2, num_stages=3),
-        # BLOCK_SEQ 64
+        
+        # Medium chunks
+        triton.Config({'BLOCK_SEQ': 64}, num_warps=2, num_stages=2),
         triton.Config({'BLOCK_SEQ': 64}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_SEQ': 64}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_SEQ': 64}, num_warps=4, num_stages=4),
-        # BLOCK_SEQ 128
+        
+        # Large chunks (long sequences)
         triton.Config({'BLOCK_SEQ': 128}, num_warps=4, num_stages=3),
         triton.Config({'BLOCK_SEQ': 128}, num_warps=4, num_stages=4),
-        # BLOCK_SEQ 256
+        triton.Config({'BLOCK_SEQ': 128}, num_warps=8, num_stages=3),
+        
+        # Massive chunks
         triton.Config({'BLOCK_SEQ': 256}, num_warps=8, num_stages=3),
         triton.Config({'BLOCK_SEQ': 256}, num_warps=8, num_stages=4),
     ],

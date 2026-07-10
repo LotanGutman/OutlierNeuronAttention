@@ -244,11 +244,3 @@ for j_tile in range(0, j, J_TILE):
 ```
 
 Each tile fits in registers, reducing spills to shared memory and freeing bandwidth for the exact-attention loop. The GLA output computation (`q_J @ state`) tiles naturally along the same dimension. Expected improvement: 10–15% on top of Split-K by reducing register pressure in the fused kernel.
-
-### 5. Standardize `einsum` vs `bmm` for Decoding (Speed)
-
-In `HOFA_Infer.py`'s decoding step (when `r=0`), the state update is heavily optimized using `torch.baddbmm` and `torch.bmm` instead of `torch.einsum`. However, in `HOFA_Train.py`, the exact same logic uses `torch.einsum` which is notoriously slower to dispatch in PyTorch compared to highly optimized `bmm` calls. Porting the `bmm` optimization to the train decoding path and the hybrid decoding path will noticeably speed up training-time evaluation loops.
-
-### 6. In-Place RoPE Application (Memory Optimization)
-
-In `HOFA_Train.py`'s `forward` pass, RoPE is applied by allocating brand new tensors for `Q_O` and `K_O`, which consumes more memory during training. Conversely, in `HOFA_Infer.py`, RoPE is intelligently applied in-place to the slice (`Q[..., :self.r] = Q_O_rotated`). Since the `chunk_gla` kernel later slices `Q[..., self.r:]`, modifying the first `r` elements in-place is mathematically safe and prevents PyTorch from allocating massive duplicated tensors. We should adopt this in-place technique in the training pipeline.

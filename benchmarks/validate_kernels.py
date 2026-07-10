@@ -41,7 +41,7 @@ def validate_inference(config: LanguageModelingExperimentConfig, verbose: bool =
     
     # ── Monkey-patch for deep dive if verbose ──────────────────────────
     _cap = {}
-    if verbose:
+    if verbose and cfg.r > 0:
         import src.hofa_decode_triton as _dm
         import src.HybridOutlierFactorizedAttention as _am
         _orig = _dm.fused_hofa_decode
@@ -169,7 +169,7 @@ def validate_inference(config: LanguageModelingExperimentConfig, verbose: bool =
 
             pm("FINAL: Train vs Infer", out_step_ref, out_step_inf)
 
-            if verbose:
+            if verbose and cfg.r > 0:
                 # ═══ Recompute Train intermediates for step 1 ═══════════════════════════
                 # We need to recreate the first step logic exactly to show the deep dive
                 torch.manual_seed(200)

@@ -196,12 +196,12 @@ class HybridOutlierFactorizedAttention(nn.Module):
             K_s = K.squeeze(2)
             V_s = V.squeeze(2)
 
-            state_I_new = gamma.to(torch.float32) * state_I + torch.einsum(
-                'bhi,bhj->bhij', 
-                K_s.to(torch.float32), 
-                V_s.to(torch.float32)
-            )
-            Y_I = torch.einsum('bhi,bhij->bhj', Q.squeeze(2).to(torch.float32), state_I_new).unsqueeze(2)
+            K_f32 = K_s.to(torch.float32).unsqueeze(-1)
+            V_f32 = V_s.to(torch.float32).unsqueeze(-2)
+            state_I_new = gamma.to(torch.float32) * state_I + (K_f32 @ V_f32)
+            
+            Q_f32 = Q.squeeze(2).to(torch.float32).unsqueeze(-2)
+            Y_I = (Q_f32 @ state_I_new).squeeze(-2).unsqueeze(2)
             Y_I = (self.inlier_norm(Y_I.float()) * self.gla_scale).to(dtype_in)
 
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
@@ -239,9 +239,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
             V_cache = torch.cat([V_cache, V], dim=2)
             cache_O = (K_cache, V_cache)
 
-        attn_weights = torch.einsum('bhid,bhjd->bhij', Q_O, cache_O[0])
+        attn_weights = Q_O @ cache_O[0].transpose(-1, -2)
         sm_scale = (self.d_head / self.r) ** 0.5
-        Y_O = torch.einsum('bhij,bhjd->bhid', torch.softmax(attn_weights * sm_scale, dim=-1), cache_O[1])
+        Y_O = torch.softmax(attn_weights * sm_scale, dim=-1) @ cache_O[1]
 
         # ----- inlier gated linear attention -----
         Q_J = Q[..., self.r:]
@@ -259,12 +259,12 @@ class HybridOutlierFactorizedAttention(nn.Module):
         K_J_s = K_J.squeeze(2)
         V_s = V.squeeze(2)
 
-        state_I = state_I * gamma.to(torch.float32) + torch.einsum(
-            'bhd,bhm->bhdm', 
-            K_J_s.to(torch.float32), 
-            V_s.to(torch.float32)
-        )
-        Y_I = torch.einsum('bhd,bhdm->bhm', Q_J.squeeze(2).to(torch.float32), state_I).unsqueeze(2)
+        K_f32 = K_J_s.to(torch.float32).unsqueeze(-1)
+        V_f32 = V_s.to(torch.float32).unsqueeze(-2)
+        state_I = state_I * gamma.to(torch.float32) + (K_f32 @ V_f32)
+        
+        Q_f32 = Q_J.squeeze(2).to(torch.float32).unsqueeze(-2)
+        Y_I = (Q_f32 @ state_I).squeeze(-2).unsqueeze(2)
         Y_I = (self.inlier_norm(Y_I.float()) * self.gla_scale).to(dtype_in)
 
         Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * Y_I)
