@@ -1,4 +1,4 @@
-from src.modules import debug_decode
+
 from training.training_config import make_125M_hofa, LanguageModelingExperimentConfig
 
 
@@ -20,6 +20,7 @@ def main():
     parser_infer = subparsers.add_parser("infer", help="Run interactive generation or validation")
     parser_infer.add_argument("--debug", action="store_true", help="Run debug inference (no cache, training model)")
     parser_infer.add_argument("--validate", action="store_true", help="Validate custom inference kernel against reference")
+    parser_infer.add_argument("--verbose", action="store_true", help="Run deep dive into RMSNorm and intermediate tensors")
 
     parser_profile = subparsers.add_parser("profile", help="Run profiling benchmarks")
     parser_profile.add_argument("--prefill", action="store_true", help="Profile prefill (MHA vs HOFA)")
@@ -45,10 +46,8 @@ def main():
             train(config)
     elif args.command == "infer":
         if args.validate:
-            from src.modules.validate_inference import validate_inference
-            validate_inference(config)
-            from src.modules.debug_decode import debug_decode
-            debug_decode(config)
+            from benchmarks.validate_kernels import validate_inference
+            validate_inference(config, verbose=args.verbose)
         elif args.debug:
             from training.inference_debug import do_debug_inference
             do_debug_inference(config)

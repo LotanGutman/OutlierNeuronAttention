@@ -110,7 +110,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
                 output_final_state=False
             )
             Y_I = Y_I_t.transpose(1, 2)
-            Y_I = (self.inlier_norm(Y_I) * self.gla_scale).to(dtype_in)
+            Y_I = (self.inlier_norm(Y_I.float()) * self.gla_scale).to(dtype_in)
 
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out)
@@ -170,7 +170,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             output_final_state=False
         )
         Y_I = Y_I_t.transpose(1, 2)
-        Y_I = (self.inlier_norm(Y_I) * self.gla_scale).to(dtype_in)
+        Y_I = (self.inlier_norm(Y_I.float()) * self.gla_scale).to(dtype_in)
 
         Y_out = torch.lerp(Y_I, Y_O, mix_g)
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
@@ -202,7 +202,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
                 V_s.to(torch.float32)
             )
             Y_I = torch.einsum('bhi,bhij->bhj', Q.squeeze(2).to(torch.float32), state_I_new).unsqueeze(2)
-            Y_I = (self.inlier_norm(Y_I) * self.gla_scale).to(dtype_in)
+            Y_I = (self.inlier_norm(Y_I.float()) * self.gla_scale).to(dtype_in)
 
             Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out), None, state_I_new
@@ -265,7 +265,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             V_s.to(torch.float32)
         )
         Y_I = torch.einsum('bhd,bhdm->bhm', Q_J.squeeze(2).to(torch.float32), state_I).unsqueeze(2)
-        Y_I = (self.inlier_norm(Y_I) * self.gla_scale).to(dtype_in)
+        Y_I = (self.inlier_norm(Y_I.float()) * self.gla_scale).to(dtype_in)
 
         Y_out = (mix_g * Y_O) + ((1.0 - mix_g) * Y_I)
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)

@@ -48,7 +48,7 @@ The codebase maintains strict separation between Training and Inference to maxim
 
 Mathematical equivalence between the PyTorch Training model and the Triton Custom Inference model is guaranteed via a rigorous integration test script.
 
-`python main.py valid-infer`
+`python main.py infer --validate`
 
 This suite forces the highly-fused Autotuned PyTorch model (`HOFA_Train`) and the custom Autotuned Triton Kernel (`HOFA_Infer`) to execute identical autoregressive steps in `bfloat16`. 
 It evaluates:
@@ -71,7 +71,6 @@ src/
 ├── inference.py                               # InferenceEngine (generation loop)
 └── modules/
     ├── modules.py                             # RotaryEmbedding, rotate_half, apply_rotary_pos_emb
-    ├── validate_inference.py                  # Integration testing for HOFA_Train vs HOFA_Infer
     ├── triton_utils.py                        # SRAM querying, block-size calculation
     ├── checkpointing.py                       # save_checkpoint / load_checkpoint
     └── benchmark_utils.py                     # GenericBenchmarkLM, StandardMHA, build_attention
@@ -84,6 +83,7 @@ training/
 └── plot_training.py                           # Training metrics plotting (loss / LR curves)
 
 benchmarks/
+├── validate_kernels.py                        # Integration testing for HOFA_Train vs HOFA_Infer (fused from debug_decode)
 ├── benchmarks_configs.py                      # Experiment config dataclasses
 ├── benchmark_induction.py                     # Induction head training (MHA vs HOFA vs GLA vs Mamba)
 ├── benchmark_K_eff.py                         # Effective attention-mass measurement on real LLMs
@@ -94,7 +94,7 @@ benchmarks/
     ├── plot_K_eff.py                          # Attention-mass heatmaps
     └── plot_layerwise.py                      # Per-layer regime stacking plots
 
-main.py                                         # CLI entry point (download-data | train | infer | plot | valid-infer)
+main.py                                         # CLI entry point (download-data | train | infer | profile)
 ```
 
 ---
@@ -244,3 +244,11 @@ for j_tile in range(0, j, J_TILE):
 ```
 
 Each tile fits in registers, reducing spills to shared memory and freeing bandwidth for the exact-attention loop. The GLA output computation (`q_J @ state`) tiles naturally along the same dimension. Expected improvement: 10–15% on top of Split-K by reducing register pressure in the fused kernel.
+
+### 5. Standardize `einsum` vs `bmm` for Decoding (Speed)
+
+In `HOFA_Infer.py`'s decoding step (when `r=0`), the state update is heavily optimized using `torch.baddbmm` and `torch.bmm` instead of `torch.einsum`. However, in `HOFA_Train.py`, the exact same logic uses `torch.einsum` which is notoriously slower to dispatch in PyTorch compared to highly optimized `bmm` calls. Porting the `bmm` optimization to the train decoding path and the hybrid decoding path will noticeably speed up training-time evaluation loops.
+
+### 6. In-Place RoPE Application (Memory Optimization)
+
+In `HOFA_Train.py`'s `forward` pass, RoPE is applied by allocating brand new tensors for `Q_O` and `K_O`, which consumes more memory during training. Conversely, in `HOFA_Infer.py`, RoPE is intelligently applied in-place to the slice (`Q[..., :self.r] = Q_O_rotated`). Since the `chunk_gla` kernel later slices `Q[..., self.r:]`, modifying the first `r` elements in-place is mathematically safe and prevents PyTorch from allocating massive duplicated tensors. We should adopt this in-place technique in the training pipeline.
