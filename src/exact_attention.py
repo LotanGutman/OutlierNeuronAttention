@@ -1,15 +1,7 @@
 import torch
 import triton
 import triton.language as tl
-from src.modules.triton_utils import get_device_max_sram, get_exact_attn_block_sizes
-
-BUCKETS = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 65536, 131072]
-
-def get_bucket(n):
-    for b in BUCKETS:
-        if n <= b:
-            return b
-    return 262144
+from src.modules.triton_utils import get_device_max_sram, get_exact_attn_block_sizes, get_bucket, BUCKETS
 
 def exact_attn_early_prune(configs, named_args, **kwargs):
     device = named_args['Q'].device

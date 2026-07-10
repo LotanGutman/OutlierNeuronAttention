@@ -1,6 +1,7 @@
 import torch
 import triton
 import triton.language as tl
+from src.modules.triton_utils import get_bucket
 
 def triton_next_power_of_2(n):
     if n <= 1:
@@ -23,7 +24,7 @@ def triton_next_power_of_2(n):
         triton.Config({'BLOCK_SEQ': 256}, num_warps=8, num_stages=3),
         triton.Config({'BLOCK_SEQ': 256}, num_warps=8, num_stages=4),
     ],
-    key=[]
+    key=['seq_len_bucket']
 )
 @triton.jit
 def _fused_hofa_decode_kernel(
@@ -33,7 +34,7 @@ def _fused_hofa_decode_kernel(
     Log_Gamma, Mix_G,
     Norm_W,
     Y, State_I_new,
-    R, seq_len, sm_scale,
+    R, seq_len, seq_len_bucket, sm_scale,
     stride_q_b, stride_q_h, stride_q_n, stride_q_d,
     stride_k_b, stride_k_h, stride_k_n, stride_k_d,
     stride_v_b, stride_v_h, stride_v_n, stride_v_d,
@@ -143,6 +144,8 @@ def fused_hofa_decode(
     B, H, N, D = q.shape
     assert N == 1
 
+    seq_len_bucket = get_bucket(seq_len)
+
     Y = torch.empty_like(q)
 
     BLOCK_HEADS = 1
@@ -160,7 +163,7 @@ def fused_hofa_decode(
         log_gamma, mix_g,
         norm_w,
         Y, state_I_out,
-        R, seq_len, sm_scale,
+        R, seq_len, seq_len_bucket, sm_scale,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),

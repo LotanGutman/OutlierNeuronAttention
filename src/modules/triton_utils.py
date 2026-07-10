@@ -44,3 +44,12 @@ def get_hofa_bwd_chunk_size(j_padded, d_head_padded, max_sram, initial_chunk_siz
             break
         chunk_size //= 2
     return chunk_size
+
+
+BUCKETS = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 196608, 262144]
+
+def get_bucket(n):
+    for b in BUCKETS:
+        if n <= b:
+            return b
+    return 524288

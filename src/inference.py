@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import tiktoken
 import os
 from src.HybridOutlierFactorizedAttention import SubwordLM
+from src.modules.triton_utils import BUCKETS
 
 DEBUG_MODE = False  # Set to True to enable debug prints
 
@@ -25,9 +26,15 @@ class InferenceEngine:
             checkpoint_path = self._resolve_path(checkpoint_path)
             
         self._load_checkpoint(checkpoint_path)
+        self._warmup()
 
-        print("\n[INFO] Warming up Triton compiler (this may take a few seconds)...")
-        _ = list(self.generate(prompt="Warmup", max_new_tokens=5, stream=False))
+    def _warmup(self):
+        print("\n[INFO] Warming up Triton kernels across all length buckets...")
+        for n in BUCKETS:
+            with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                _ = list(self.generate(prompt="x" * min(n, 2000), max_new_tokens=1, stream=False))
+        torch.cuda.synchronize()
+        print("[INFO] Warmup complete.")
 
     def _resolve_path(self, path):
         """Resolves Windows-style paths to WSL paths if running on Linux/WSL."""

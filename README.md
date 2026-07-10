@@ -184,9 +184,63 @@ During interactive inference, changing sequence lengths historically triggered c
 
 ---
 
+## Kernel Performance Analysis
+
+The `fused_hofa_decode` kernel is memory-bound rather than config-bound — `@triton.autotune` configs (BLOCK_SEQ, num_warps, num_stages) all produce similar memory traffic patterns, so tuning alone cannot unlock significant gains. The root cause is **low Streaming Multiprocessor (SM) utilization**:
+
+- **Grid size** = `(Batch, Heads)` = `(1, 16)` = 16 thread blocks
+- On an RTX 4060 (24 SMs): **only 67% occupancy** — 8 SMs sit idle
+- On an H100 (132 SMs): **only 12% occupancy** — 116 SMs sit idle
+- Each block loops sequentially over the entire KV cache, so the exact-attention phase is effectively single-SM per head
+
+Additionally, the GLA recurrent state (`j × d_head` = 112 × 128 = 14,336 floats) is too large for registers, causing spill to shared memory and increasing pressure on the exact-attention loop.
+
+---
+
 ## Future Optimizations
 
-While the `fused_hofa_decode` kernel is highly optimized with targeted `@triton.autotune` configurations sweeping `num_warps`, `BLOCK_SEQ`, and `num_stages` (software pipeline depth), there are still theoretical headroom optimizations that could be explored for extremely specific deployment hardware architectures:
+Four complementary approaches to close the utilization gap, ordered by expected impact:
 
-1. **Split-K Decoding:** The current generation kernel grid operates at `(Batch, Heads)`. For deployments where `Batch=1` and `Heads` is small (e.g., 16), a large GPU like an H100 with 132 SMs will be massively underutilized during the exact-attention phase since we aren't spawning enough blocks to wake them up. Split-K decoding would split the sequence length calculation across multiple SMs and use an atomic reduction at the end to maximize hardware utilization for ultra-low latency.
-2. **SM Occupancy (`num_ctas`):** For Hopper architecture (H100/H200), Triton natively supports `num_ctas` in the Autotuner, allowing explicit mapping of concurrent Cooperative Thread Arrays per Streaming Multiprocessor to further maximize L2 Cache hit rates.
+### 1. Split-K Over Sequence Length
+
+Split the K/V cache loop across multiple SMs per head, then reduce partial results with an atomic or log-sum-exp merge. The prefill kernel (`exact_attention.py`) already implements Split-K — the same pattern can be applied to the decode kernel.
+
+| | Current | Split-K (e.g. K=4) |
+|---|---|---|
+| Thread blocks (16 heads) | 16 | 64 |
+| RTX 4060 SM utilization | 67% | 100% (oversubscribed) |
+| H100 SM utilization | 12% | 48% |
+
+Each block processes `seq_len / K` tokens instead of the full sequence, linear speedup in the exact-attention phase. The reduction step is lightweight (one atomic per head per split).
+
+### 2. Async Prefetch / Double-Buffering
+
+The exact-attention loop loads K and V cache tiles from global memory, then computes attention scores. These two phases are serialized — the compute units idle during loads. Double-buffer the next tile's load while computing the current tile:
+
+```
+Load K₀,V₀ | Compute A₀ + Load K₁,V₁ | Compute A₁ + Load K₂,V₂ | ...
+```
+
+On Ampere+ (RTX 3060+), `tl.async_copy` with `tl.async_wait` enables pipelined global→shared memory transfers. Expected speedup: 20–40% on memory-bound long contexts since the loop is entirely memory-latency-bound.
+
+### 3. Two-Tier Kernel Dispatch
+
+Short and long contexts have different bottlenecks. Use a lightweight kernel for short contexts and the full fused kernel for long ones:
+
+| Context | Kernel | Key difference |
+|---|---|---|
+| N < 4,096 | `_hofa_decode_short` | No RMSNorm fusion, no GLA tiling — minimal register pressure, maximum occupancy |
+| N ≥ 4,096 | `_hofa_decode_long` | Current fused kernel with Split-K |
+
+The short-context kernel avoids the loop overhead entirely (unrolls or uses a single block) and removes the RMSNorm/scale fusion to reduce register pressure. At N=512, the loop overhead is a significant fraction of total work.
+
+### 4. GLA State Tiling
+
+The GLA state is `j × d_head` = 112 × 128 = 14,336 floats (~57 KB in fp32). This doesn't fit in registers (256 KB per SM on Ampere, shared across warps). Tile the state update along the `j` dimension:
+
+```
+for j_tile in range(0, j, J_TILE):
+    state_new[j_tile, :] = gamma * state[j_tile, :] + k_J[j_tile, None] * v_step[None, :]
+```
+
+Each tile fits in registers, reducing spills to shared memory and freeing bandwidth for the exact-attention loop. The GLA output computation (`q_J @ state`) tiles naturally along the same dimension. Expected improvement: 10–15% on top of Split-K by reducing register pressure in the fused kernel.
