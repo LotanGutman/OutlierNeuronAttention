@@ -76,6 +76,7 @@ def train(config: LanguageModelingExperimentConfig):
     start_step = 0
     start_idx = 0
     total_processed_tokens = 0
+    best_val_ppl = float('inf')
     
     ckpt_path = os.path.join(checkpoint_dir, "checkpoint.pt")
     if os.path.exists(ckpt_path):
@@ -107,6 +108,9 @@ def train(config: LanguageModelingExperimentConfig):
             start_idx = ckpt['start_idx']
         else:
             start_idx = total_processed_tokens
+            
+        if 'best_val_ppl' in ckpt:
+            best_val_ppl = ckpt['best_val_ppl']
             
         print(f"Resumed successfully from step {start_step}.")
     
@@ -172,6 +176,29 @@ def train(config: LanguageModelingExperimentConfig):
                     metrics['val_tokens'].append(total_processed_tokens)
                     metrics['val_ppl'].append(val_ppl)
                     print(f"\n[Val @ step {step}] Perplexity: {val_ppl:.3f}")
+                    
+                    if val_ppl < best_val_ppl:
+                        best_val_ppl = val_ppl
+                        
+                        best_save_path = os.path.join(checkpoint_dir, "checkpoint_best_val.pt")
+                        best_temp_path = best_save_path + ".tmp"
+                        
+                        raw_state_dict = model.state_dict()
+                        clean_state_dict = {k.replace('_orig_mod.', ''): v for k, v in raw_state_dict.items()}
+                        
+                        torch.save({
+                            'model_state_dict': clean_state_dict,
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'metrics': metrics,
+                            'step': step,
+                            'start_idx': start_idx,
+                            'total_processed_tokens': total_processed_tokens,
+                            'best_val_ppl': best_val_ppl,
+                            'rng_state': torch.get_rng_state(),
+                            'cuda_rng_state': torch.cuda.get_rng_state_all()
+                        }, best_temp_path)
+                        os.replace(best_temp_path, best_save_path)
+                        print(f"*** New best validation perplexity! Saved to {best_save_path} ***")
             
             
             if step > 0 and step % config.print_every == 0:
@@ -194,6 +221,7 @@ def train(config: LanguageModelingExperimentConfig):
                     'step': step,
                     'start_idx': start_idx,
                     'total_processed_tokens': total_processed_tokens,
+                    'best_val_ppl': best_val_ppl,
                     'rng_state': torch.get_rng_state(),
                     'cuda_rng_state': torch.cuda.get_rng_state_all()
                 }, temp_path)
@@ -224,6 +252,7 @@ def train(config: LanguageModelingExperimentConfig):
             'step': step,
             'start_idx': start_idx,
             'total_processed_tokens': total_processed_tokens,
+            'best_val_ppl': best_val_ppl,
             'rng_state': torch.get_rng_state(),
             'cuda_rng_state': torch.cuda.get_rng_state_all()
         }, temp_path)

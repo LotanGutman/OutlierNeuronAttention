@@ -15,6 +15,20 @@ def moving_average(values, window=50):
     ]
 
 
+from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
+
+def get_active_non_embedding_parameters(model):
+    return sum(p.numel() for n, p in model.named_parameters() if 'token_emb' not in n and 'lm_head' not in n)
+
+def calc_hofa_flops_per_token(P, H, d_h, r_list, N):
+    dense_flops = 6 * P
+    outlier_flops = 0
+    inlier_flops = 0
+    for r in r_list:
+        outlier_flops += 12 * H * r * N
+        inlier_flops += 18 * H * (d_h - r) * d_h
+    return dense_flops + outlier_flops + inlier_flops
+
 def plot_training_metrics(config: LanguageModelingExperimentConfig):
     model_name = config.model_name
     checkpoint_path = f"data/training/{model_name}/checkpoint.pt"
@@ -58,6 +72,23 @@ def plot_training_metrics(config: LanguageModelingExperimentConfig):
     # Compute validation CE loss from perplexity: CE = log(PPL)
     if has_val:
         val_loss = [math.log(p) for p in val_ppl]
+
+    # Calculate FLOPs per token using HOFA exact mathematical formula
+    model = SubwordLM(config.vocab_size, config.model_config)
+    P = get_active_non_embedding_parameters(model)
+    H = config.model_config.num_heads
+    d_h = config.model_config.d_model // H
+    N_seq = config.seq_len
+    r_list = config.model_config.r
+    if not isinstance(r_list, (list, tuple)):
+        r_list = [r_list] * config.model_config.num_layers
+        
+    flops_per_token = calc_hofa_flops_per_token(P, H, d_h, r_list, N_seq)
+    print(f"Calculated Theoretical FLOPs per token: {flops_per_token:.2e}")
+    
+    flops_x = [t * flops_per_token for t in tokens]
+    if has_val:
+        val_flops_x = [t * flops_per_token for t in val_tokens]
 
     # ------------------------------------------------------------------
     # Compute smoothed training loss (for Plot 1 only)
@@ -180,6 +211,44 @@ def plot_training_metrics(config: LanguageModelingExperimentConfig):
         plt.savefig(plot3_path)
         plt.close()
         print(f"Saved Plot 3 (val PPL) to {plot3_path}")
+
+    # ------------------------------------------------------------------
+    # Plot 4: RAW Training Loss + Validation CE Loss (Linear FLOPs X-axis)
+    # ------------------------------------------------------------------
+    if has_val:
+        plt.figure(figsize=(10, 6))
+
+        plt.plot(
+            flops_x,
+            losses,
+            color="red",
+            alpha=0.6,
+            linewidth=0.8,
+            label="Training Loss (raw)",
+        )
+
+        plt.plot(
+            val_flops_x,
+            val_loss,
+            color="green",
+            marker="o",
+            markersize=4,
+            linewidth=1.5,
+            linestyle="-",
+            label="Validation Loss (log PPL)",
+        )
+
+        plt.title(f"{model_name} HOFA: Training & Validation Loss (Linear FLOPs)")
+        plt.xlabel("Total FLOPs")
+        plt.ylabel("Cross Entropy Loss")
+        plt.grid(True, linestyle="--", alpha=0.4)
+        plt.legend()
+        plt.tight_layout()
+
+        plot4_path = os.path.join(plot_dir, "loss_and_val_loss_vs_flops.pdf")
+        plt.savefig(plot4_path)
+        plt.close()
+        print(f"Saved Plot 4 (raw train loss + val loss vs FLOPs) to {plot4_path}")
 
     print("All plots generated successfully.")
 

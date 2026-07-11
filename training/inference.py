@@ -31,7 +31,7 @@ def do_inference(config: LanguageModelingExperimentConfig):
             prefill_time = None
             decode_start = None
             
-            print("[Compiling...] ", end="", flush=True)
+            print("[Prefilling...] ", end="", flush=True)
             
             try:
                 # Stream the generated tokens
