@@ -45,6 +45,8 @@ def main():
             from training.train import train
             train(config)
     elif args.command == "infer":
+        from src.config import InferenceConfig
+        inference_cfg = InferenceConfig()
         if args.validate:
             from benchmarks.validate_kernels import validate_inference
             import copy
@@ -59,11 +61,11 @@ def main():
                 config_r0.model_config.r = 0
                 validate_inference(config_r0, verbose=args.verbose)
         elif args.debug:
-            from training.inference_debug import do_debug_inference
-            do_debug_inference(config)
+            from training.inference import do_inference
+            do_inference(config, inference_cfg, use_debug=True)
         else:
             from training.inference import do_inference
-            do_inference(config)
+            do_inference(config, inference_cfg, use_debug=False)
     elif args.command == "profile":
         force_rerun = not args.use_cache
         if args.prefill:

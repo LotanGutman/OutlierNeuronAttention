@@ -5,12 +5,14 @@ import tiktoken
 import os
 from src.HybridOutlierFactorizedAttention import SubwordLM
 from src.modules.triton_utils import BUCKETS
+from src.config import InferenceConfig
 
 DEBUG_MODE = False  # Set to True to enable debug prints
 
 class InferenceEngine:
-    def __init__(self, experiment_cfg, checkpoint_path: str = None):
+    def __init__(self, experiment_cfg, inference_cfg=None, checkpoint_path: str = None):
         self.model_cfg = experiment_cfg.model_config
+        self.inference_cfg = inference_cfg if inference_cfg is not None else InferenceConfig()
         self.device = torch.device(experiment_cfg.device)
         self.model_name = experiment_cfg.model_name
         self.tokenizer = tiktoken.get_encoding(self.model_cfg.tokenizer_name)
@@ -29,10 +31,13 @@ class InferenceEngine:
         self._warmup()
 
     def _warmup(self):
+        if self.inference_cfg is None:
+            return
+            
         print("\n[INFO] Warming up Triton kernels across all length buckets...")
         for n in BUCKETS:
             with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                _ = list(self.generate(prompt="x" * min(n, 2000), max_new_tokens=1, stream=False))
+                _ = list(self.generate(prompt="x" * min(n, 2000)))
         torch.cuda.synchronize()
         print("[INFO] Warmup complete.")
 
@@ -106,8 +111,8 @@ class InferenceEngine:
 
         print(f"Loaded checkpoint from {path}")
     
-    def generate(self, prompt: str = "", max_new_tokens: int = 100, temperature: float = 0.8, top_k: int = 50, repetition_penalty = 1.15, stream: bool = False):
-        """Generate text from a prompt. If prompt is empty, start from eot token."""
+    def generate(self, prompt: str = ""):
+        """Generate text from a prompt using self.inference_cfg settings."""
         self.model.eval()
         if prompt:
             ids = self.tokenizer.encode(prompt)
@@ -129,14 +134,14 @@ class InferenceEngine:
             if cache_O_list is not None:
                 for i, (k_cache, v_cache) in enumerate(cache_O_list):
                     b, h, seq, d = k_cache.shape
-                    new_k = torch.zeros(b, h, seq + max_new_tokens, d, device=k_cache.device, dtype=k_cache.dtype)
-                    new_v = torch.zeros(b, h, seq + max_new_tokens, v_cache.shape[-1], device=v_cache.device, dtype=v_cache.dtype)
+                    new_k = torch.zeros(b, h, seq + self.inference_cfg.max_new_tokens, d, device=k_cache.device, dtype=k_cache.dtype)
+                    new_v = torch.zeros(b, h, seq + self.inference_cfg.max_new_tokens, v_cache.shape[-1], device=v_cache.device, dtype=v_cache.dtype)
                     new_k[:, :, :seq, :] = k_cache
                     new_v[:, :, :seq, :] = v_cache
                     cache_O_list[i] = (new_k, new_v)
 
             # 2. Generation phase
-            for step in range(max_new_tokens):
+            for step in range(self.inference_cfg.max_new_tokens):
                 # --- DEBUG: Check the integrity of the state and cache ---
                 if step == 0 and DEBUG_MODE:
                     attn_layer = self.model.layers[0].attn
@@ -174,40 +179,44 @@ class InferenceEngine:
                         print("NaN/Inf detected in logits!")
                         print(f"Logits: {logits}")
                 
-                logits = logits[:, -1, :] / temperature
+                logits = logits[:, -1, :]
+                if self.inference_cfg.temperature >= 1e-5:
+                    logits = logits / self.inference_cfg.temperature
 
                 # Vectorized repetition penalty (replaces Python for-loop)
                 if seen_tokens:
                     seen_idx = torch.tensor(list(seen_tokens), device=self.device, dtype=torch.long)
                     penalty_logits = logits[0, seen_idx]
-                    penalty_logits = torch.where(penalty_logits < 0, penalty_logits * repetition_penalty, penalty_logits / repetition_penalty)
+                    penalty_logits = torch.where(penalty_logits < 0, penalty_logits * self.inference_cfg.repetition_penalty, penalty_logits / self.inference_cfg.repetition_penalty)
                     logits[0, seen_idx] = penalty_logits
                 
-                if top_k > 0:
-                    v, _ = torch.topk(logits, top_k)
+                if self.inference_cfg.top_k > 0:
+                    v, _ = torch.topk(logits, self.inference_cfg.top_k)
                     logits[logits < v[:, [-1]]] = float('-inf')
-                
+                        
                 probs = F.softmax(logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-
-                next_token_id = next_token.item()
+                if self.inference_cfg.temperature < 1e-5:
+                    next_token_id = torch.argmax(logits).item()
+                else:
+                    next_token_id = torch.multinomial(probs, num_samples=1).item()
+                            
                 if next_token_id == self.tokenizer.eot_token:
                     break
                 
                 generated.append(next_token_id)
                 seen_tokens.add(next_token_id)
                 
-                if stream:
+                if self.inference_cfg.stream:
                     yield next_token_id
                     
-                x = next_token
+                x = torch.tensor([[next_token_id]], dtype=torch.long, device=self.device)
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     logits, cache_O_list, state_I_list = self.model.forward_step(
                         x, cache_O_list, state_I_list, cache_seq_len=cache_seq_len
                     )
                 cache_seq_len += 1
                 
-        if not stream:
+        if not self.inference_cfg.stream:
             return self.tokenizer.decode(generated)
 
     @torch.no_grad()
@@ -217,3 +226,74 @@ class InferenceEngine:
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             logits, _ = self.model(input_ids)
         return logits
+
+# Simpler engine that uses the Train model (for debugging, to show that the new inference engine works)
+# It's heavily simplified (no KV cache, no GLA states, etc.) for pure simplicity (and not speed).
+class DebugInferenceEngine:
+    def __init__(self, experiment_cfg, inference_cfg=None, checkpoint_path: str = None):
+        self.model_cfg = experiment_cfg.model_config
+        self.inference_cfg = inference_cfg if inference_cfg is not None else InferenceConfig()
+        self.device = torch.device(experiment_cfg.device)
+        self.model_name = experiment_cfg.model_name
+        self.tokenizer = tiktoken.get_encoding(self.model_cfg.tokenizer_name)
+        self.vocab_size = self.tokenizer.n_vocab
+
+        self.model = SubwordLM(self.vocab_size, self.model_cfg).to(self.device)
+        self.model.eval()
+
+        if checkpoint_path is None:
+            checkpoint_dir = f"data/training/{self.model_name}"
+            checkpoint_path = self._find_latest_checkpoint(checkpoint_dir)
+
+        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(ckpt.get('model_state_dict', ckpt))
+        print(f"Loaded checkpoint from {checkpoint_path}")
+        
+    def _find_latest_checkpoint(self, checkpoint_dir: str) -> str:
+        if not os.path.exists(checkpoint_dir):
+            raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
+        return os.path.join(checkpoint_dir, "checkpoint.pt")
+
+    def generate(self, prompt: str = ""):
+        self.model.eval()
+        input_ids = self.tokenizer.encode(prompt)
+        generated_ids = input_ids.copy()
+        
+        with torch.no_grad():
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                for _ in range(self.inference_cfg.max_new_tokens):
+                    x = torch.tensor([generated_ids], dtype=torch.long, device=self.device)
+                    
+                    logits, _ = self.model(x)
+                    next_token_logits = logits[0, -1, :]
+                    if self.inference_cfg.temperature >= 1e-5:
+                        next_token_logits = next_token_logits / self.inference_cfg.temperature
+                    
+                    # Repetition penalty
+                    for past_token in set(generated_ids):
+                        if next_token_logits[past_token] < 0:
+                            next_token_logits[past_token] *= self.inference_cfg.repetition_penalty
+                        else:
+                            next_token_logits[past_token] /= self.inference_cfg.repetition_penalty
+
+                    # Top-k
+                    if self.inference_cfg.top_k > 0:
+                        v, _ = torch.topk(next_token_logits, self.inference_cfg.top_k)
+                        next_token_logits[next_token_logits < v[-1]] = float('-inf')
+                    
+                    if self.inference_cfg.temperature < 1e-5:
+                        next_token = torch.argmax(next_token_logits).item()
+                    else:
+                        probs = F.softmax(next_token_logits, dim=-1)
+                        next_token = torch.multinomial(probs, num_samples=1).item()
+                    
+                    if next_token == self.tokenizer.eot_token:
+                        break
+                        
+                    generated_ids.append(next_token)
+                    
+                    if self.inference_cfg.stream:
+                        yield next_token
+                        
+        if not self.inference_cfg.stream:
+            return self.tokenizer.decode(generated_ids[len(input_ids):])

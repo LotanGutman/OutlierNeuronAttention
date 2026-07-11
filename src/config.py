@@ -20,3 +20,13 @@ class ModelConfig:
     def d_head(self) -> int:
         return self.d_model // self.num_heads
 
+
+@dataclass
+class InferenceConfig:
+    max_new_tokens: int = 100
+    temperature: float = 0.8
+    top_k: int = 50
+    repetition_penalty: float = 1.15
+    stream: bool = True
+    seed: int = 42
+

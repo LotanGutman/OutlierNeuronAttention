@@ -1,18 +1,32 @@
 import os
 import torch
-from src.inference import InferenceEngine
+import time
+from src.inference import InferenceEngine, DebugInferenceEngine
+from src.config import InferenceConfig
 from training.training_config import LanguageModelingExperimentConfig
 
-def do_inference(config: LanguageModelingExperimentConfig):
+def do_inference(config: LanguageModelingExperimentConfig, inference_cfg: InferenceConfig, use_debug: bool = False):
     checkpoint_path = os.path.join(f"data/training/{config.model_name}", "checkpoint.pt")
     if not os.path.exists(checkpoint_path):
         print(f"No checkpoint found at {checkpoint_path}. Please run training for {config.model_name} first.")
         return
 
-    print(f"Loading {config.model_name} HOFA model from checkpoint...")
-    engine = InferenceEngine(config, checkpoint_path=checkpoint_path)
-    
-    print("\nModel loaded successfully! Heterogeneous decoding loop initialized.")
+    if use_debug:
+        print(f"Loading {config.model_name} raw SubwordLM from checkpoint (debug inference)...")
+        engine = DebugInferenceEngine(config, inference_cfg=inference_cfg, checkpoint_path=checkpoint_path)
+        print("\nModel loaded successfully! Vanilla autoregressive loop (no KV cache) initialized.")
+    else:
+        print(f"Loading {config.model_name} HOFA model from checkpoint...")
+        engine = InferenceEngine(config, inference_cfg=inference_cfg, checkpoint_path=checkpoint_path)
+        print("\nModel loaded successfully! Heterogeneous decoding loop initialized.")
+    if inference_cfg.seed != -1:
+        torch.manual_seed(inference_cfg.seed)
+        seed_str = f" | Seed: {inference_cfg.seed}"
+    else:
+        seed_str = ""
+        
+    print(f"Params: Temp: {inference_cfg.temperature} | Top-k: {inference_cfg.top_k}{seed_str}")
+    print("Type 'help' to see available commands.")
     print("Enter a prompt (or 'exit' to quit):")
     
     while True:
@@ -22,8 +36,47 @@ def do_inference(config: LanguageModelingExperimentConfig):
                 break
             if not prompt.strip():
                 continue
+            
+            if prompt.lower() in ['help', '/help']:
+                print("\n[Available Commands]")
+                print("  /temp <float>   : Set the generation temperature (e.g., /temp 0.8)")
+                print("  /top_k <int>    : Set the generation top_k (e.g., /top_k 50)")
+                print("  /seed <int>     : Set the generation seed (e.g., /seed 42). Use -1 for random.")
+                print("  exit, quit      : Exit the inference loop")
+                continue
                 
-            import time
+            if prompt.startswith("/temp "):
+                try:
+                    new_temp = float(prompt.split()[1])
+                    inference_cfg.temperature = new_temp
+                    print(f"[Config] Temperature set to {new_temp}")
+                except ValueError:
+                    print("[Error] Invalid temperature format. Use: /temp 0.8")
+                continue
+                
+            if prompt.startswith("/top_k "):
+                try:
+                    new_topk = int(prompt.split()[1])
+                    inference_cfg.top_k = new_topk
+                    print(f"[Config] Top_k set to {new_topk}")
+                except ValueError:
+                    print("[Error] Invalid top_k format. Use: /top_k 50")
+                continue
+                
+            if prompt.lower().startswith("/seed "):
+                try:
+                    new_seed = int(prompt.split()[1])
+                    inference_cfg.seed = new_seed
+                    if new_seed == -1:
+                        torch.seed()
+                        print("[Config] Seed set to -1 (pure random)")
+                    else:
+                        torch.manual_seed(new_seed)
+                        print(f"[Config] Seed set to {new_seed}")
+                except ValueError:
+                    print("[Error] Invalid seed format. Use: /seed 42 or /seed -1")
+                continue
+                
             start_time = time.time()
             generated_tokens = []
             prev_text = ""
@@ -35,7 +88,7 @@ def do_inference(config: LanguageModelingExperimentConfig):
             
             try:
                 # Stream the generated tokens
-                for token in engine.generate(prompt=prompt, max_new_tokens=100, temperature=0.1, top_k=5, stream=True):
+                for token in engine.generate(prompt=prompt):
                     if prefill_time is None:
                         decode_start = time.time()
                         prefill_time = decode_start - start_time
