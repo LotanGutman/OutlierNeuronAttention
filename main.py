@@ -19,6 +19,7 @@ def main():
 
     parser_infer = subparsers.add_parser("infer", help="Run interactive generation or validation")
     parser_infer.add_argument("--debug", action="store_true", help="Run debug inference (no cache, training model)")
+    parser_infer.add_argument("--latest_ckp", action="store_true", help="Load the latest checkpoint instead of the best validation one")
     parser_infer.add_argument("--validate", action="store_true", help="Validate custom inference kernel against reference")
     parser_infer.add_argument("--verbose", action="store_true", help="Run deep dive into RMSNorm and intermediate tensors")
 
@@ -62,10 +63,10 @@ def main():
                 validate_inference(config_r0, verbose=args.verbose)
         elif args.debug:
             from training.inference import do_inference
-            do_inference(config, inference_cfg, use_debug=True)
+            do_inference(config, inference_cfg, use_debug=True, latest=args.latest_ckp)
         else:
             from training.inference import do_inference
-            do_inference(config, inference_cfg, use_debug=False)
+            do_inference(config, inference_cfg, use_debug=False, latest=args.latest_ckp)
     elif args.command == "profile":
         force_rerun = not args.use_cache
         if args.prefill:

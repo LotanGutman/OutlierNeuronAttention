@@ -5,8 +5,14 @@ from src.inference import InferenceEngine, DebugInferenceEngine
 from src.config import InferenceConfig
 from training.training_config import LanguageModelingExperimentConfig
 
-def do_inference(config: LanguageModelingExperimentConfig, inference_cfg: InferenceConfig, use_debug: bool = False):
-    checkpoint_path = os.path.join(f"data/training/{config.model_name}", "checkpoint.pt")
+def do_inference(config: LanguageModelingExperimentConfig, inference_cfg: InferenceConfig, use_debug: bool = False, latest: bool = False):
+    checkpoint_name = "checkpoint.pt" if latest else "checkpoint_best_val.pt"
+    checkpoint_path = os.path.join(f"data/training/{config.model_name}", checkpoint_name)
+    
+    if not os.path.exists(checkpoint_path) and not latest:
+        print(f"best_val not found, using latest checkpoint {checkpoint_path}")
+        checkpoint_path = os.path.join(f"data/training/{config.model_name}", "checkpoint.pt")
+        
     if not os.path.exists(checkpoint_path):
         print(f"No checkpoint found at {checkpoint_path}. Please run training for {config.model_name} first.")
         return
