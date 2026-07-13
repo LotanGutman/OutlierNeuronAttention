@@ -6,7 +6,7 @@ import argparse
 
 
 def main():
-    config = LanguageModelingExperimentConfig() # make_125M_hofa()
+    config = make_125M_hofa() # LanguageModelingExperimentConfig() # make_125M_hofa()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
