@@ -141,6 +141,8 @@ python main.py train --plot
 
 # 6. Interactive generation
 python main.py infer
+python main.py infer --train   # Run using the pure PyTorch training autoregressive loop instead of Triton
+python main.py infer --debug   # Enable detailed, dynamic gating statistics per-prompt
 ```
 
 The experiment config lives in `training/training_config.py`. It includes presets for scaling models:
@@ -162,7 +164,7 @@ model = torch.compile(model, dynamic=True)
 ```
 This enables a single unified execution graph and allows training to start instantly without hanging on kernel benchmarking.
 
-**Note on Installation**: The official `install.sh` builds `mamba-ssm` and `causal-conv1d` locally using `--no-build-isolation` to perfectly match the local system's C++ ABI and PyTorch 2.6.0. It also enforces `TORCH_CUDA_ARCH_LIST="native"` to optimize the binary for the host GPU architecture. We explicitly pin `mamba-ssm==2.2.4` to avoid `quack-kernels` dependencies introduced in 2.3+ which cause FP8 initialization crashes on standard PyTorch 2.6.0, and to retain native support for Triton 3.2.0 without requiring hot-patches.
+**Note on Installation**: The official `install.sh` downloads pre-compiled wheels for `mamba-ssm` and `causal-conv1d` to perfectly match PyTorch 2.6.0 on Python 3.10-3.12 (do not use 3.13 yet). We explicitly disable source compilation to avoid CUDA toolchain mismatches. We explicitly pin `mamba-ssm==2.2.4` to avoid `quack-kernels` dependencies introduced in 2.3+ which cause FP8 initialization crashes on standard PyTorch 2.6.0, and to retain native support for Triton 3.2.0 without requiring hot-patches.
 
 ## Inference & Autotuning Optimizations
 
@@ -172,6 +174,7 @@ During interactive inference, changing sequence lengths historically triggered c
 2. **Decode Autotuning Fix:** In `fused_hofa_decode_kernel`, the sequence length is similarly excluded from the tuning keys to prevent recompilation on every single generated token.
 3. **Silent Initialization Warmup:** To ensure the very first prompt is perfectly fluid, `InferenceEngine.__init__` executes a silent 1-token "Warmup" generation in the background immediately after checkpoint loading. This forces Triton to absorb all JIT compilation overhead before the user is ever presented with a prompt.
 4. **Separated Performance Metrics:** The interactive `infer` CLI clearly separates the mathematical Prefill Tokens-Per-Second from the Decode Tokens-Per-Second, allowing precise performance profiling without startup bias.
+5. **Dynamic Gate Tracing (Zero-Overhead):** Using the `--debug` flag activates a PyTorch monkey patch (`patch_attention_for_debugging`) inside `benchmark_utils.py` that dynamically intercepts Mix Gate and GLA Gate Logit activations during inference, without polluting or slowing down the highly-optimized core model file.
 
 ---
 

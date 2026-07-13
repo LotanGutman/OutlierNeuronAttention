@@ -2,7 +2,8 @@
 set -e
 
 echo "============================================="
-echo "[INFO] Installing Python Dependencies... (note - we use python 3.11)"
+echo "[INFO] Installing Python Dependencies..."
+echo "[INFO] (Python 3.10 - 3.12 supported. Do not use 3.13 yet, and note that 3.12 requires PyTorch 2.4+ for full torch.compile support)"
 echo "============================================="
 
 # ------------------------------------------------------------
@@ -20,12 +21,10 @@ python -m pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 torchaudio==2
 # ------------------------------------------------------------
 # 3. Install Precompiled Mamba & Causal Conv1d
 # ------------------------------------------------------------
-echo "[INFO] Compiling Mamba & Causal Conv1d from Source (This takes ~3 minutes)..."
-export CAUSAL_CONV1D_FORCE_BUILD=TRUE
-export MAMBA_FORCE_BUILD=TRUE
+echo "[INFO] Installing Mamba & Causal Conv1d (Attempting to download precompiled wheels)..."
 export TORCH_CUDA_ARCH_LIST="native"
-python -m pip install causal-conv1d==1.6.2.post1 --no-build-isolation --no-deps --no-cache-dir
-python -m pip install mamba-ssm==2.2.4 --no-build-isolation --no-deps --no-cache-dir
+python -m pip install causal-conv1d==1.6.2.post1 --no-build-isolation
+python -m pip install mamba-ssm==2.2.4 --no-build-isolation
 # ------------------------------------------------------------
 # 4. Install Flash Linear Attention
 # ------------------------------------------------------------

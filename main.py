@@ -6,7 +6,7 @@ import argparse
 
 
 def main():
-    config = make_125M_hofa() # LanguageModelingExperimentConfig() # make_125M_hofa()
+    config = LanguageModelingExperimentConfig() # make_125M_hofa() # LanguageModelingExperimentConfig() # make_125M_hofa()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -18,7 +18,8 @@ def main():
     parser_train.add_argument("--eval", action="store_true", help="Evaluate on HellaSwag using lm-eval")
 
     parser_infer = subparsers.add_parser("infer", help="Run interactive generation or validation")
-    parser_infer.add_argument("--debug", action="store_true", help="Run debug inference (no cache, training model)")
+    parser_infer.add_argument("--debug", action="store_true", help="Print debug information (gate bias, etc.)")
+    parser_infer.add_argument("--train", action="store_true", help="Run inference using the training class instead of the inference class")
     parser_infer.add_argument("--latest_ckp", action="store_true", help="Load the latest checkpoint instead of the best validation one")
     parser_infer.add_argument("--validate", action="store_true", help="Validate custom inference kernel against reference")
     parser_infer.add_argument("--verbose", action="store_true", help="Run deep dive into RMSNorm and intermediate tensors")
@@ -47,7 +48,11 @@ def main():
             train(config)
     elif args.command == "infer":
         from src.config import InferenceConfig
+        import src.inference
+        
+        src.inference.DEBUG_MODE = args.debug
         inference_cfg = InferenceConfig()
+        
         if args.validate:
             from benchmarks.validate_kernels import validate_inference
             import copy
@@ -61,12 +66,9 @@ def main():
                 config_r0 = copy.deepcopy(config)
                 config_r0.model_config.r = 0
                 validate_inference(config_r0, verbose=args.verbose)
-        elif args.debug:
-            from training.inference import do_inference
-            do_inference(config, inference_cfg, use_debug=True, latest=args.latest_ckp)
         else:
             from training.inference import do_inference
-            do_inference(config, inference_cfg, use_debug=False, latest=args.latest_ckp)
+            do_inference(config, inference_cfg, use_debug=args.train, latest=args.latest_ckp)
     elif args.command == "profile":
         force_rerun = not args.use_cache
         if args.prefill:

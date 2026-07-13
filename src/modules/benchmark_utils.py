@@ -138,3 +138,20 @@ def adjust_learning_rate(optimizer, step, total_steps, base_lr, warmup_steps):
         lr = base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
+def patch_attention_for_debugging(attn_layer):
+    """
+    Dynamically injects a wrapper around _compute_gates_optimized to intercept
+    the dynamically generated mix_g and gate_logits activations during inference,
+    without permanently altering the core model code.
+    """
+    original_compute_gates = attn_layer._compute_gates_optimized
+    
+    def hooked_compute_gates(Q, K):
+        gate_logits, mix_g = original_compute_gates(Q, K)
+        # Save a disconnected copy for the debug loop to read
+        attn_layer._last_mix_g = mix_g.detach()
+        attn_layer._last_gate_logits = gate_logits.detach()
+        return gate_logits, mix_g
+        
+    attn_layer._compute_gates_optimized = hooked_compute_gates

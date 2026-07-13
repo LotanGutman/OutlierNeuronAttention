@@ -21,6 +21,11 @@ class InferenceEngine:
         self.model = SubwordLM(self.vocab_size, self.model_cfg).to(self.device)
         self.model.eval()
 
+        if DEBUG_MODE:
+            from src.modules.benchmark_utils import patch_attention_for_debugging
+            for layer in self.model.layers:
+                patch_attention_for_debugging(layer.attn)
+
         if checkpoint_path is None:
             checkpoint_dir = f"data/training/{self.model_name}"
             checkpoint_path = self._find_latest_checkpoint(checkpoint_dir)
@@ -35,10 +40,17 @@ class InferenceEngine:
             return
             
         print("\n[INFO] Warming up Triton kernels across all length buckets...")
+        
+        global DEBUG_MODE
+        old_debug = DEBUG_MODE
+        DEBUG_MODE = False
+        
         for n in BUCKETS:
             with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 _ = list(self.generate(prompt="x" * min(n, 2000)))
         torch.cuda.synchronize()
+        
+        DEBUG_MODE = old_debug
         print("[INFO] Warmup complete.")
 
     def _resolve_path(self, path):
@@ -96,7 +108,7 @@ class InferenceEngine:
         missing_keys, unexpected_keys = self.model.load_state_dict(state, strict=False)
 
 
-        if DEBUG_MODE:
+        if DEBUG_MODE or len(missing_keys) > 0 or len(unexpected_keys) > 0:
             print("Missing keys:", missing_keys)
             print("Unexpected keys:", unexpected_keys)
         
@@ -110,6 +122,17 @@ class InferenceEngine:
                             nn.init.zeros_(module.bias)
 
         print(f"Loaded checkpoint from {path}")
+        
+        if DEBUG_MODE:
+            attn_layer = self.model.layers[0].attn
+            norm_val = attn_layer.out_proj.weight.norm().item()
+            print(f"--- Static Weights Debug ---")
+            print(f"Layer 0 out_proj norm: {norm_val:.4f}")
+            gate_bias = attn_layer.gate_proj.bias
+            print(f"Layer 0 Gate bias mean: {gate_bias.mean().item():.4f}")
+            mix_bias = attn_layer.mix_proj.bias
+            print(f"Layer 0 Mix gate bias mean: {mix_bias.mean().item():.4f}")
+            print(f"----------------------------")
     
     def generate(self, prompt: str = ""):
         """Generate text from a prompt using self.inference_cfg settings."""
@@ -144,34 +167,24 @@ class InferenceEngine:
             for step in range(self.inference_cfg.max_new_tokens):
                 # --- DEBUG: Check the integrity of the state and cache ---
                 if step == 0 and DEBUG_MODE:
-                    attn_layer = self.model.layers[0].attn
-    
-                    # 1. Check out_proj weight NORM (should be ~1.5 - 2.0, not 0.0)
-                    norm_val = attn_layer.out_proj.weight.norm().item()
-                    print(f"out_proj norm: {norm_val:.4f}")  # Expected: ~1.9
-                    
-                    # 2. Check exact cache size (should match prompt length + 1)
+                    # 1. Check exact cache size (should match prompt length + 1)
                     if cache_O_list is not None:
                         cache_len = cache_O_list[0][0].shape[2]
                         print(f"Exact Cache Length: {cache_len} (Prompt length: {context.shape[1]})")
                     
-                    # 3. Check GLA State magnitude (should NOT be zero)
+                    # 2. Check GLA State and Dynamic Gates
+                    state_msg = ""
                     if state_I_list is not None:
-                        state_sum = state_I_list[0].sum().item()
-                        state_norm = state_I_list[0].norm().item()
-                        print(f"GLA State Sum: {state_sum:.4f}, Norm: {state_norm:.4f}")
-                    
-                    # 4. [CRITICAL] Check the Mixing Gate manually by computing it on the fly
-                    # We need Q and K from the first layer's forward_step output.
-                    # Since we can't easily grab Q/K, let's just log the `gamma` (GLA decay).
-                    # In forward_step, gamma = torch.sigmoid(-gate_logits). If this is near 1, 
-                    # the GLA state decays instantly, meaning it forgets everything.
-                    # We can check if the gate_proj bias (-1.0) survived loading.
-                    gate_bias = attn_layer.gate_proj.bias
-                    print(f"Gate bias mean: {gate_bias.mean().item():.4f}") # Should be ~ -1.0
-
-                    mix_bias = attn_layer.mix_proj.bias
-                    print(f"Mix gate bias mean: {mix_bias.mean().item():.4f}")  # If this is < -2.0, mix_g is near 0
+                        state_I_tensor = state_I_list[0][0] if isinstance(state_I_list[0], tuple) else state_I_list[0]
+                        state_msg = f"GLA Sum: {state_I_tensor.sum().item():.4f}, Norm: {state_I_tensor.norm().item():.4f} | "
+                        
+                    attn_layer = self.model.layers[0].attn
+                    if hasattr(attn_layer, '_last_mix_g'):
+                        mix_g_mean = attn_layer._last_mix_g.mean().item()
+                        gate_logits_mean = attn_layer._last_gate_logits.mean().item()
+                        print(f"{state_msg}Mix Gate (mean): {mix_g_mean:.4f} | GLA Gate Logits: {gate_logits_mean:.4f}")
+                    elif state_msg:
+                        print(state_msg.rstrip(" | "))
 
                 if DEBUG_MODE:
                     # Sanitize logits to prevent CUDA asserts in untrained models (NaNs or Infs)
