@@ -123,6 +123,7 @@ def train(config: LanguageModelingExperimentConfig):
     
     model.train()
     
+    is_crash = False
     try:
         for step in range(start_step, config.train_steps):
             t0 = time.time()
@@ -186,6 +187,7 @@ def train(config: LanguageModelingExperimentConfig):
                         raw_state_dict = model.state_dict()
                         clean_state_dict = {k.replace('_orig_mod.', ''): v for k, v in raw_state_dict.items()}
                         
+
                         torch.save({
                             'model_state_dict': clean_state_dict,
                             'optimizer_state_dict': optimizer.state_dict(),
@@ -235,29 +237,38 @@ def train(config: LanguageModelingExperimentConfig):
     except Exception as e:
         print(f"\nCRASH DETECTED: {e}")
         print("Saving emergency checkpoint before failing...")
+        is_crash = True
     finally:
         # Final save on normal exit, crash, or interrupt
         interrupt_handler.detach()
-        save_path = os.path.join(checkpoint_dir, "checkpoint.pt")
+        
+        # If we crashed, save to a distinct emergency file to avoid corrupting the main checkpoint tmp file
+        final_filename = "checkpoint_emergency.pt" if is_crash else "checkpoint.pt"
+        save_path = os.path.join(checkpoint_dir, final_filename)
         temp_path = save_path + ".tmp"
         
         # same thing, cleanup model
         raw_state_dict = model.state_dict()
         clean_state_dict = {k.replace('_orig_mod.', ''): v for k, v in raw_state_dict.items()}
         
-        torch.save({
-            'model_state_dict': clean_state_dict,
-            'optimizer_state_dict': optimizer.state_dict(),
-            'metrics': metrics,
-            'step': step,
-            'start_idx': start_idx,
-            'total_processed_tokens': total_processed_tokens,
-            'best_val_ppl': best_val_ppl,
-            'rng_state': torch.get_rng_state(),
-            'cuda_rng_state': torch.cuda.get_rng_state_all()
-        }, temp_path)
-        os.replace(temp_path, save_path)
-        print(f"Final checkpoint saved to {save_path}.")
+        try:
+            torch.save({
+                'model_state_dict': clean_state_dict,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'metrics': metrics,
+                'step': step,
+                'start_idx': start_idx,
+                'total_processed_tokens': total_processed_tokens,
+                'best_val_ppl': best_val_ppl,
+                'rng_state': torch.get_rng_state(),
+                'cuda_rng_state': torch.cuda.get_rng_state_all()
+            }, temp_path)
+            os.replace(temp_path, save_path)
+            print(f"Final checkpoint successfully saved to {save_path}.")
+        except Exception as save_err:
+            print(f"CRITICAL: Failed to save final checkpoint to {save_path}! Error: {save_err}")
+            if is_crash:
+                print("This usually means the disk is completely full.")
 
 if __name__ == "__main__":
     config = LanguageModelingExperimentConfig()

@@ -1,12 +1,11 @@
-
-from training.training_config import make_125M_hofa, LanguageModelingExperimentConfig
+from training.training_config import make_125M_hofa, make_125M_mha, LanguageModelingExperimentConfig
 
 
 import argparse
 
 
 def main():
-    config = LanguageModelingExperimentConfig() # make_125M_hofa() # LanguageModelingExperimentConfig() # make_125M_hofa()
+    config = make_125M_hofa() # LanguageModelingExperimentConfig() # make_125M_hofa()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -15,6 +14,7 @@ def main():
     
     parser_train = subparsers.add_parser("train", help="Run training, plotting, or evaluation")
     parser_train.add_argument("--plot", action="store_true", help="Plot training metrics")
+    parser_train.add_argument("--shared", action="store_true", help="Plot shared training metrics for HOFA and MHA")
     parser_train.add_argument("--eval", action="store_true", help="Evaluate on HellaSwag using lm-eval")
 
     parser_infer = subparsers.add_parser("infer", help="Run interactive generation or validation")
@@ -38,7 +38,10 @@ def main():
     elif args.command == "train":
         if args.plot:
             from training.plot_training import plot_training_metrics
-            plot_training_metrics(config)
+            if args.shared:
+                plot_training_metrics([make_125M_hofa(), make_125M_mha()])
+            else:
+                plot_training_metrics(config)
         elif args.eval:
             from benchmarks.benchmark_swag import evaluate_hellaswag
             from benchmarks.benchmarks_configs import EvalExperimentConfig

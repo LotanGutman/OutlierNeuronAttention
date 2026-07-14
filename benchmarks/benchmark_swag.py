@@ -86,7 +86,11 @@ def evaluate_hellaswag(
         eval_config: EvalExperimentConfig containing limit, device, and seed.
     """
     model_name = config.model_name
-    ckpt_path = f"data/training/{model_name}/checkpoint.pt"
+    ckpt_path = f"data/training/{model_name}/checkpoint_best_val.pt"
+    if not os.path.exists(ckpt_path):
+        print(f"best_val not found, falling back to latest checkpoint")
+        ckpt_path = f"data/training/{model_name}/checkpoint.pt"
+        
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 

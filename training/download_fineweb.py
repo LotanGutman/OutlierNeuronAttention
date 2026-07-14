@@ -227,6 +227,19 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
                 while True:
                     batch_texts = batch_queue.get()
                     if batch_texts is None:
+                        # Final flush of buffer and state if stream ends early
+                        if buffer_idx > 0:
+                            f.write(buffer[:buffer_idx].tobytes())
+                            
+                        f.flush()
+                        os.fsync(f.fileno())
+                        
+                        offset_state[f"{split_name}_docs"] += docs_since_fsync
+                        offset_state[f"{split_name}_tokens"] = total_tokens
+                        tmp_offset = offset_path + ".tmp"
+                        with open(tmp_offset, "w") as jf:
+                            json.dump(offset_state, jf)
+                        os.replace(tmp_offset, offset_path)
                         break # End of dataset
                     if isinstance(batch_texts, Exception):
                         raise batch_texts
