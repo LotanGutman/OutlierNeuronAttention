@@ -91,6 +91,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
             return Y_out
 
         if self.r == self.d_head:
+            if hasattr(self, 'rotary_emb'):
+                cos, sin = self.rotary_emb(N)
+                Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
             Y = F.scaled_dot_product_attention(Q, K, V, is_causal=True, scale=1.0)
             Y = Y.transpose(1, 2).reshape(B, N, D)
             Y_out = self.out_proj(Y).to(dtype_in)
@@ -202,6 +205,13 @@ class HybridOutlierFactorizedAttention(nn.Module):
             return self.out_proj(Y_out).to(dtype_in), None, (state_I_new, torch.empty_like(state_I_new))
 
         if self.r == self.d_head:
+            if hasattr(self, 'rotary_emb'):
+                seq_idx = cache_seq_len if cache_seq_len is not None else (cache_O[0].shape[2] if cache_O is not None else 0)
+                cos, sin = self.rotary_emb(seq_idx + 1)
+                cos = cos[-1:, :]
+                sin = sin[-1:, :]
+                Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
+                
             if cache_O is None:
                 K_past, V_past = K, V
                 cache_new = (K_past, V_past)
