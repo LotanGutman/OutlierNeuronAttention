@@ -3,6 +3,8 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import time
 import math
 import torch
+import torch.backends.cudnn as cudnn
+cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
 import numpy as np
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
@@ -11,30 +13,7 @@ from interrupt_util.interrupts import GracefulInterruptHandler
 from src.modules.benchmark_utils import adjust_learning_rate
 from training.modules.eval import compute_val_ppl_from_cache
 
-def load_batch(cache_path, batch_size, seq_len, start_idx):
-    # Returns (x, y), next_start_idx
-    # cache_path contains np.uint16 tokens
-    file_size_bytes = os.path.getsize(cache_path)
-    total_tokens = file_size_bytes // 2
-    
-    tokens_needed = batch_size * (seq_len + 1)
-    
-    if start_idx + tokens_needed > total_tokens:
-        # Loop around or just stop. For smoke test, wrap around.
-        start_idx = 0
-        
-    # Read the required chunk
-    with open(cache_path, 'rb') as f:
-        f.seek(start_idx * 2)
-        chunk_bytes = f.read(tokens_needed * 2)
-        
-    data = np.frombuffer(chunk_bytes, dtype=np.uint16).astype(np.int64)
-    data = torch.from_numpy(data).view(batch_size, seq_len + 1)
-    
-    x = data[:, :-1].contiguous()
-    y = data[:, 1:].contiguous()
-    
-    return x, y, start_idx + tokens_needed
+from training.data_utils import FastTokenLoader
 
 def train(config: LanguageModelingExperimentConfig):
     model_size = config.model_name.split('_')[0]
@@ -59,7 +38,8 @@ def train(config: LanguageModelingExperimentConfig):
         model.parameters(), 
         lr=config.learning_rate, 
         weight_decay=config.weight_decay,
-        betas=(0.9, 0.95)
+        betas=(0.9, 0.95),
+        fused=True
     )
     
     metrics = {
@@ -119,9 +99,16 @@ def train(config: LanguageModelingExperimentConfig):
     interrupt_handler = GracefulInterruptHandler()
     interrupt_handler.attach()
     
-    print(f"Starting {config.model_name} HOFA training for {config.train_steps} steps...")
+    if start_step > 0:
+        print(f"Resuming {config.model_name} HOFA training from step {start_step} to {config.train_steps} steps...")
+    else:
+        print(f"Starting {config.model_name} HOFA training for {config.train_steps} steps...")
     
     model.train()
+    
+    # Initialize FastTokenLoader for training
+    global_batch_size = config.micro_batch_size * config.gradient_accumulation_steps
+    train_loader = FastTokenLoader(cache_path, global_batch_size, config.seq_len, start_idx)
     
     is_crash = False
     try:
@@ -133,9 +120,21 @@ def train(config: LanguageModelingExperimentConfig):
             
             step_loss = 0.0
             
+            # Fetch global batch and transfer to GPU asynchronously
+            x_global, y_global, next_idx = train_loader.get_batch()
+            x_global = x_global.to(device, non_blocking=True)
+            y_global = y_global.to(device, non_blocking=True)
+            
+            # Update start_idx tracking for checkpointing
+            start_idx = next_idx
+            
             for micro_step in range(config.gradient_accumulation_steps):
-                x, y, start_idx = load_batch(cache_path, config.micro_batch_size, config.seq_len, start_idx)
-                x, y = x.to(device), y.to(device)
+                # Slice the global batch into micro batches entirely on the GPU
+                start_m = micro_step * config.micro_batch_size
+                end_m = start_m + config.micro_batch_size
+                
+                x = x_global[start_m:end_m]
+                y = y_global[start_m:end_m]
                 
                 if config.use_mixed_precision:
                     with torch.amp.autocast('cuda', dtype=torch.bfloat16):

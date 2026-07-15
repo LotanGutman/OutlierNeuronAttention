@@ -116,6 +116,23 @@ def make_13M_hofa() -> LanguageModelingExperimentConfig:
     )
 
 
+def make_13M_mha() -> LanguageModelingExperimentConfig:
+    """13M pure MHA baseline. r=d_head=64."""
+    return LanguageModelingExperimentConfig(
+        model_name="13M_MHA",
+        model_config=ModelConfig(
+            d_model=256, num_heads=4, num_layers=4,
+            r=64,
+            use_rope=True, block_size=1024,
+        ),
+        max_tokens=200_000_000,
+        train_steps=1000,
+        learning_rate=1e-3, warmup_steps=100, print_every=50, save_every=200,
+        micro_batch_size=8,
+        gradient_accumulation_steps=4,
+    )
+
+
 def make_125M_hofa() -> LanguageModelingExperimentConfig:
     """125M HOFA. d_head=128 (768/6)."""
     return LanguageModelingExperimentConfig(

@@ -77,6 +77,7 @@ src/
 
 training/
 ├── training_config.py                         # LanguageModelingExperimentConfig (model_name, dataset, hparams)
+├── data_utils.py                              # FastTokenLoader (np.memmap + pinned memory for optimized data streaming)
 ├── train.py                                   # Language modeling training loop (FineWeb-Edu) with crash-safe checkpointing
 ├── download_fineweb.py                        # FineWeb-Edu download & tokenization with atomic state flushing
 ├── inference.py                               # CLI interactive generation for trained models
