@@ -53,8 +53,8 @@ def train(config: LanguageModelingExperimentConfig):
     model = SubwordLM(config.vocab_size, config.model_config)
     model.to(device)
     
-    if config.use_mixed_precision:
-        pass    
+    assert config.use_mixed_precision, "use_mixed_precision MUST be True for HOFA models."
+    
     optimizer = torch.optim.AdamW(
         model.parameters(), 
         lr=config.learning_rate, 

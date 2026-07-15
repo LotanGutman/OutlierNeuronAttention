@@ -77,14 +77,15 @@ src/
 
 training/
 ├── training_config.py                         # LanguageModelingExperimentConfig (model_name, dataset, hparams)
-├── train.py                                   # Language modeling training loop (FineWeb-Edu)
-├── download_fineweb.py                        # FineWeb-Edu download & tokenization
+├── train.py                                   # Language modeling training loop (FineWeb-Edu) with crash-safe checkpointing
+├── download_fineweb.py                        # FineWeb-Edu download & tokenization with atomic state flushing
 ├── inference.py                               # CLI interactive generation for trained models
-└── plot_training.py                           # Training metrics plotting (loss / LR curves)
+└── plot_training.py                           # Training metrics multi-model shared plotting
 
 benchmarks/
 ├── validate_kernels.py                        # Integration testing for HOFA_Train vs HOFA_Infer (fused from debug_decode)
 ├── benchmarks_configs.py                      # Experiment config dataclasses
+├── benchmark_zeroshot.py                      # Full zero-shot common-sense suite (HellaSwag, ARC, PIQA, WinoGrande, OBQA) with caching
 ├── benchmark_induction.py                     # Induction head training (MHA vs HOFA vs GLA vs Mamba)
 ├── benchmark_K_eff.py                         # Effective attention-mass measurement on real LLMs
 ├── profile_prefill.py                         # Prefill latency + FLOPs (MHA vs HOFA)
@@ -96,6 +97,12 @@ benchmarks/
 
 main.py                                         # CLI entry point (download-data | train | infer | profile)
 ```
+
+---
+
+## Training Stability
+
+The training loop incorporates built-in data leakage prevention for sequence tokenization and an **Emergency Checkpointing System**. If a crash occurs (e.g. out of disk space or an unexpected interrupt), the model safely dumps its state to `checkpoint_emergency.pt` instead of corrupting the valid checkpoint file, preserving hours of expensive training progress.
 
 ---
 
@@ -138,8 +145,13 @@ python main.py profile --decode
 
 # 5. Plot training metrics
 python main.py train --plot
+python main.py train --plot --shared   # Generates comparative academic plots (Tokens & FLOPs) between HOFA and MHA
 
-# 6. Interactive generation
+# 6. Evaluate zero-shot reasoning
+python main.py train --eval            # Runs the full suite (HellaSwag, ARC, PIQA, WinoGrande, OBQA) with caching
+python main.py train --eval --simple   # Runs only HellaSwag
+
+# 7. Interactive generation
 python main.py infer
 python main.py infer --train   # Run using the pure PyTorch training autoregressive loop instead of Triton
 python main.py infer --debug   # Enable detailed, dynamic gating statistics per-prompt

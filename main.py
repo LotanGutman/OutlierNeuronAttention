@@ -15,7 +15,8 @@ def main():
     parser_train = subparsers.add_parser("train", help="Run training, plotting, or evaluation")
     parser_train.add_argument("--plot", action="store_true", help="Plot training metrics")
     parser_train.add_argument("--shared", action="store_true", help="Plot shared training metrics for HOFA and MHA")
-    parser_train.add_argument("--eval", action="store_true", help="Evaluate on HellaSwag using lm-eval")
+    parser_train.add_argument("--eval", action="store_true", help="Evaluate the model on zero-shot reasoning benchmarks")
+    parser_train.add_argument("--simple", action="store_true", help="Only run the HellaSwag benchmark instead of the full suite")
 
     parser_infer = subparsers.add_parser("infer", help="Run interactive generation or validation")
     parser_infer.add_argument("--debug", action="store_true", help="Print debug information (gate bias, etc.)")
@@ -43,9 +44,9 @@ def main():
             else:
                 plot_training_metrics(config)
         elif args.eval:
-            from benchmarks.benchmark_swag import evaluate_hellaswag
+            from benchmarks.benchmark_zeroshot import evaluate_zeroshot
             from benchmarks.benchmarks_configs import EvalExperimentConfig
-            evaluate_hellaswag(config, EvalExperimentConfig())
+            evaluate_zeroshot(config, EvalExperimentConfig(), is_simple=args.simple)
         else:
             from training.train import train
             train(config)

@@ -83,7 +83,11 @@ class KEffExperimentConfig:
 @dataclass
 class EvalExperimentConfig:
     """Configuration for zero-shot evaluations (HellaSwag, LAMBADA, etc.)."""
+    tasks: tuple[str, ...] = ("hellaswag", "arc_easy", "arc_challenge", "piqa", "winogrande", "openbookqa")
     limit: int | None = 1000
     seed: int = 42
-    batch_size: str | int = "auto"
+    batch_size: int = 1  # Force to 1 to prevent padding corruption in unmasked HOFA
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    force_rerun: bool = False
+    use_cache: bool = True
+    cache_file_name: str = "zeroshot_eval_results.pt"

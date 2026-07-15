@@ -44,6 +44,7 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
     print(f"\n--- Training {model_name} on Induction Head ---")
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     device = config.device
+    assert config.use_mixed_precision, "use_mixed_precision MUST be True for HOFA models."
     use_autocast = config.use_mixed_precision and device == "cuda"
     warmup_steps = int(0.05 * config.train_steps)
 
