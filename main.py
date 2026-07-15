@@ -1,11 +1,11 @@
-from training.training_config import make_125M_hofa, make_125M_mha, LanguageModelingExperimentConfig
+from training.training_config import make_13M_hofa, make_125M_hofa, make_125M_mha, LanguageModelingExperimentConfig
 
 
 import argparse
 
 
 def main():
-    config = make_125M_hofa() # LanguageModelingExperimentConfig() # make_125M_hofa()
+    config = make_13M_hofa() # LanguageModelingExperimentConfig() # make_125M_hofa()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -36,6 +36,9 @@ def main():
     if args.command == "download-data":
         from training.download_fineweb import download_and_tokenize
         download_and_tokenize(config)
+        import os
+        print("\n[INFO] Data download completed successfully! Exiting immediately to prevent HuggingFace teardown bugs.")
+        os._exit(0)
     elif args.command == "train":
         if args.plot:
             from training.plot_training import plot_training_metrics

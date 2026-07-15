@@ -235,7 +235,17 @@ def train(config: LanguageModelingExperimentConfig):
                 break
                 
     except Exception as e:
-        print(f"\nCRASH DETECTED: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        error_str = str(e).lower()
+        if "device not ready" in error_str:
+            print("\n" + "="*80)
+            print("If you are running this on WSL, than it may not support GPU level linux control which may cause you to OOM (and hence this crash). Please check your VRAM :)")
+            print("="*80 + "\n")
+        else:
+            print(f"\nCRASH DETECTED: {e}")
+            
         print("Saving emergency checkpoint before failing...")
         is_crash = True
     finally:
