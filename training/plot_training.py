@@ -71,10 +71,6 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
         val_tokens = metrics.get("val_tokens", [])
         val_ppl = metrics.get("val_ppl", [])
 
-        # Drop the first validation point (often noisy / JIT artifact)
-        if len(val_tokens) > 1:
-            val_tokens = val_tokens[1:]
-            val_ppl = val_ppl[1:]
 
         has_val = len(val_tokens) > 0 and len(val_ppl) > 0
 
@@ -94,7 +90,7 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
             r_list = [r_list] * config.model_config.num_layers
             
         flops_per_token = calc_hofa_flops_per_token(P, H, d_h, r_list, N_seq)
-        print(f"[{model_name}] Calculated Theoretical FLOPs per token: {flops_per_token:.2e}")
+        print(f"[{model_name}] Calculated FLOPs per token: {flops_per_token:.2e}")
         
         flops_x = [t * flops_per_token for t in tokens]
         val_flops_x = [t * flops_per_token for t in val_tokens] if has_val else []
@@ -106,6 +102,7 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
             "val_loss": val_loss,
             "flops_x": flops_x,
             "val_flops_x": val_flops_x,
+            "val_ppl": val_ppl,
             "has_val": has_val
         }
 
@@ -164,14 +161,31 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
         if has_val:
             plt.figure(figsize=(10, 6))
             plt.plot(val_tokens, val_ppl, color="green", marker="o", markersize=4, linewidth=1.5, linestyle="-", label="Validation Perplexity")
+            
+            # Start x-axis at the second point to hide the step 0 gap
+            plt.xscale('log')
+            if len(val_tokens) > 1:
+                plt.xlim(left=val_tokens[1])
+            # Cap the Y-axis to just above the second point to hide the massive step 0 spike
+            if len(val_ppl) > 1:
+                plt.ylim(bottom=0, top=max(val_ppl[1:]) * 1.1)
+                
             plt.title(f"{model_name} HOFA: Validation Perplexity")
             plt.xlabel("Processed Tokens")
             plt.ylabel("Perplexity")
-            plt.grid(True, linestyle="--", alpha=0.4)
+            plt.grid(True, linestyle=":", alpha=0.6)
             plt.legend()
             plt.tight_layout()
             plot3_path = os.path.join(plot_dir, "val_ppl_vs_tokens.pdf")
             plt.savefig(plot3_path)
+            
+            # Second copy with log Y
+            plt.yscale('log')
+            if len(val_ppl) > 1:
+                plt.ylim(bottom=min(val_ppl) * 0.8) # Set a tight bottom limit
+            plot3_logy_path = os.path.join(plot_dir, "val_ppl_vs_tokens_logy.pdf")
+            plt.savefig(plot3_logy_path)
+            
             plt.close()
 
         # ------------------------------------------------------------------
@@ -196,8 +210,8 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
     # ------------------------------------------------------------------
     if len(all_data) > 1:
         print("\nGenerating shared multi-model plot...")
-        # Use academic paper theme
-        sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+        # Use academic paper theme matching profiling scripts
+        plt.rcParams.update({'font.size': 12, 'font.family': 'serif'})
         
         fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
         colors = sns.color_palette("tab10", n_colors=len(all_data))
@@ -216,19 +230,23 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
                 axes[1].plot(data["val_flops_x"], data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=2.5)
         
         # Formatting Left Axis (Tokens)
-        axes[0].set_title("Validation & Train Loss vs. Tokens", fontweight='bold', pad=10)
+        axes[0].set_title("Validation & Train Loss vs. Tokens", pad=10)
         axes[0].set_xlabel("Processed Tokens", fontsize=11)
         axes[0].set_ylabel("Cross Entropy Loss", fontsize=11)
-        axes[0].grid(True, alpha=0.4, linestyle='--')
+        axes[0].grid(True, linestyle=':', alpha=0.6)
         
         # Formatting Right Axis (FLOPs)
-        axes[1].set_title("Validation & Train Loss vs. Theoretical FLOPs", fontweight='bold', pad=10)
-        axes[1].set_xlabel("Total Theoretical FLOPs", fontsize=11)
-        axes[1].grid(True, alpha=0.4, linestyle='--')
+        axes[1].set_title("Validation & Train Loss vs. FLOPs", pad=10)
+        axes[1].set_xlabel("Total FLOPs", fontsize=11)
+        axes[1].grid(True, linestyle=':', alpha=0.6)
         
         # Add shared legend at the top
         handles, labels = axes[1].get_legend_handles_labels()
         fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=len(all_data), frameon=False, fontsize=12)
+        
+        # Crop the Y axis to skip the massive initial loss
+        axes[0].set_ylim(top=8.0)
+        axes[1].set_ylim(top=8.0)
         
         plt.tight_layout()
         
@@ -238,16 +256,89 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
         
         shared_dir = "data/plots/training/shared"
         os.makedirs(shared_dir, exist_ok=True)
-        shared_path = os.path.join(shared_dir, f"{combined_name}.png")
-        
-        plt.savefig(shared_path, bbox_inches='tight', format='png', dpi=300)
-        
-        # Optionally save a PDF for LaTeX vector graphics
-        pdf_path = shared_path.replace('.png', '.pdf')
+        pdf_path = os.path.join(shared_dir, f"{combined_name}.pdf")
         plt.savefig(pdf_path, bbox_inches='tight', format='pdf')
         
+        # Second plot: exactly the same but log scale for tokens and flops
+        axes[0].set_xscale('log')
+        axes[1].set_xscale('log')
+        
+        # Set x limits to start at second measurement (step 1) to hide the huge gap
+        min_token_step1 = min([data["tokens"][1] for data in all_data.values() if len(data["tokens"]) > 1] or [1])
+        min_flop_step1 = min([data["flops_x"][1] for data in all_data.values() if len(data["flops_x"]) > 1] or [1])
+        
+        axes[0].set_xlim(left=min_token_step1)
+        axes[1].set_xlim(left=min_flop_step1)
+        
+        log_pdf_path = os.path.join(shared_dir, f"{combined_name}_log.pdf")
+        plt.savefig(log_pdf_path, bbox_inches='tight', format='pdf')
+        
         plt.close()
-        print(f"Saved shared high-clarity plot to {shared_path}")
+        print(f"Saved shared high-clarity plots to {pdf_path} and {log_pdf_path}")
+        
+        # ------------------------------------------------------------------
+        # SHARED PERPLEXITY PLOT
+        # ------------------------------------------------------------------
+        if any(d["has_val"] for d in all_data.values()):
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+            
+            for i, (name, data) in enumerate(all_data.items()):
+                if not data["has_val"]:
+                    continue
+                color = colors[i]
+                
+                axes[0].plot(data["val_tokens"], data["val_ppl"], color=color, label=name, marker='o', markersize=4, linewidth=1.5)
+                axes[1].plot(data["val_flops_x"], data["val_ppl"], color=color, label=name, marker='o', markersize=4, linewidth=1.5)
+            
+            axes[0].set_title("Validation Perplexity vs. Tokens", pad=10)
+            axes[0].set_xlabel("Processed Tokens", fontsize=11)
+            axes[0].set_ylabel("Perplexity", fontsize=11)
+            axes[0].grid(True, linestyle=':', alpha=0.6)
+            
+            axes[1].set_title("Validation Perplexity vs. FLOPs", pad=10)
+            axes[1].set_xlabel("Total FLOPs", fontsize=11)
+            axes[1].grid(True, linestyle=':', alpha=0.6)
+            
+            axes[0].set_xscale('log')
+            axes[1].set_xscale('log')
+            
+            min_token_step1 = min([d["val_tokens"][1] for d in all_data.values() if len(d["val_tokens"]) > 1] or [1])
+            min_flop_step1 = min([d["val_flops_x"][1] for d in all_data.values() if len(d["val_flops_x"]) > 1] or [1])
+            
+            axes[0].set_xlim(left=min_token_step1)
+            axes[1].set_xlim(left=min_flop_step1)
+            
+            max_ppl = 0
+            min_ppl = float('inf')
+            for d in all_data.values():
+                if d["has_val"] and len(d["val_ppl"]) > 1:
+                    max_ppl = max(max_ppl, max(d["val_ppl"][1:]))
+                    min_ppl = min(min_ppl, min(d["val_ppl"]))
+                    
+            if max_ppl > 0:
+                axes[0].set_ylim(bottom=0, top=max_ppl * 1.1)
+                axes[1].set_ylim(bottom=0, top=max_ppl * 1.1)
+                
+            handles, labels = axes[1].get_legend_handles_labels()
+            fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=len(all_data), frameon=False, fontsize=12)
+            
+            plt.tight_layout()
+            
+            ppl_pdf_path = os.path.join(shared_dir, f"{combined_name}_ppl.pdf")
+            plt.savefig(ppl_pdf_path, bbox_inches='tight', format='pdf')
+            
+            # Second copy with log Y
+            axes[0].set_yscale('log')
+            axes[1].set_yscale('log')
+            if max_ppl > 0:
+                axes[0].set_ylim(bottom=min_ppl * 0.8, top=max_ppl * 1.1)
+                axes[1].set_ylim(bottom=min_ppl * 0.8, top=max_ppl * 1.1)
+                
+            ppl_logy_pdf_path = os.path.join(shared_dir, f"{combined_name}_ppl_logy.pdf")
+            plt.savefig(ppl_logy_pdf_path, bbox_inches='tight', format='pdf')
+            
+            plt.close()
+            print(f"Saved shared perplexity plots to {ppl_pdf_path} and {ppl_logy_pdf_path}")
 
     print("\nAll plots generated successfully.")
 

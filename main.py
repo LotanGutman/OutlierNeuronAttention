@@ -5,7 +5,7 @@ import argparse
 
 
 def main():
-    config = make_13M_mha()
+    config = make_125M_mha()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
