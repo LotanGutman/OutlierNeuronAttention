@@ -263,12 +263,21 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
         axes[0].set_xscale('log')
         axes[1].set_xscale('log')
         
-        # Set x limits to start at second measurement (step 1) to hide the huge gap
-        min_token_step1 = min([data["tokens"][1] for data in all_data.values() if len(data["tokens"]) > 1] or [1])
-        min_flop_step1 = min([data["flops_x"][1] for data in all_data.values() if len(data["flops_x"]) > 1] or [1])
-        
-        axes[0].set_xlim(left=min_token_step1)
-        axes[1].set_xlim(left=min_flop_step1)
+        # Set x limits to start at the first point where loss drops below the 8.0 ceiling
+        min_token_visible = float('inf')
+        min_flop_visible = float('inf')
+        for data in all_data.values():
+            for t, l, f in zip(data["tokens"], data["losses"], data["flops_x"]):
+                if l <= 8.0:
+                    min_token_visible = min(min_token_visible, t)
+                    min_flop_visible = min(min_flop_visible, f)
+                    break
+                    
+        if min_token_visible == float('inf'):
+            min_token_visible, min_flop_visible = 1, 1
+            
+        axes[0].set_xlim(left=min_token_visible)
+        axes[1].set_xlim(left=min_flop_visible)
         
         log_pdf_path = os.path.join(shared_dir, f"{combined_name}_log.pdf")
         plt.savefig(log_pdf_path, bbox_inches='tight', format='pdf')
