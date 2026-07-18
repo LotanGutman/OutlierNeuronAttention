@@ -213,57 +213,15 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
         # Use academic paper theme matching profiling scripts
         plt.rcParams.update({'font.size': 12, 'font.family': 'serif'})
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
         colors = sns.color_palette("tab10", n_colors=len(all_data))
-        
-        for i, (name, data) in enumerate(all_data.items()):
-            color = colors[i]
-            
-            # Left Axis: vs Tokens
-            axes[0].plot(data["tokens"], data["losses"], color=color, alpha=0.2, linewidth=0.8)
-            if data["has_val"]:
-                axes[0].plot(data["val_tokens"], data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=2.5)
-            
-            # Right Axis: vs FLOPs
-            axes[1].plot(data["flops_x"], data["losses"], color=color, alpha=0.2, linewidth=0.8)
-            if data["has_val"]:
-                axes[1].plot(data["val_flops_x"], data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=2.5)
-        
-        # Formatting Left Axis (Tokens)
-        axes[0].set_title("Validation & Train Loss vs. Tokens", pad=10)
-        axes[0].set_xlabel("Processed Tokens", fontsize=11)
-        axes[0].set_ylabel("Cross Entropy Loss", fontsize=11)
-        axes[0].grid(True, linestyle=':', alpha=0.6)
-        
-        # Formatting Right Axis (FLOPs)
-        axes[1].set_title("Validation & Train Loss vs. FLOPs", pad=10)
-        axes[1].set_xlabel("Total FLOPs", fontsize=11)
-        axes[1].grid(True, linestyle=':', alpha=0.6)
-        
-        # Add shared legend at the top
-        handles, labels = axes[1].get_legend_handles_labels()
-        fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=len(all_data), frameon=False, fontsize=12)
-        
-        # Crop the Y axis to skip the massive initial loss
-        axes[0].set_ylim(top=8.0)
-        axes[1].set_ylim(top=8.0)
-        
-        plt.tight_layout()
-        
-        # Generate truncated sorted name
-        sorted_names = sorted(list(all_data.keys()))
-        combined_name = "_".join(sorted_names)
         
         shared_dir = "data/plots/training/shared"
         os.makedirs(shared_dir, exist_ok=True)
-        pdf_path = os.path.join(shared_dir, f"{combined_name}.pdf")
-        plt.savefig(pdf_path, bbox_inches='tight', format='pdf')
         
-        # Second plot: exactly the same but log scale for tokens and flops
-        axes[0].set_xscale('log')
-        axes[1].set_xscale('log')
-        
-        # Set x limits to start at the first point where loss drops below the 8.0 ceiling
+        sorted_names = sorted(list(all_data.keys()))
+        combined_name = "_".join(sorted_names)
+
+        # Pre-calculate global limits
         min_token_visible = float('inf')
         min_flop_visible = float('inf')
         for data in all_data.values():
@@ -272,82 +230,114 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
                     min_token_visible = min(min_token_visible, t)
                     min_flop_visible = min(min_flop_visible, f)
                     break
-                    
         if min_token_visible == float('inf'):
             min_token_visible, min_flop_visible = 1, 1
-            
-        axes[0].set_xlim(left=min_token_visible)
-        axes[1].set_xlim(left=min_flop_visible)
-        
-        log_pdf_path = os.path.join(shared_dir, f"{combined_name}_log.pdf")
-        plt.savefig(log_pdf_path, bbox_inches='tight', format='pdf')
-        
-        plt.close()
-        print(f"Saved shared high-clarity plots to {pdf_path} and {log_pdf_path}")
-        
-        # ------------------------------------------------------------------
-        # SHARED PERPLEXITY PLOT
-        # ------------------------------------------------------------------
-        if any(d["has_val"] for d in all_data.values()):
-            fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-            
-            for i, (name, data) in enumerate(all_data.items()):
-                if not data["has_val"]:
-                    continue
-                color = colors[i]
-                
-                axes[0].plot(data["val_tokens"], data["val_ppl"], color=color, label=name, marker='o', markersize=4, linewidth=1.5)
-                axes[1].plot(data["val_flops_x"], data["val_ppl"], color=color, label=name, marker='o', markersize=4, linewidth=1.5)
-            
-            axes[0].set_title("Validation Perplexity vs. Tokens", pad=10)
-            axes[0].set_xlabel("Processed Tokens", fontsize=11)
-            axes[0].set_ylabel("Perplexity", fontsize=11)
-            axes[0].grid(True, linestyle=':', alpha=0.6)
-            
-            axes[1].set_title("Validation Perplexity vs. FLOPs", pad=10)
-            axes[1].set_xlabel("Total FLOPs", fontsize=11)
-            axes[1].grid(True, linestyle=':', alpha=0.6)
-            
-            axes[0].set_xscale('log')
-            axes[1].set_xscale('log')
-            
-            min_token_step1 = min([d["val_tokens"][1] for d in all_data.values() if len(d["val_tokens"]) > 1] or [1])
-            min_flop_step1 = min([d["val_flops_x"][1] for d in all_data.values() if len(d["val_flops_x"]) > 1] or [1])
-            
-            axes[0].set_xlim(left=min_token_step1)
-            axes[1].set_xlim(left=min_flop_step1)
-            
-            max_ppl = 0
-            min_ppl = float('inf')
+
+        min_token_step1 = min([d["val_tokens"][1] for d in all_data.values() if d["has_val"] and len(d["val_tokens"]) > 1] or [1])
+        min_flop_step1 = min([d["val_flops_x"][1] for d in all_data.values() if d["has_val"] and len(d["val_flops_x"]) > 1] or [1])
+
+        max_ppl = 0
+        min_ppl = float('inf')
+        has_any_val = any(d["has_val"] for d in all_data.values())
+        if has_any_val:
             for d in all_data.values():
                 if d["has_val"] and len(d["val_ppl"]) > 1:
                     max_ppl = max(max_ppl, max(d["val_ppl"][1:]))
                     min_ppl = min(min_ppl, min(d["val_ppl"]))
-                    
-            if max_ppl > 0:
-                axes[0].set_ylim(bottom=0, top=max_ppl * 1.1)
-                axes[1].set_ylim(bottom=0, top=max_ppl * 1.1)
-                
-            handles, labels = axes[1].get_legend_handles_labels()
-            fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=len(all_data), frameon=False, fontsize=12)
+
+        def _plot_shared(metric, x_axis, is_log):
+            plt.figure(figsize=(8, 6))
             
+            for i, (name, data) in enumerate(all_data.items()):
+                color = colors[i]
+                
+                if metric == "loss":
+                    x_data_train = data["tokens"] if x_axis == "tokens" else data["flops_x"]
+                    plt.plot(x_data_train, data["losses"], color=color, alpha=0.2, linewidth=0.8)
+                    if data["has_val"]:
+                        x_data_val = data["val_tokens"] if x_axis == "tokens" else data["val_flops_x"]
+                        plt.plot(x_data_val, data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=2.5)
+                elif metric == "ppl":
+                    if data["has_val"]:
+                        x_data_val = data["val_tokens"] if x_axis == "tokens" else data["val_flops_x"]
+                        plt.plot(x_data_val, data["val_ppl"], color=color, label=name, marker='o', markersize=4, linewidth=1.5)
+
+            title_metric = "Validation & Train Loss" if metric == "loss" else "Validation Perplexity"
+            title_x = "Tokens" if x_axis == "tokens" else "FLOPs"
+            plt.title(f"{title_metric} vs. {title_x}", pad=10)
+            
+            plt.xlabel("Processed Tokens" if x_axis == "tokens" else "Total FLOPs", fontsize=11)
+            plt.ylabel("Cross Entropy Loss" if metric == "loss" else "Perplexity", fontsize=11)
+            plt.grid(True, linestyle=':', alpha=0.6)
+            
+            plt.legend(fontsize=12)
+            
+            if is_log:
+                plt.xscale('log')
+                if metric == "loss":
+                    plt.xlim(left=min_token_visible if x_axis == "tokens" else min_flop_visible)
+                else:
+                    plt.xlim(left=min_token_step1 if x_axis == "tokens" else min_flop_step1)
+            
+            if metric == "loss":
+                plt.ylim(top=8.0)
+            elif metric == "ppl" and max_ppl > 0:
+                if is_log:
+                    plt.yscale('log')
+                    plt.ylim(bottom=min_ppl * 0.8, top=max_ppl * 1.1)
+                else:
+                    plt.ylim(bottom=0, top=max_ppl * 1.1)
+                    
             plt.tight_layout()
             
-            ppl_pdf_path = os.path.join(shared_dir, f"{combined_name}_ppl.pdf")
-            plt.savefig(ppl_pdf_path, bbox_inches='tight', format='pdf')
-            
-            # Second copy with log Y
-            axes[0].set_yscale('log')
-            axes[1].set_yscale('log')
-            if max_ppl > 0:
-                axes[0].set_ylim(bottom=min_ppl * 0.8, top=max_ppl * 1.1)
-                axes[1].set_ylim(bottom=min_ppl * 0.8, top=max_ppl * 1.1)
-                
-            ppl_logy_pdf_path = os.path.join(shared_dir, f"{combined_name}_ppl_logy.pdf")
-            plt.savefig(ppl_logy_pdf_path, bbox_inches='tight', format='pdf')
-            
+            suffix_str = "_log" if is_log else ""
+            filename = f"{combined_name}_{metric}_vs_{x_axis}{suffix_str}.pdf"
+            pdf_path = os.path.join(shared_dir, filename)
+            plt.savefig(pdf_path, bbox_inches='tight', format='pdf')
             plt.close()
-            print(f"Saved shared perplexity plots to {ppl_pdf_path} and {ppl_logy_pdf_path}")
+
+        # Generate the 8 plots
+        for metric in ["loss", "ppl"]:
+            if metric == "ppl" and not has_any_val:
+                continue
+            for x_axis in ["tokens", "flops"]:
+                for is_log in [False, True]:
+                    _plot_shared(metric, x_axis, is_log)
+
+        # Generate an extra 1x2 grid specifically for Loss vs FLOPs (Linear | Log)
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+        for i, (name, data) in enumerate(all_data.items()):
+            color = colors[i]
+            # Left side (Linear)
+            axes[0].plot(data["flops_x"], data["losses"], color=color, alpha=0.2, linewidth=0.8)
+            if data["has_val"]:
+                axes[0].plot(data["val_flops_x"], data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=2.5)
+            
+            # Right side (Log)
+            axes[1].plot(data["flops_x"], data["losses"], color=color, alpha=0.2, linewidth=0.8)
+            if data["has_val"]:
+                axes[1].plot(data["val_flops_x"], data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=2.5)
+
+        for ax, is_log in zip(axes, [False, True]):
+            title_suffix = "(Log Scale)" if is_log else "(Linear Scale)"
+            ax.set_title(f"Validation & Train Loss vs. FLOPs\n{title_suffix}", pad=10)
+            ax.set_xlabel("Total FLOPs", fontsize=11)
+            if not is_log:
+                ax.set_ylabel("Cross Entropy Loss", fontsize=11)
+            ax.grid(True, linestyle=':', alpha=0.6)
+            if is_log:
+                ax.set_xscale('log')
+                ax.set_xlim(left=min_flop_visible)
+            ax.set_ylim(top=8.0)
+            
+        handles, labels = axes[1].get_legend_handles_labels()
+        fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=len(all_data), frameon=False, fontsize=12)
+        plt.tight_layout()
+        combined_pdf_path = os.path.join(shared_dir, f"{combined_name}_loss_vs_flops_combined.pdf")
+        plt.savefig(combined_pdf_path, bbox_inches='tight', format='pdf')
+        plt.close()
+
+        print(f"Saved 8 single shared plots and 1 combined 1x2 plot to {shared_dir}")
 
     print("\nAll plots generated successfully.")
 
