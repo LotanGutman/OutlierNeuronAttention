@@ -1,14 +1,32 @@
 # Hybrid Outlier-Factorized Attention (HOFA)
 
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![PyTorch 2.6.0](https://img.shields.io/badge/PyTorch-2.6.0-ee4c2c.svg?logo=pytorch)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg?logo=python)
+
 HOFA is an attention mechanism that splits each head's feature dimension into two pathways: an **outlier / exact pathway** (first `r` dims — standard SDPA) and an **inlier / linear pathway** (remaining `j = d_head - r` dims — Gated Linear Attention). A learned token-level mixing gate blends the two outputs. RoPE is applied **only** to the exact dimensions.
 
 This gives **O(N) memory scaling** with strictly better recall than pure linear attention, at a fraction of full softmax attention's cost.
+
+## Quickstart (Experimental)
+
+> [!WARNING]
+> This codebase is actively under experimental development. Installation scripts and core architectures may change rapidly.
+
+```bash
+# Clone the repository
+git clone https://github.com/LotanGutman/OutlierNeuronAttention.git
+cd OutlierNeuronAttention/official_code
+
+# Install dependencies (forces PyTorch 2.6.0 + native compilation)
+bash install.sh
+```
 
 ---
 
 ## How It Works
 
-For each head, given Q, K, V ∈ ℝ^(B × H × N × d_head) with r < d_head:
+For each head, given $Q, K, V \in \mathbb{R}^{B \times H \times N \times d_{\text{head}}}$ with $r < d_{\text{head}}$:
 
 | Pathway | Dimensions | Mechanism | RoPE |
 |---|---|---|---|
@@ -27,7 +45,7 @@ Because `r` is small relative to `d_head`, the exact attention cost is **O(N · 
 
 ## Training vs. Inference Architecture
 
-The codebase maintains strict separation between Training and Inference to maximize hardware utilization for their respective paradigms (Parallel vs. Autoregressive).
+The codebase separates Training and Inference implementations to optimize for their respective workloads (parallel prefix versus autoregressive decoding).
 
 ### `src/HybridOutlierFactorizedAttentionTrain.py` (Training)
 - Built on `fla.ops.gla.chunk_gla` for the highly parallelized inlier GLA pathway (handling the complex backpropagation).
@@ -46,11 +64,11 @@ The codebase maintains strict separation between Training and Inference to maxim
 
 ## Testing and Validation
 
-Mathematical equivalence between the PyTorch Training model and the Triton Custom Inference model is guaranteed via a rigorous integration test script.
+The integration tests verify numerical equivalence between the PyTorch training model and the custom Triton inference kernels.
 
 `python main.py infer --validate`
 
-This suite forces the highly-fused Autotuned PyTorch model (`HOFA_Train`) and the custom Autotuned Triton Kernel (`HOFA_Infer`) to execute identical autoregressive steps in `bfloat16`. 
+This script runs the PyTorch model (`HOFA_Train`) and the Triton kernel (`HOFA_Infer`) through identical autoregressive steps in `bfloat16`. 
 It evaluates:
 - **Cosine Similarity:** Consistently achieves $> 0.9999$.
 - **Mean Absolute Error (MAE):** Consistently bounded $\approx 10^{-4}$.
@@ -88,6 +106,7 @@ benchmarks/
 ├── benchmarks_configs.py                      # Experiment config dataclasses
 ├── benchmark_zeroshot.py                      # Full zero-shot common-sense suite (HellaSwag, ARC, PIQA, WinoGrande, OBQA) with caching
 ├── benchmark_induction.py                     # Induction head training (MHA vs HOFA vs GLA vs Mamba)
+├── benchmark_copying.py                       # Selective copying benchmark (MHA vs HOFA vs GLA vs Mamba)
 ├── benchmark_K_eff.py                         # Effective attention-mass measurement on real LLMs
 ├── profile_prefill.py                         # Prefill latency + FLOPs (MHA vs HOFA)
 ├── profile_decode.py                          # Decode throughput + KV-cache footprint
@@ -103,7 +122,7 @@ main.py                                         # CLI entry point (download-data
 
 ## Training Stability
 
-The training loop incorporates built-in data leakage prevention for sequence tokenization and an **Emergency Checkpointing System**. If a crash occurs (e.g. out of disk space or an unexpected interrupt), the model safely dumps its state to `checkpoint_emergency.pt` instead of corrupting the valid checkpoint file, preserving hours of expensive training progress.
+The training loop includes crash-safe checkpointing. If an unexpected interrupt occurs (e.g., OOM or keyboard interrupt), the model intercepts the signal and saves its state to `checkpoint_emergency.pt` to avoid corrupting the primary checkpoint file.
 
 ---
 
@@ -124,7 +143,7 @@ HOFA matches standard MHA accuracy when `r ≥ ceil(log₂(V))` (where V = vocab
 HOFA's exact pathway is bounded at `r` dimensions, so FLOPs scale as **O(N · r)** rather than **O(N · d_head)**. This yields 2-3× speedup over standard MHA at 131K sequence length, with the gap widening at longer contexts.
 
 ### Memory Footprint
-Strict **O(N)** memory during training — no materialization of full attention matrices. The exact pathway uses softmax merging (online softmax) and the GLA pathway maintains only a compact recurrent state `S ∈ ℝ^(j × d_head)`.
+Strict **O(N)** memory during training — no materialization of full attention matrices. The exact pathway uses softmax merging (online softmax) and the GLA pathway maintains only a compact recurrent state $S \in \mathbb{R}^{j \times d_{\text{head}}}$.
 
 ---
 
@@ -177,17 +196,49 @@ model = torch.compile(model, dynamic=True)
 ```
 This enables a single unified execution graph and allows training to start instantly without hanging on kernel benchmarking.
 
-**Note on Installation**: The official `install.sh` downloads pre-compiled wheels for `mamba-ssm` and `causal-conv1d` to perfectly match PyTorch 2.6.0 on Python 3.10-3.12 (do not use 3.13 yet). We explicitly disable source compilation to avoid CUDA toolchain mismatches. We explicitly pin `mamba-ssm==2.2.4` to avoid `quack-kernels` dependencies introduced in 2.3+ which cause FP8 initialization crashes on standard PyTorch 2.6.0, and to retain native support for Triton 3.2.0 without requiring hot-patches.
+**Note on Installation**: The official `install.sh` establishes a **PyTorch 2.6.0** baseline (with CUDA 12.4). We strictly force native compilation of all C++ extensions (`causal-conv1d` and `mamba-ssm`) against this specific PyTorch version using `--no-build-isolation` and `--no-deps`. This prevents `pip` from downloading conflicting versions of PyTorch/Triton during the build step, ensuring absolute harmony between Flash Linear Attention (FLA) and Mamba in the exact same environment.
 
-## Inference & Autotuning Optimizations
+### Troubleshooting: The Mamba Version Trap
 
-During interactive inference, changing sequence lengths historically triggered catastrophic PyTorch/Triton compilation loops. We have implemented several mitigations to guarantee instant, fluid generation:
+Historically, running PyTorch 2.6.0 alongside both `fla` and `mamba-ssm` was impossible due to a fragile circular dependency trap in the Mamba C++ ecosystem:
+1. `mamba-ssm 2.2.4` expects the `causal-conv1d` extension to have exactly 7 arguments.
+2. `causal-conv1d 1.4.0` has 7 arguments, but it **fails to compile** natively against the new C++ headers in PyTorch 2.6.0.
+3. Upgrading to `causal-conv1d 1.6.2` compiles perfectly on PyTorch 2.6.0, but changes its signature to 8 arguments, immediately crashing `mamba-ssm 2.2.4`.
+4. Upgrading to `mamba-ssm 2.3.2+` (which supports 8 arguments) strictly requires `triton>=3.5.0`.
+5. Forcing a Triton upgrade to 3.5.0 breaks PyTorch 2.6.0's native `torch.compile` (which demands `triton==3.2.0`), causing PIP to panic and overwrite your CUDA environment.
 
-1. **Prefill Autotuning Fix:** In `exact_attention.py`, the sequence length (`N_CTX`) was removed from the `@triton.autotune` key. This prevents Triton from triggering a 5-second GPU benchmark sweep every time you type a prompt of a different length.
-2. **Decode Autotuning Fix:** In `fused_hofa_decode_kernel`, the sequence length is similarly excluded from the tuning keys to prevent recompilation on every single generated token.
-3. **Silent Initialization Warmup:** To ensure the very first prompt is perfectly fluid, `InferenceEngine.__init__` executes a silent 1-token "Warmup" generation in the background immediately after checkpoint loading. This forces Triton to absorb all JIT compilation overhead before the user is ever presented with a prompt.
-4. **Separated Performance Metrics:** The interactive `infer` CLI clearly separates the mathematical Prefill Tokens-Per-Second from the Decode Tokens-Per-Second, allowing precise performance profiling without startup bias.
-5. **Dynamic Gate Tracing (Zero-Overhead):** Using the `--debug` flag activates a PyTorch monkey patch (`patch_attention_for_debugging`) inside `benchmark_utils.py` that dynamically intercepts Mix Gate and GLA Gate Logit activations during inference, without polluting or slowing down the highly-optimized core model file.
+**The Solution (Native Compilation Bypass):**
+We solved this by leveraging the newly released `mamba-ssm==2.2.5` (which bridges the 8-argument C++ ABI gap without enforcing a Triton 3.5.0 upgrade) and forcing it to compile directly against PyTorch 2.6.0's headers.
+
+In `install.sh`, we explicitly do:
+```bash
+# 1. Lock PyTorch 2.6.0
+python -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+
+# 2. Install FLA without letting it downgrade/upgrade torch
+python -m pip install -U "flash-linear-attention[cuda]" --no-deps
+
+# 3. Force native compilation of causal-conv1d and mamba-ssm 2.2.5 
+export TORCH_CUDA_ARCH_LIST="native"
+export MAMBA_FORCE_BUILD=TRUE
+export CAUSAL_CONV1D_FORCE_BUILD=TRUE
+pip install causal-conv1d --no-build-isolation --no-cache-dir
+pip install "mamba-ssm==2.2.5" --no-build-isolation --no-cache-dir --no-deps
+```
+By passing `--no-build-isolation` and `--no-deps`, we strip away their isolated build environments and force them to link directly against our active PyTorch 2.6.0 tensor library. This yields a single, flawless environment where HOFA, GLA, DeltaNet, and Mamba can all be benchmarked simultaneously!
+
+**Note on Checkpoint Loading (`ValueError: different number of parameter groups`)**: 
+If you try to load an older Mamba checkpoint into the current codebase, it may crash on `optimizer.load_state_dict()` because the new HOFA codebase splits the optimizer into two parameter groups (for Selective Regularization). Since you only need the model weights to evaluate Mamba as a baseline, you can safely bypass this by temporarily commenting out `optimizer.load_state_dict(ckpt['optimizer_state_dict'])` in `src/modules/checkpointing.py`.
+
+## Inference Optimizations
+
+We have implemented several changes to prevent unnecessary PyTorch/Triton recompilation during interactive generation:
+
+1. **Prefill Tuning:** In `exact_attention.py`, the sequence length (`N_CTX`) is excluded from the `@triton.autotune` key. This prevents Triton from running a benchmark sweep when the prompt length changes.
+2. **Decode Tuning:** In `fused_hofa_decode_kernel`, the sequence length is similarly excluded from the tuning keys to avoid recompilation per generated token.
+3. **Initialization Warmup:** `InferenceEngine.__init__` executes a silent 1-token warmup generation after checkpoint loading. This absorbs JIT compilation overhead prior to interactive usage.
+4. **Separated Metrics:** The `infer` CLI separates Prefill Tokens-Per-Second from Decode Tokens-Per-Second for accurate profiling.
+5. **Gate Tracing:** Passing the `--debug` flag activates a monkey patch (`patch_attention_for_debugging`) to trace Mix Gate and GLA Gate logits during inference, keeping the core model file clean.
 
 ---
 
@@ -233,9 +284,7 @@ Each block processes `seq_len / K` tokens instead of the full sequence, linear s
 
 The exact-attention loop loads K and V cache tiles from global memory, then computes attention scores. These two phases are serialized — the compute units idle during loads. Double-buffer the next tile's load while computing the current tile:
 
-```
-Load K₀,V₀ | Compute A₀ + Load K₁,V₁ | Compute A₁ + Load K₂,V₂ | ...
-```
+$$ \text{Load } K_0, V_0 \mid \text{Compute } A_0 + \text{Load } K_1, V_1 \mid \text{Compute } A_1 + \text{Load } K_2, V_2 \mid \dots $$
 
 On Ampere+ (RTX 3060+), `tl.async_copy` with `tl.async_wait` enables pipelined global→shared memory transfers. Expected speedup: 20–40% on memory-bound long contexts since the loop is entirely memory-latency-bound.
 
@@ -260,3 +309,31 @@ for j_tile in range(0, j, J_TILE):
 ```
 
 Each tile fits in registers, reducing spills to shared memory and freeing bandwidth for the exact-attention loop. The GLA output computation (`q_J @ state`) tiles naturally along the same dimension. Expected improvement: 10–15% on top of Split-K by reducing register pressure in the fused kernel.
+
+---
+
+## Contributing
+
+We welcome contributions! To ensure absolute stability of the Triton and PyTorch graphs, please adhere to the following when submitting a Pull Request:
+
+1. **Validation Proof**: If your PR touches the PyTorch training architecture (`src/HybridOutlierFactorizedAttentionTrain.py`), the Triton inference kernels (`src/hofa_decode_triton.py`, `src/exact_attention.py`, `src/chunk_gla_inlier.py`), or any core module routing, you **must** run the mathematical validation suite. Include proof of its successful execution in your PR description.
+   ```bash
+   python main.py infer --validate
+   ```
+2. **Documentation Check**: If your change introduces a new CLI flag, alters tuning logic, or updates the environment baseline, you must update the relevant sections of this `README.md`.
+
+---
+
+## Citation
+
+If you use HOFA in your research, please cite:
+
+```bibtex
+% (Currently empty - to be added upon publication)
+```
+
+---
+
+## License
+
+This project is licensed under the MIT License.

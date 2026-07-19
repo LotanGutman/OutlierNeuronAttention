@@ -3,6 +3,11 @@ import torch.nn.functional as F
 import os
 import matplotlib.pyplot as plt
 import numpy as np
+import torch.backends.cudnn as cudnn
+
+cudnn.benchmark = True
+torch.set_float32_matmul_precision('high')
+
 from dataclasses import dataclass, field
 
 from src.config import ModelConfig
@@ -42,7 +47,24 @@ def generate_induction_seqs(batch_size, seq_len, vocab_size, device):
 
 def train_induction(model, config, model_name, checkpoint_dir=None):
     print(f"\n--- Training {model_name} on Induction Head ---")
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    decay_params = []
+    no_decay_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad: continue
+        # The exact pathway Q/K projections remain unregularized (wd=0.0) 
+        # to allow infinite gamma scaling per theoretical requirement.
+        if config.disable_weight_decay_for_attention and ('W_q' in name or 'W_k' in name):
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+            
+    optim_groups = [
+        {'params': decay_params, 'weight_decay': config.weight_decay},  # Backbone gets regularized for stability
+    ]
+    if len(no_decay_params) > 0:
+        optim_groups.append({'params': no_decay_params, 'weight_decay': 0.0}) # Exact pathway stays pure
+
+    optimizer = torch.optim.AdamW(optim_groups, lr=config.learning_rate, fused=True)
     device = config.device
     assert config.use_mixed_precision, "use_mixed_precision MUST be True for HOFA models."
     use_autocast = config.use_mixed_precision and device == "cuda"
@@ -144,16 +166,7 @@ def run_induction_experiment():
     device = config.device
     torch.manual_seed(config.seed)
     
-    models_to_test = [
-        ("MHA", AttentionType.MHA, None),
-        ("HOFA (r=8)", AttentionType.HOFA, 8),
-        ("HOFA (r=12)", AttentionType.HOFA, 12),
-        ("HOFA (r=14)", AttentionType.HOFA, 14),
-        ("HOFA (r=16)", AttentionType.HOFA, 16),
-        ("Gated DeltaNet", AttentionType.DELTA, None),
-        ("GLA", AttentionType.GLA, None),
-        ("Mamba", AttentionType.MAMBA, None)
-    ]
+    models_to_test = config.models_to_test
     
     seq_lengths = [1024, 512, 256, 128, 64]
     trendline_results = {name: [] for name, _, _ in models_to_test}
@@ -181,6 +194,7 @@ def run_induction_experiment():
                 num_layers=config.model_config.num_layers,
                 model_cfg=config.model_config
             ).to(device)
+
             checkpoint_dir = f"data/induction_models/seqlen_{seq_len}/induction_{name.replace(' ', '_').replace('(', '').replace(')', '').replace('=', '')}"
             os.makedirs(checkpoint_dir, exist_ok=True)
             

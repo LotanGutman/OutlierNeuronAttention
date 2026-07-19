@@ -31,6 +31,10 @@ def main():
     parser_profile.add_argument("--save", action=argparse.BooleanOptionalAction, default=True, help="Save plotting results (default: True)")
     parser_profile.add_argument("--use-cache", action=argparse.BooleanOptionalAction, default=True, help="Use cached results if available (default: True)")
 
+    parser_bench = subparsers.add_parser("benchmark", help="Run synthetic capability benchmarks")
+    parser_bench.add_argument("--induction", action="store_true", help="Run the Induction Head capability benchmark")
+    parser_bench.add_argument("--copy", action="store_true", help="Run the Sequential Copying capability benchmark")
+
     args = parser.parse_args()
 
     if args.command == "download-data":
@@ -88,6 +92,15 @@ def main():
             run_decode_profiling(config=DecodeExperimentConfig(), force_rerun=force_rerun, save_results=args.save)
         else:
             print("Please specify either --prefill or --decode to profile.")
+    elif args.command == "benchmark":
+        if args.induction:
+            from benchmarks.benchmark_induction import run_induction_experiment
+            run_induction_experiment()
+        elif args.copy:
+            from benchmarks.benchmark_copying import run_copying_experiment
+            run_copying_experiment()
+        else:
+            print("Please specify either --induction or --copy to run a benchmark.")
     else:
         parser.print_help()
 

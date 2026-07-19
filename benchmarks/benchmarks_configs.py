@@ -6,6 +6,7 @@ src/config.py is reserved purely for model and training configs.
 from dataclasses import dataclass, field
 import torch
 from src.config import ModelConfig
+from src.modules.benchmark_utils import AttentionType
 
 CACHE_PATH = "data/experiments_cache"
 
@@ -33,14 +34,63 @@ class InductionExperimentConfig:
     batch_size: int = 32
     seq_len: int = 1024
     vocab_size: int = 8192
-    train_steps: int = 20000
+    train_steps: int = 25000
     learning_rate: float = 1e-3
     weight_decay: float = 0.01
+    disable_weight_decay_for_attention: bool = True
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     print_every: int = 250
     grad_clip_norm: float = 1.0
     use_mixed_precision: bool = True
+    models_to_test: list = field(
+        default_factory=lambda: [
+            ("MHA", AttentionType.MHA, None),
+            ("HOFA (r=8)", AttentionType.HOFA, 8),
+            ("HOFA (r=12)", AttentionType.HOFA, 12),
+            ("HOFA (r=14)", AttentionType.HOFA, 14),
+            ("HOFA (r=16)", AttentionType.HOFA, 16),
+            ("Gated DeltaNet", AttentionType.DELTA, None),
+            ("GLA", AttentionType.GLA, None),
+            ("Mamba", AttentionType.MAMBA, None)
+        ]
+    )
+
+@dataclass
+class CopyingExperimentConfig:
+    model_config: ModelConfig = field(
+        default_factory=lambda: ModelConfig(
+            d_model=128,
+            num_heads=4, 
+            num_layers=4, 
+            r=16,
+            use_rope=True
+        )
+    )
+    batch_size: int = 32
+    seq_len: int = 1024 # Will be dynamically overridden per-gap
+    vocab_size: int = 8192
+    train_steps: int = 5000
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.01
+    disable_weight_decay_for_attention: bool = True
+    seed: int = 42
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    print_every: int = 250
+    grad_clip_norm: float = 1.0
+    use_mixed_precision: bool = True
+    models_to_test: list = field(
+        default_factory=lambda: [
+            ("MHA", AttentionType.MHA, None),
+            ("HOFA (r=8)", AttentionType.HOFA, 8),
+            ("HOFA (r=12)", AttentionType.HOFA, 12),
+            ("HOFA (r=14)", AttentionType.HOFA, 14),
+            ("HOFA (r=16)", AttentionType.HOFA, 16),
+            ("Gated DeltaNet", AttentionType.DELTA, None),
+            ("GLA", AttentionType.GLA, None),
+            ("Mamba", AttentionType.MAMBA, None)
+        ]
+    )
 
 @dataclass
 class DecodeExperimentConfig:

@@ -137,18 +137,16 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         sm_scale = (self.d_head / self.r) ** 0.5
         
-        if not self.is_power_of_2:
-            # MemEfficient attention requires head dim to be a multiple of 8
-            pad_len = (8 - (self.r % 8)) % 8
-            if pad_len > 0:
-                Q_O_padded = F.pad(Q_O, (0, pad_len))
-                K_O_padded = F.pad(K_O, (0, pad_len))
-            else:
-                Q_O_padded, K_O_padded = Q_O, K_O
-            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
-                Y_O = F.scaled_dot_product_attention(Q_O_padded, K_O_padded, V, is_causal=True, scale=sm_scale)
+        # MemEfficient attention requires head dim to be a multiple of 8
+        pad_len = (8 - (self.r % 8)) % 8
+        if pad_len > 0:
+            Q_O_padded = F.pad(Q_O, (0, pad_len))
+            K_O_padded = F.pad(K_O, (0, pad_len))
         else:
-            Y_O = F.scaled_dot_product_attention(Q_O, K_O, V, is_causal=True, scale=sm_scale)
+            Q_O_padded, K_O_padded = Q_O, K_O
+            
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+            Y_O = F.scaled_dot_product_attention(Q_O_padded, K_O_padded, V, is_causal=True, scale=sm_scale)
 
         # ----- inlier gated linear attention -----
         Q_J = Q[..., self.r:]
