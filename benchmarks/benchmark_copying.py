@@ -204,16 +204,10 @@ def run_copying_experiment(base_config = CopyingExperimentConfig()):
         
         all_histories = {}
         for name, attn_type, r in models_to_test:
-            model_cfg = ModelConfig(
-                d_model=base_config.model_config.d_model,
-                num_heads=base_config.model_config.num_heads,
-                num_layers=base_config.model_config.num_layers,
-                r=r if r is not None else 16,
-                use_rope=base_config.model_config.use_rope
-            )
+            if r is not None:
+                base_config.model_config.r = r
             
             base_config.seq_len = seq_len
-            base_config.model_config = model_cfg
             
             # Resetting the seed here ensures every model sees the *exact same* sequence of training data, providing the fairest possible comparison.
             torch.manual_seed(base_config.seed)
@@ -221,11 +215,11 @@ def run_copying_experiment(base_config = CopyingExperimentConfig()):
             
             model = GenericBenchmarkLM(
                 vocab_size=base_config.vocab_size,
-                d_model=model_cfg.d_model,
+                d_model=base_config.model_config.d_model,
                 attn_type=attn_type,
-                num_heads=model_cfg.num_heads,
-                num_layers=model_cfg.num_layers,
-                model_cfg=model_cfg
+                num_heads=base_config.model_config.num_heads,
+                num_layers=base_config.model_config.num_layers,
+                model_cfg=base_config.model_config
             ).to(device)
             
             checkpoint_dir = f"data/copying_models/gap_{gap_len}/copying_{name.replace(' ', '_').replace('(', '').replace(')', '').replace('=', '')}"

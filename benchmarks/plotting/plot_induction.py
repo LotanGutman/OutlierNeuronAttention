@@ -3,14 +3,14 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+
 def plot_unified_trendline():
     seq_lengths = [1024, 512, 256, 128, 64]
     
     models_to_test = [
         "MHA",
         "HOFA (r=8)",
-        "HOFA (r=12)",
-        "HOFA (r=14)",
+        "HOFA (r=10)",
         "HOFA (r=16)",
         "Gated DeltaNet",
         "GLA",
@@ -21,8 +21,7 @@ def plot_unified_trendline():
     dir_mapping = {
         "MHA": "induction_MHA",
         "HOFA (r=8)": "induction_HOFA_r8",
-        "HOFA (r=12)": "induction_HOFA_r12",
-        "HOFA (r=14)": "induction_HOFA_r14",
+        "HOFA (r=10)": "induction_HOFA_r10",
         "HOFA (r=16)": "induction_HOFA_r16",
         "Gated DeltaNet": "induction_Gated_DeltaNet",
         "GLA": "induction_GLA",
@@ -80,7 +79,7 @@ def plot_unified_trendline():
 def plot_feature_norm_disparity():
     # 1. Load Checkpoints
     mha_path = "data/induction_models/seqlen_1024/induction_MHA/checkpoint.pt"
-    hofa14_path = "data/induction_models/seqlen_1024/induction_HOFA_r14/checkpoint.pt"
+    hofa8_path = "data/induction_models/seqlen_1024/induction_HOFA_r8/checkpoint.pt"
     hofa16_path = "data/induction_models/seqlen_1024/induction_HOFA_r16/checkpoint.pt"
     
     def get_feature_importance(ckpt_path):
@@ -94,7 +93,7 @@ def plot_feature_norm_disparity():
         return (W_q.norm(p=2, dim=2) * W_k.norm(p=2, dim=2)).mean(dim=0).numpy()
 
     mha_imp = get_feature_importance(mha_path)
-    hofa14_imp = get_feature_importance(hofa14_path)
+    hofa8_imp = get_feature_importance(hofa8_path)
     hofa16_imp = get_feature_importance(hofa16_path)
 
     # 2. Plotting
@@ -113,7 +112,7 @@ def plot_feature_norm_disparity():
             ax.legend(loc='upper right', frameon=True)
 
     plot_step(axes[0], mha_imp, '#4c72b0', "MHA (Baseline)")
-    plot_step(axes[1], hofa14_imp, '#dd8452', "HOFA (r=14)", r_val=14)
+    plot_step(axes[1], hofa8_imp, '#dd8452', "HOFA (r=8)", r_val=8)
     plot_step(axes[2], hofa16_imp, '#55a868', "HOFA (r=16)", r_val=16)
     
     axes[0].set_ylabel("Product Norm ($||W_Q||_2 \\times ||W_K||_2$)", fontsize=11)

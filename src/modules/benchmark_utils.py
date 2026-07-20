@@ -13,7 +13,7 @@ from src.modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 
 class StandardMHA(nn.Module):
-    def __init__(self, d_model, num_heads, use_rope=False):
+    def __init__(self, d_model, num_heads, model_cfg=None):
         super().__init__()
         self.num_heads = num_heads
         self.d_head = d_model // num_heads
@@ -21,9 +21,23 @@ class StandardMHA(nn.Module):
         self.W_k = nn.Linear(d_model, d_model, bias=False)
         self.W_v = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
-        self.use_rope = use_rope
+        self.use_rope = getattr(model_cfg, 'use_rope', False) if model_cfg else False
         if self.use_rope:
             self.rotary_emb = RotaryEmbedding(dim=self.d_head)
+            
+        if model_cfg is not None:
+            import math
+            std = getattr(model_cfg, 'initializer_range', 0.02)
+            nn.init.normal_(self.W_q.weight, mean=0.0, std=std)
+            nn.init.normal_(self.W_k.weight, mean=0.0, std=std)
+            nn.init.normal_(self.W_v.weight, mean=0.0, std=std)
+            
+            if getattr(model_cfg, 'scale_residual_proj', False):
+                num_layers = getattr(model_cfg, 'num_layers', 1)
+                std_proj = std / math.sqrt(2 * num_layers)
+            else:
+                std_proj = std
+            nn.init.normal_(self.out_proj.weight, mean=0.0, std=std_proj)
 
     def forward(self, x):
         B, N, D = x.shape
@@ -60,7 +74,7 @@ def build_attention(attn_type, model_cfg):
     d_model = model_cfg.d_model
     num_heads = model_cfg.num_heads
     if attn_type == AttentionType.MHA:
-        return StandardMHA(d_model, num_heads, getattr(model_cfg, 'use_rope', False))
+        return StandardMHA(d_model, num_heads, model_cfg)
     if attn_type == AttentionType.HOFA:
         return HybridOutlierFactorizedAttention(model_cfg)
     if attn_type == AttentionType.DELTA:

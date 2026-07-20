@@ -195,7 +195,7 @@ def run_induction_experiment():
     
     models_to_test = config.models_to_test
     
-    seq_lengths = [1024, 512, 256, 128, 64]
+    seq_lengths = config.seq_lengths
     trendline_results = {name: [] for name, _, _ in models_to_test}
     
     for seq_len in seq_lengths:

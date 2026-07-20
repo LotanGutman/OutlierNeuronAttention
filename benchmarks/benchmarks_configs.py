@@ -49,14 +49,15 @@ class InductionExperimentConfig:
     print_every: int = 250
     grad_clip_norm: float = 1.0
     use_mixed_precision: bool = True
+    
+    seq_lengths: list = field(
+        default_factory=lambda: [1024, 512, 256, 128, 64]
+    )
     models_to_test: list = field(
         default_factory=lambda: [
             ("MHA", AttentionType.MHA, None),
             ("HOFA (r=8)", AttentionType.HOFA, 8),
             ("HOFA (r=10)", AttentionType.HOFA, 10),
-            ("HOFA (r=12)", AttentionType.HOFA, 12),
-            ("HOFA (r=13)", AttentionType.HOFA, 13),
-            ("HOFA (r=14)", AttentionType.HOFA, 14),
             ("HOFA (r=16)", AttentionType.HOFA, 16),
             ("Gated DeltaNet", AttentionType.DELTA, None),
             ("GLA", AttentionType.GLA, None),
@@ -73,6 +74,7 @@ class CopyingExperimentConfig:
             num_layers=4, 
             r=16,
             use_rope=True,
+            mix_gate_bias_init=2.5,
             initializer_range=0.05,
             scale_residual_proj=False
         )
@@ -98,7 +100,6 @@ class CopyingExperimentConfig:
             ("HOFA (r=8)", AttentionType.HOFA, 8),
             ("HOFA (r=10)", AttentionType.HOFA, 10),
             ("HOFA (r=12)", AttentionType.HOFA, 12),
-            ("HOFA (r=13)", AttentionType.HOFA, 13),
             ("HOFA (r=14)", AttentionType.HOFA, 14),
             ("HOFA (r=16)", AttentionType.HOFA, 16),
             ("Gated DeltaNet", AttentionType.DELTA, None),
