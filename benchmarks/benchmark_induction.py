@@ -114,7 +114,13 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
                 acc = (preds == valid_mask).float().mean().item() * 100
             model.train()
             
-            print(f"\r      Step {i + 1:5d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Train Acc: {acc:.1f}%")
+            bias_str = ""
+            if hasattr(model, 'blocks') and len(model.blocks) > 0:
+                attn = model.blocks[0]['attn']
+                if hasattr(attn, 'mix_proj') and hasattr(attn.mix_proj, 'bias') and attn.mix_proj.bias is not None:
+                    bias_str = f" | Mix Bias: {attn.mix_proj.bias.mean().item():.4f}"
+            
+            print(f"\r      Step {i + 1:5d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Train Acc: {acc:.1f}%{bias_str}")
             history['loss'].append(loss.item())
             history['acc'].append(acc)
 

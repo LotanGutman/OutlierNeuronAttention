@@ -15,6 +15,7 @@ class ModelConfig:
     chunk_size: int = 32
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     use_rope: bool = True # make it true by default
+    mix_gate_bias_init: float = 0.0
     
     @property
     def d_head(self) -> int:

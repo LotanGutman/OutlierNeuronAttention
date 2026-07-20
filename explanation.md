@@ -70,3 +70,6 @@ Currently, `mix_proj.bias` is initialized to `0.0` (which makes `mix_g = 0.5`). 
 The core issue is that the mixing gate learns too slowly compared to the attention weights, keeping it trapped in the `0.5` local optimum. 
 **The Fix:** Apply a `10x` or `100x` learning rate multiplier specifically to the `mix_proj` parameters during training. This allows the router to rapidly escape the plateau and make distinct routing decisions before the pathways have time to interfere with each other.
 
+### 3. Bias Decay Curriculum (Weight Decay on Gate)
+If we start with a high bias (e.g. `mix_proj.bias = 2.5`), we can let the standard optimizer gradually anneal it back to `0.0`.
+**The Fix:** Simply allow PyTorch's `AdamW` weight decay to apply to `mix_proj.bias` (which is typically excluded for 1D parameters). The gate will start highly biased towards Exact Attention, completely bypassing the initial interference phase. As weight decay gradually shrinks the bias back to zero over thousands of steps, the network naturally learns to support both pathways without ever getting trapped.

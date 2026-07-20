@@ -28,7 +28,8 @@ class InductionExperimentConfig:
             num_heads=4, 
             num_layers=4, 
             r=16,
-            use_rope=True
+            use_rope=True,
+            mix_gate_bias_init=2.5
         )
     )
     batch_size: int = 32
@@ -37,7 +38,7 @@ class InductionExperimentConfig:
     train_steps: int = 25000
     learning_rate: float = 1e-3
     weight_decay: float = 0.01
-    disable_weight_decay_for_attention: bool = True
+    disable_weight_decay_for_attention: bool = False
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     print_every: int = 250

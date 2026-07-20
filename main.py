@@ -34,6 +34,7 @@ def main():
     parser_bench = subparsers.add_parser("benchmark", help="Run synthetic capability benchmarks")
     parser_bench.add_argument("--induction", action="store_true", help="Run the Induction Head capability benchmark")
     parser_bench.add_argument("--copy", action="store_true", help="Run the Sequential Copying capability benchmark")
+    parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (gate) distribution analysis")
 
     args = parser.parse_args()
 
@@ -99,8 +100,11 @@ def main():
         elif args.copy:
             from benchmarks.benchmark_copying import run_copying_experiment
             run_copying_experiment()
+        elif args.alpha:
+            from benchmarks.analyze_alpha import run_alpha_analysis
+            run_alpha_analysis(config)
         else:
-            print("Please specify either --induction or --copy to run a benchmark.")
+            print("Please specify either --induction, --copy, or --alpha to run a benchmark.")
     else:
         parser.print_help()
 

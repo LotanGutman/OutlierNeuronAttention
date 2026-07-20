@@ -39,7 +39,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
         self.mix_proj._is_gate = True
         nn.init.zeros_(self.mix_proj.weight)
-        nn.init.constant_(self.mix_proj.bias, 0.0) # Initializes mix_g to 0.5 to allow gradients to both pathways
+        nn.init.constant_(self.mix_proj.bias, getattr(model_cfg, 'mix_gate_bias_init', 0.0))
 
         # RoPE dedicated strictly to the exact-match routing dimension
         if self.r > 0 and model_cfg.use_rope:
