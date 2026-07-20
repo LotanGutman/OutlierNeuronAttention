@@ -49,8 +49,11 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)
         self.gla_scale = nn.Parameter(torch.ones(1, self.num_heads, 1, self.d_head))
 
-        std = 0.02
-        res_std = std / math.sqrt(2 * model_cfg.num_layers)
+        std = model_cfg.initializer_range
+        if model_cfg.scale_residual_proj:
+            res_std = std / math.sqrt(2 * model_cfg.num_layers)
+        else:
+            res_std = std
         
         nn.init.normal_(self.W_q.weight, std=std)
         nn.init.normal_(self.W_k.weight, std=std)

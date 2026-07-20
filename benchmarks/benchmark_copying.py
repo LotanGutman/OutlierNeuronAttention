@@ -80,7 +80,7 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
     delim_token = config.vocab_size - 1
 
     model.train()
-    history = {'loss': [], 'exact_seq_acc': [], 'per_token_acc': [], 'step': []}
+    history = {'loss': [], 'exact_seq_acc': [], 'per_token_acc': [], 'step': [], 'mix_bias': []}
     consecutive_perfect_acc = 0
     start_step = 0
     
@@ -89,7 +89,7 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
         if metadata is not None:
             print(f"\n      Resuming {model_name} from step {metadata['step']}")
             start_step = metadata['step']
-            history = metadata.get('history', {'loss': [], 'exact_seq_acc': [], 'per_token_acc': [], 'step': []})
+            history = metadata.get('history', {'loss': [], 'exact_seq_acc': [], 'per_token_acc': [], 'step': [], 'mix_bias': []})
             consecutive_perfect_acc = metadata.get('consecutive_perfect_acc', 0)
             
             # If we achieved near perfect seq accuracy early, we stopped
@@ -132,6 +132,15 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
             history['exact_seq_acc'].append(exact_acc)
             history['per_token_acc'].append(pt_acc)
             history['step'].append(i + 1)
+            
+            if hasattr(model, 'blocks'):
+                layer_biases = []
+                for b in model.blocks:
+                    attn_layer = b['attn']
+                    if hasattr(attn_layer, 'mix_proj') and hasattr(attn_layer.mix_proj, 'bias') and attn_layer.mix_proj.bias is not None:
+                        layer_biases.append(attn_layer.mix_proj.bias.detach().cpu().numpy().tolist())
+                if layer_biases:
+                    history.setdefault('mix_bias', []).append(layer_biases)
             
             if exact_acc >= 99.5 and pt_acc >= 99.5 and (i > warmup_steps):
                 consecutive_perfect_acc += 1

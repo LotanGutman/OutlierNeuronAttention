@@ -3,6 +3,7 @@
 src/config.py is reserved purely for model and training configs.
 """
 
+from src import HybridOutlierFactorizedAttentionTrain
 from dataclasses import dataclass, field
 import torch
 from src.config import ModelConfig
@@ -29,7 +30,9 @@ class InductionExperimentConfig:
             num_layers=4, 
             r=16,
             use_rope=True,
-            mix_gate_bias_init=2.5
+            mix_gate_bias_init=2.5,
+            initializer_range=0.05,
+            scale_residual_proj=False
         )
     )
     batch_size: int = 32
@@ -38,7 +41,9 @@ class InductionExperimentConfig:
     train_steps: int = 25000
     learning_rate: float = 1e-3
     weight_decay: float = 0.01
-    disable_weight_decay_for_attention: bool = False
+    
+    disable_weight_decay_for_attention: bool = False # optional: Disables weight decay for W_q and W_k in attention layers. 
+    
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     print_every: int = 250
@@ -48,7 +53,9 @@ class InductionExperimentConfig:
         default_factory=lambda: [
             ("MHA", AttentionType.MHA, None),
             ("HOFA (r=8)", AttentionType.HOFA, 8),
+            ("HOFA (r=10)", AttentionType.HOFA, 10),
             ("HOFA (r=12)", AttentionType.HOFA, 12),
+            ("HOFA (r=13)", AttentionType.HOFA, 13),
             ("HOFA (r=14)", AttentionType.HOFA, 14),
             ("HOFA (r=16)", AttentionType.HOFA, 16),
             ("Gated DeltaNet", AttentionType.DELTA, None),
@@ -65,7 +72,9 @@ class CopyingExperimentConfig:
             num_heads=4, 
             num_layers=4, 
             r=16,
-            use_rope=True
+            use_rope=True,
+            initializer_range=0.05,
+            scale_residual_proj=False
         )
     )
     batch_size: int = 32
@@ -74,7 +83,10 @@ class CopyingExperimentConfig:
     train_steps: int = 5000
     learning_rate: float = 1e-3
     weight_decay: float = 0.01
-    disable_weight_decay_for_attention: bool = True
+    
+    # Optional - same as in the induction experiment.: Disables weight decay for W_q and W_k in attention layers. 
+    disable_weight_decay_for_attention: bool = False
+    
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     print_every: int = 250
@@ -84,7 +96,9 @@ class CopyingExperimentConfig:
         default_factory=lambda: [
             ("MHA", AttentionType.MHA, None),
             ("HOFA (r=8)", AttentionType.HOFA, 8),
+            ("HOFA (r=10)", AttentionType.HOFA, 10),
             ("HOFA (r=12)", AttentionType.HOFA, 12),
+            ("HOFA (r=13)", AttentionType.HOFA, 13),
             ("HOFA (r=14)", AttentionType.HOFA, 14),
             ("HOFA (r=16)", AttentionType.HOFA, 16),
             ("Gated DeltaNet", AttentionType.DELTA, None),

@@ -314,10 +314,10 @@ Each tile fits in registers, reducing spills to shared memory and freeing bandwi
 
 ## Notes on Synthetic Induction vs. Real Language Modeling
 
-We are officially beating MHA on real language modeling at the 125M scale. The HOFA architecture was explicitly designed to excel at language modeling, not synthetic tasks. As a result, it struggles to converge quickly on synthetic induction tasks because the learned mixing gate (`mix_g`) gets trapped balancing the linear pathway's structured noise against the exact pathway. 
+We are officially beating MHA on real language modeling at the 125M scale. 
 
 **TODO: Paper Update**
-If we were to add an Auxiliary Routing Regularization loss (`L_aux = alpha * (mix_g * (1 - mix_g))`) as a workaround to force gate commitment, HOFA would solve induction instantly. This workaround is purely to reliably show that we are accurately and mathematically modeling our architecture's performance on synthetic tasks. (See [explanation.md](explanation.md)).
+We need to update the paper regarding our recent discovery that synthetic tasks like Induction Head require standard initialization (`std=0.05`) without GPT-2's residual depth scaling. Previously we thought the gate was getting trapped, but it was just vanishing gradients caused by the scaled residual initialization `1/sqrt(2L)`. Once the initialization is correct, HOFA natively learns the induction circuit without any auxiliary routing losses.
 
 ---
 

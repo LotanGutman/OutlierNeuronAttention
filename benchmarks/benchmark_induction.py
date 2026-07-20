@@ -71,7 +71,7 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
     warmup_steps = int(0.05 * config.train_steps)
 
     model.train()
-    history = {'loss': [], 'acc': []}
+    history = {'loss': [], 'acc': [], 'mix_bias': []}
     consecutive_perfect_acc = 0
     start_step = 0
     
@@ -80,7 +80,7 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
         if metadata is not None:
             print(f"\n      Resuming {model_name} from step {metadata['step']}")
             start_step = metadata['step']
-            history = metadata.get('history', {'loss': [], 'acc': []})
+            history = metadata.get('history', {'loss': [], 'acc': [], 'mix_bias': []})
             consecutive_perfect_acc = metadata.get('consecutive_perfect_acc', 0)
             
             if start_step >= config.train_steps or consecutive_perfect_acc >= 2 or metadata.get('stopped_early', False):
@@ -115,14 +115,35 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
             model.train()
             
             bias_str = ""
+            norm_str = ""
             if hasattr(model, 'blocks') and len(model.blocks) > 0:
                 attn = model.blocks[0]['attn']
+                if hasattr(attn, 'W_q') and hasattr(attn, 'W_k'):
+                    try:
+                        H = attn.num_heads
+                        D_head = getattr(attn, 'd_head', attn.W_q.weight.shape[1] // H)
+                        W_q_w = attn.W_q.weight.view(H, D_head, -1)
+                        W_k_w = attn.W_k.weight.view(H, D_head, -1)
+                        norm_prod = (W_q_w.norm(p=2, dim=2) * W_k_w.norm(p=2, dim=2)).mean().item()
+                        norm_str = f" | WQ*WK Norm: {norm_prod:.2f}"
+                    except Exception:
+                        pass
+                        
                 if hasattr(attn, 'mix_proj') and hasattr(attn.mix_proj, 'bias') and attn.mix_proj.bias is not None:
                     bias_str = f" | Mix Bias: {attn.mix_proj.bias.mean().item():.4f}"
             
-            print(f"\r      Step {i + 1:5d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Train Acc: {acc:.1f}%{bias_str}")
+            print(f"\r      Step {i + 1:5d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Train Acc: {acc:.1f}%{bias_str}{norm_str}")
             history['loss'].append(loss.item())
             history['acc'].append(acc)
+            
+            if hasattr(model, 'blocks'):
+                layer_biases = []
+                for b in model.blocks:
+                    attn_layer = b['attn']
+                    if hasattr(attn_layer, 'mix_proj') and hasattr(attn_layer.mix_proj, 'bias') and attn_layer.mix_proj.bias is not None:
+                        layer_biases.append(attn_layer.mix_proj.bias.detach().cpu().numpy().tolist())
+                if layer_biases:
+                    history.setdefault('mix_bias', []).append(layer_biases)
 
             if acc >= 99.5:
                 consecutive_perfect_acc += 1
