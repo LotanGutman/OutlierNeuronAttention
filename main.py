@@ -33,8 +33,10 @@ def main():
 
     parser_bench = subparsers.add_parser("benchmark", help="Run synthetic capability benchmarks")
     parser_bench.add_argument("--induction", action="store_true", help="Run the Induction Head capability benchmark")
+    parser_bench.add_argument("--induction-vocab", action="store_true", help="Run the Induction Head vocabulary sweep benchmark")
     parser_bench.add_argument("--copy", action="store_true", help="Run the Sequential Copying capability benchmark")
     parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (gate) distribution analysis")
+    parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
 
     args = parser.parse_args()
 
@@ -95,8 +97,16 @@ def main():
             print("Please specify either --prefill or --decode to profile.")
     elif args.command == "benchmark":
         if args.induction:
-            from benchmarks.benchmark_induction import run_induction_experiment
-            run_induction_experiment()
+            if args.plot:
+                from benchmarks.plotting.plot_induction import plot_unified_trendline, plot_feature_norm_disparity
+                plot_unified_trendline()
+                plot_feature_norm_disparity()
+            else:
+                from benchmarks.benchmark_induction import run_induction_experiment
+                run_induction_experiment()
+        elif args.induction_vocab:
+            from benchmarks.benchmark_induction_vocab import run_induction_vocab_experiment
+            run_induction_vocab_experiment()
         elif args.copy:
             from benchmarks.benchmark_copying import run_copying_experiment
             run_copying_experiment()

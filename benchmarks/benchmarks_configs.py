@@ -66,6 +66,18 @@ class InductionExperimentConfig:
     )
 
 @dataclass
+class InductionVocabExperimentConfig(InductionExperimentConfig):
+    seq_len: int = 512
+    vocab_sizes: list = field(
+        default_factory=lambda: [43008, 32768, 16384, 8192, 4096]
+    )
+    models_to_test: list = field(
+        default_factory=lambda: [
+            ("HOFA (r=8)", AttentionType.HOFA, 8)
+        ]
+    )
+
+@dataclass
 class CopyingExperimentConfig:
     model_config: ModelConfig = field(
         default_factory=lambda: ModelConfig(

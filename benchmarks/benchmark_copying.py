@@ -1,6 +1,8 @@
 import torch
 import torch.nn.functional as F
 import os
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import torch.backends.cudnn as cudnn
