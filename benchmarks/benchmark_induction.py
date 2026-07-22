@@ -85,7 +85,7 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
             history = metadata.get('history', {'loss': [], 'acc': [], 'mix_bias': []})
             consecutive_perfect_acc = metadata.get('consecutive_perfect_acc', 0)
             
-            if start_step >= config.train_steps or consecutive_perfect_acc >= 2 or metadata.get('stopped_early', False):
+            if start_step >= config.train_steps or consecutive_perfect_acc >= 2:
                 print(f"      {model_name} already completed or was skipped previously. Skipping.")
                 return history
 
@@ -181,7 +181,7 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
         final_metadata = {
             'model_name': model_name,
             'density': -1,
-            'step': config.train_steps if early_stopper.stop_requested else (i + 1 if 'i' in locals() else 0),
+            'step': i + 1 if 'i' in locals() else 0,
             'history': history,
             'consecutive_perfect_acc': consecutive_perfect_acc,
             'stopped_early': early_stopper.stop_requested

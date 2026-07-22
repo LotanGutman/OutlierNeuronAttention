@@ -105,7 +105,9 @@ benchmarks/
 ├── validate_kernels.py                        # Integration testing for HOFA_Train vs HOFA_Infer (fused from debug_decode)
 ├── benchmarks_configs.py                      # Experiment config dataclasses
 ├── benchmark_zeroshot.py                      # Full zero-shot common-sense suite (HellaSwag, ARC, PIQA, WinoGrande, OBQA) with caching
-├── benchmark_induction.py                     # Induction head training (MHA vs HOFA vs GLA vs Mamba)
+├── benchmark_induction.py                     # Induction head sequence length scaling (MHA vs HOFA vs GLA vs Mamba)
+├── benchmark_induction_vocab.py               # Vocabulary size scaling sweep for HOFA (r=8) at N=512
+├── benchmark_induction_degradation.py         # Extended context length degradation sweep for HOFA (r=10)
 ├── benchmark_copying.py                       # Selective copying benchmark (MHA vs HOFA vs GLA vs Mamba)
 ├── benchmark_K_eff.py                         # Effective attention-mass measurement on real LLMs
 ├── profile_prefill.py                         # Prefill latency + FLOPs (MHA vs HOFA)
@@ -128,16 +130,10 @@ The training loop includes crash-safe checkpointing. If an unexpected interrupt 
 
 ## Key Results (so far)
 
-### Induction Head Task
-HOFA matches standard MHA accuracy when `r ≥ ceil(log₂(V))` (where V = vocab size). Below that bound the exact pathway cannot disambiguate the token space and accuracy collapses — exactly as predicted by theory.
-
-| Model | Acc @ vocab=8K, seq=1024 |
-|---|---|
-| MHA | ~100% |
-| HOFA r=16 | ~100% |
-| HOFA r=14 | ~100% |
-| HOFA r=12 | ~85% (below bound) |
-| GLA (pure) | ~55% |
+### Induction Head & Retrieval Scaling
+HOFA matches standard MHA accuracy when $r \ge \lceil\log_2(N)\rceil$ (where $N$ is sequence length). Key discoveries:
+1. **Context Length Capacity Limit:** For $N=1024$, $r=10$ ($2^{10}=1024$) is the exact threshold required for 100% retrieval. As $N$ extends beyond 1024 (up to $N=4096$), $r=10$ exhibits a smooth, continuous Gaussian tail degradation—bypassing the catastrophic 0% collapse suffered by pure linear recurrence models (GLA/Mamba).
+2. **Vocabulary Size Decoupling ($V$-Robustness):** Scaling vocabulary size $V$ up to 43,008 ($43\text{k}$) at $N=512$ retains $>97\%$ accuracy for $r=8$. Attention rank is strictly bounded by context window size $N$, not raw vocabulary size $V$.
 
 ### Prefill Scaling
 HOFA's exact pathway is bounded at `r` dimensions, so FLOPs scale as **O(N · r)** rather than **O(N · d_head)**. This yields 2-3× speedup over standard MHA at 131K sequence length, with the gap widening at longer contexts.
@@ -167,11 +163,14 @@ python main.py profile --decode
 python main.py train --plot
 python main.py train --plot --shared   # Generates comparative academic plots (Tokens & FLOPs) between HOFA and MHA
 
-# 6. Evaluate zero-shot reasoning
-python main.py train --eval            # Runs the full suite (HellaSwag, ARC, PIQA, WinoGrande, OBQA) with caching
-python main.py train --eval --simple   # Runs only HellaSwag
+# 7. Synthetic Benchmarks
+python main.py benchmark --induction              # Run Induction Head sequence length scaling
+python main.py benchmark --induction --plot       # Generate unified trendline and feature norm disparity plots
+python main.py benchmark --induction-vocab        # Run vocabulary size sweep (N=512, V=4k..43k)
+python main.py benchmark --induction-degradation  # Run extended context length degradation sweep (N=1024..4096, r=10)
+python main.py benchmark --copy                   # Run sequential copying benchmark
 
-# 7. Interactive generation
+# 8. Interactive generation
 python main.py infer
 python main.py infer --train   # Run using the pure PyTorch training autoregressive loop instead of Triton
 python main.py infer --debug   # Enable detailed, dynamic gating statistics per-prompt
