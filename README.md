@@ -106,7 +106,6 @@ benchmarks/
 ├── benchmarks_configs.py                      # Experiment config dataclasses
 ├── benchmark_zeroshot.py                      # Full zero-shot common-sense suite (HellaSwag, ARC, PIQA, WinoGrande, OBQA) with caching
 ├── benchmark_induction.py                     # Induction head sequence length scaling (MHA vs HOFA vs GLA vs Mamba)
-├── benchmark_induction_vocab.py               # Vocabulary size scaling sweep for HOFA (r=8) at N=512
 ├── benchmark_induction_degradation.py         # Extended context length degradation sweep for HOFA (r=10)
 ├── benchmark_copying.py                       # Selective copying benchmark (MHA vs HOFA vs GLA vs Mamba)
 ├── benchmark_K_eff.py                         # Effective attention-mass measurement on real LLMs
@@ -166,7 +165,6 @@ python main.py train --plot --shared   # Generates comparative academic plots (T
 # 7. Synthetic Benchmarks
 python main.py benchmark --induction              # Run Induction Head sequence length scaling
 python main.py benchmark --induction --plot       # Generate unified trendline and feature norm disparity plots
-python main.py benchmark --induction-vocab        # Run vocabulary size sweep (N=512, V=4k..43k)
 python main.py benchmark --induction-degradation  # Run extended context length degradation sweep (N=1024..4096, r=10)
 python main.py benchmark --copy                   # Run sequential copying benchmark
 
@@ -315,8 +313,11 @@ Each tile fits in registers, reducing spills to shared memory and freeing bandwi
 
 We are officially beating MHA on real language modeling at the 125M scale. 
 
-**TODO: Paper Update**
+**TODO: Paper Update (Initialization & Dynamics)**
 We need to update the paper regarding our recent discovery that synthetic tasks like Induction Head require standard initialization (`std=0.05`) without GPT-2's residual depth scaling. Previously we thought the gate was getting trapped, but it was just vanishing gradients caused by the scaled residual initialization `1/sqrt(2L)`. Once the initialization is correct, HOFA natively learns the induction circuit without any auxiliary routing losses.
+
+**TODO: Paper Update (Theoretical Capacity Degradation Fitting)**
+Update Section 6.3 with empirical fitting results (`fit_theory`) matching Section 3.11's M-ary hypothesis testing bound ($P(\text{correct}) \approx \Phi(\mu(N) - b_n(N))$). Points with accuracy $<5\%$ are excluded from fitting to isolate normal capacity degradation. Non-linear least-squares fitting optimizes projection magnitude $\gamma$ and prints the resulting $R^2$ score directly onto the degradation plot.
 
 ---
 

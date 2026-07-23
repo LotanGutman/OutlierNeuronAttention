@@ -33,7 +33,6 @@ def main():
 
     parser_bench = subparsers.add_parser("benchmark", help="Run synthetic capability benchmarks")
     parser_bench.add_argument("--induction", action="store_true", help="Run the Induction Head capability benchmark")
-    parser_bench.add_argument("--induction-vocab", action="store_true", help="Run the Induction Head vocabulary sweep benchmark")
     parser_bench.add_argument("--induction-degradation", action="store_true", help="Run the r=10 extended context degradation benchmark")
     parser_bench.add_argument("--copy", action="store_true", help="Run the Sequential Copying capability benchmark")
     parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (gate) distribution analysis")
@@ -105,12 +104,13 @@ def main():
             else:
                 from benchmarks.benchmark_induction import run_induction_experiment
                 run_induction_experiment()
-        elif args.induction_vocab:
-            from benchmarks.benchmark_induction_vocab import run_induction_vocab_experiment
-            run_induction_vocab_experiment()
         elif args.induction_degradation:
-            from benchmarks.benchmark_induction_degradation import run_induction_degradation_experiment
-            run_induction_degradation_experiment()
+            if args.plot:
+                from benchmarks.benchmark_induction_degradation import plot_induction_degradation
+                plot_induction_degradation()
+            else:
+                from benchmarks.benchmark_induction_degradation import run_induction_degradation_experiment
+                run_induction_degradation_experiment()
         elif args.copy:
             from benchmarks.benchmark_copying import run_copying_experiment
             run_copying_experiment()
