@@ -112,8 +112,12 @@ def main():
                 from benchmarks.benchmark_induction_degradation import run_induction_degradation_experiment
                 run_induction_degradation_experiment()
         elif args.copy:
-            from benchmarks.benchmark_copying import run_copying_experiment
-            run_copying_experiment()
+            if args.plot:
+                from benchmarks.benchmark_copying import plot_copying_experiment
+                plot_copying_experiment()
+            else:
+                from benchmarks.benchmark_copying import run_copying_experiment
+                run_copying_experiment()
         elif args.alpha:
             from benchmarks.analyze_alpha import run_alpha_analysis
             run_alpha_analysis(config)

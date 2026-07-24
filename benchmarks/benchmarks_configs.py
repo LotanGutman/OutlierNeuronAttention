@@ -93,6 +93,8 @@ class CopyingExperimentConfig:
         )
     )
     batch_size: int = 32
+    pattern_len: int = 8
+    gap_lengths: list = field(default_factory=lambda: [128, 512, 1024])
     seq_len: int = 1024 # Will be dynamically overridden per-gap
     vocab_size: int = 8192
     train_steps: int = 5000
@@ -111,9 +113,6 @@ class CopyingExperimentConfig:
         default_factory=lambda: [
             ("MHA", AttentionType.MHA, None),
             ("HOFA (r=8)", AttentionType.HOFA, 8),
-            ("HOFA (r=10)", AttentionType.HOFA, 10),
-            ("HOFA (r=12)", AttentionType.HOFA, 12),
-            ("HOFA (r=14)", AttentionType.HOFA, 14),
             ("HOFA (r=16)", AttentionType.HOFA, 16),
             ("Gated DeltaNet", AttentionType.DELTA, None),
             ("GLA", AttentionType.GLA, None),

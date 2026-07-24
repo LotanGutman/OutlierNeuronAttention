@@ -129,7 +129,25 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
                 pt_acc = per_token_accuracy(logits_eval, y, loss_mask) * 100.0
             model.train()
             
-            print(f"\r      Step {i + 1:5d}/{config.train_steps} | Loss: {loss.item():.4f} | Seq Acc: {exact_acc:.1f}% | Tok Acc: {pt_acc:.1f}%")
+            bias_str = ""
+            norm_str = ""
+            if hasattr(model, 'blocks') and len(model.blocks) > 0:
+                attn = model.blocks[0]['attn']
+                if hasattr(attn, 'W_q') and hasattr(attn, 'W_k'):
+                    try:
+                        H = attn.num_heads
+                        D_head = getattr(attn, 'd_head', attn.W_q.weight.shape[1] // H)
+                        W_q_w = attn.W_q.weight.view(H, D_head, -1)
+                        W_k_w = attn.W_k.weight.view(H, D_head, -1)
+                        norm_prod = (W_q_w.norm(p=2, dim=2) * W_k_w.norm(p=2, dim=2)).mean().item()
+                        norm_str = f" | WQ*WK Norm: {norm_prod:.2f}"
+                    except Exception:
+                        pass
+                        
+                if hasattr(attn, 'mix_proj') and hasattr(attn.mix_proj, 'bias') and attn.mix_proj.bias is not None:
+                    bias_str = f" | Mix Bias: {attn.mix_proj.bias.mean().item():.4f}"
+
+            print(f"\r      Step {i + 1:5d}/{config.train_steps} | Loss: {loss.item():.4f} | Seq Acc: {exact_acc:.1f}% | Tok Acc: {pt_acc:.1f}%{bias_str}{norm_str}")
             history['loss'].append(loss.item())
             history['exact_seq_acc'].append(exact_acc)
             history['per_token_acc'].append(pt_acc)
@@ -177,7 +195,7 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
         final_metadata = {
             'model_name': model_name,
             'density': -1,
-            'step': config.train_steps if early_stopper.stop_requested else (i + 1 if 'i' in locals() else 0),
+            'step': i + 1 if 'i' in locals() else 0,
             'history': history,
             'consecutive_perfect_acc': consecutive_perfect_acc,
             'stopped_early': early_stopper.stop_requested
@@ -186,32 +204,28 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
 
     return history
 
-def run_copying_experiment(base_config = CopyingExperimentConfig()):    
+def run_copying_experiment(base_config=None):    
+    if base_config is None:
+        base_config = CopyingExperimentConfig()
+        
     device = base_config.device
     torch.manual_seed(base_config.seed)
     
     models_to_test = base_config.models_to_test
-    
-    pattern_len = 8
-    gap_lengths = [128, 512, 1024]
-    
-    trendline_results = {name: [] for name, _, _ in models_to_test}
-    
-    convergence_data_1024 = {}
+    pattern_len = base_config.pattern_len
+    gap_lengths = base_config.gap_lengths
 
     for gap_len in gap_lengths:
         print(f"\n{'='*50}\nEVALUATING GAP LENGTH: {gap_len}\n{'='*50}")
-        
         seq_len = 2 * pattern_len + gap_len + 1
         
-        all_histories = {}
         for name, attn_type, r in models_to_test:
             if r is not None:
                 base_config.model_config.r = r
             
             base_config.seq_len = seq_len
             
-            # Resetting the seed here ensures every model sees the *exact same* sequence of training data, providing the fairest possible comparison.
+            # Resetting the seed here ensures every model sees the *exact same* sequence of training data
             torch.manual_seed(base_config.seed)
             np.random.seed(base_config.seed)
             
@@ -235,71 +249,104 @@ def run_copying_experiment(base_config = CopyingExperimentConfig()):
                 gap_len=gap_len, 
                 checkpoint_dir=checkpoint_dir
             )
-            all_histories[name] = history
             
             # Save final model state dict for easy loading later
             torch.save(model.state_dict(), f"{checkpoint_dir}/final_model.pt")
             
             del model
             torch.cuda.empty_cache()
+
+def plot_copying_experiment(base_config=None):
+    if base_config is None:
+        base_config = CopyingExperimentConfig()
+        
+    models_to_test = base_config.models_to_test
+    gap_lengths = base_config.gap_lengths
+    trendline_results = {name: [] for name, _, _ in models_to_test}
+    
+    plot_dir = "data/plots/copying"
+    os.makedirs(plot_dir, exist_ok=True)
+    plt.rcParams.update({'font.size': 12, 'font.family': 'serif'})
+    
+    for gap_len in gap_lengths:
+        all_histories = {}
+        for name, attn_type, r in models_to_test:
+            dir_name = f"copying_{name.replace(' ', '_').replace('(', '').replace(')', '').replace('=', '')}"
+            ckpt_path = f"data/copying_models/gap_{gap_len}/{dir_name}/checkpoint.pt"
             
-            max_acc = max(history['exact_seq_acc']) if len(history['exact_seq_acc']) > 0 else 0.0
+            if os.path.exists(ckpt_path):
+                ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+                history = ckpt.get('metadata', {}).get('history', {})
+                exact_accs = history.get('exact_seq_acc', [])
+                max_acc = max(exact_accs) if len(exact_accs) > 0 else 0.0
+                all_histories[name] = history
+            else:
+                max_acc = 0.0
+                all_histories[name] = {'exact_seq_acc': []}
+                
             trendline_results[name].append(max_acc)
             
-        # Plotting Convergence for this gap length
-        os.makedirs("data/plots/copying", exist_ok=True)
+        # Plot convergence for this gap length
         plt.figure(figsize=(10, 6))
+        has_conv_data = False
         for name, history in all_histories.items():
-            if len(history['exact_seq_acc']) == 0: continue
+            if len(history.get('exact_seq_acc', [])) == 0: continue
             steps = np.arange(1, len(history['exact_seq_acc']) + 1) * base_config.print_every
             steps[0] = 1
-            plt.plot(steps, history['exact_seq_acc'], label=name, marker='o', markersize=3)
+            plt.plot(steps, history['exact_seq_acc'], label=name, marker='o', markersize=4, linewidth=2)
+            has_conv_data = True
             
-        plt.title(f"Copying Task Convergence (Gap Len = {gap_len})")
-        plt.xlabel("Training Steps")
-        plt.ylabel("Exact Sequence Accuracy (%)")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        plot_path = f"data/plots/copying/convergence_gap_{gap_len}.pdf"
-        plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
-        plt.close()
-        print(f"\nConvergence plot saved to {plot_path}")
+        if has_conv_data:
+            plt.title(f"Copying Task Convergence (Gap Len = {gap_len})", fontsize=13, pad=12)
+            plt.xlabel("Training Steps", fontsize=11)
+            plt.ylabel("Exact Sequence Accuracy (%)", fontsize=11)
+            plt.legend(loc='best', frameon=True)
+            plt.grid(True, alpha=0.3)
+            
+            plot_path = f"{plot_dir}/convergence_gap_{gap_len}.pdf"
+            plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
+            plt.close()
+            print(f"Convergence plot saved to {plot_path}")
+        else:
+            plt.close()
 
-    # --- PLOTTING ---
-    import matplotlib.pyplot as plt
-    plt.rcParams.update({'font.size': 12, 'font.family': 'serif'})
-    plot_dir = "data/plots/benchmarks/copying"
-    os.makedirs(plot_dir, exist_ok=True)
-    
-    colors = plt.cm.tab10(np.linspace(0, 1, len(models_to_test)))
-
-    # 2. Trendline plot
+    # --- TRENDLINE PLOT ---
     plt.figure(figsize=(10, 6))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(models_to_test)))
+    
+    has_trend_data = False
     for i, (name, _, _) in enumerate(models_to_test):
         accs = trendline_results[name]
+        if any(a > 0 for a in accs):
+            has_trend_data = True
         plt.plot(gap_lengths, accs, marker='o', label=name, color=colors[i], linewidth=2, markersize=8)
     
-    plt.title("Final Exact Sequence Accuracy vs Gap Length")
-    plt.xlabel("Gap Length")
-    plt.ylabel("Exact Sequence Accuracy (%)")
-    plt.xticks(gap_lengths)
-    plt.grid(True, linestyle=':', alpha=0.6)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, "accuracy_vs_gap.pdf"))
-    plt.close()
+    if has_trend_data:
+        plt.title("Sequential Copying Accuracy vs Gap Length", fontsize=13, pad=12)
+        plt.xlabel("Gap Length", fontsize=11)
+        plt.ylabel("Exact Sequence Accuracy (%)", fontsize=11)
+        plt.xticks(gap_lengths)
+        plt.grid(True, linestyle=':', alpha=0.6)
+        plt.legend(loc='best', frameon=True)
+        
+        plot_path = f"{plot_dir}/accuracy_vs_gap.pdf"
+        plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
+        plt.close()
+        print(f"\nSequential Copying trendline plot successfully saved to {plot_path}")
+    else:
+        print("No copying checkpoint data found to plot.")
+        plt.close()
 
     # --- CLI SUMMARY TABLE ---
     print("\n" + "="*60)
     print("FINAL EXACT SEQUENCE ACCURACY (%)")
     print("="*60)
-    header = f"{'Model':<15} | " + " | ".join([f"Gap {g:<4}" for g in gap_lengths])
+    header = f"{'Model':<18} | " + " | ".join([f"Gap {g:<4}" for g in gap_lengths])
     print(header)
     print("-" * len(header))
     for name, _, _ in models_to_test:
         accs = trendline_results[name]
-        row_str = f"{name:<15} | " + " | ".join([f"{a:>8.1f}" for a in accs])
+        row_str = f"{name:<18} | " + " | ".join([f"{a:>8.1f}" for a in accs])
         print(row_str)
     print("="*60)
 

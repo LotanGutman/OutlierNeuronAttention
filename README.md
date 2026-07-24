@@ -309,18 +309,6 @@ Each tile fits in registers, reducing spills to shared memory and freeing bandwi
 
 ---
 
-## Notes on Synthetic Induction vs. Real Language Modeling
-
-We are officially beating MHA on real language modeling at the 125M scale. 
-
-**TODO: Paper Update (Initialization & Dynamics)**
-We need to update the paper regarding our recent discovery that synthetic tasks like Induction Head require standard initialization (`std=0.05`) without GPT-2's residual depth scaling. Previously we thought the gate was getting trapped, but it was just vanishing gradients caused by the scaled residual initialization `1/sqrt(2L)`. Once the initialization is correct, HOFA natively learns the induction circuit without any auxiliary routing losses.
-
-**TODO: Paper Update (Theoretical Capacity Degradation Fitting)**
-Update Section 6.3 with empirical fitting results (`fit_theory`) matching Section 3.11's M-ary hypothesis testing bound ($P(\text{correct}) \approx \Phi(\mu(N) - b_n(N))$). Points with accuracy $<5\%$ are excluded from fitting to isolate normal capacity degradation. Non-linear least-squares fitting optimizes projection magnitude $\gamma$ and prints the resulting $R^2$ score directly onto the degradation plot.
-
----
-
 ## Contributing
 
 We welcome contributions! To ensure absolute stability of the Triton and PyTorch graphs, please adhere to the following when submitting a Pull Request:
