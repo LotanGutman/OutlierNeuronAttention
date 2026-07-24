@@ -70,7 +70,7 @@ class InductionDegradationExperimentConfig(InductionExperimentConfig):
     batch_size: int = 32
     vocab_size: int = 8192
     seq_lengths: list = field(
-        default_factory=lambda: [4096, 3968, 3840, 3584, 3072, 2048, 1024]
+        default_factory=lambda: [4096, 4032, 3968, 3840, 3584, 3072, 2048, 1024]
     )
     models_to_test: list = field(
         default_factory=lambda: [
