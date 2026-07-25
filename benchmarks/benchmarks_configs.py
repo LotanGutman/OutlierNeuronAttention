@@ -132,16 +132,6 @@ class DecodeExperimentConfig:
     cache_file_name: str = "profile_decode_results.pt"
 
 @dataclass
-class DistanceMetricConfig:
-    """Effective attention distance evaluation (Child et al. 2019)."""
-    model_name: str = "30M"
-    batch_size: int = 4
-    seq_len: int = 1024
-    num_sequences: int = 1024
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    cache_file_name: str = "distance_metric_results.pt"
-
-@dataclass
 class KEffExperimentConfig:
     num_sequences: int = 100
     seq_len: int = 1024
