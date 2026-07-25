@@ -286,27 +286,52 @@ def plot_copying_experiment(base_config=None):
                 
             trendline_results[name].append(max_acc)
             
-        # Plot convergence for this gap length
-        plt.figure(figsize=(10, 6))
+        # Plot side-by-side Accuracy and Loss convergence for this gap length
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
         has_conv_data = False
-        for name, history in all_histories.items():
-            if len(history.get('exact_seq_acc', [])) == 0: continue
-            steps = np.arange(1, len(history['exact_seq_acc']) + 1) * base_config.print_every
+        colors = plt.cm.tab10(np.linspace(0, 1, len(models_to_test)))
+        
+        random_loss = np.log(base_config.vocab_size)
+        
+        for i, (name, _, _) in enumerate(models_to_test):
+            history = all_histories.get(name, {})
+            accs = history.get('exact_seq_acc', [])
+            losses = history.get('loss', [])
+            if len(accs) == 0: continue
+            
+            steps = np.arange(1, len(accs) + 1) * base_config.print_every
             steps[0] = 1
-            plt.plot(steps, history['exact_seq_acc'], label=name, marker='o', markersize=4, linewidth=2)
+            
+            ax1.plot(steps, accs, label=name, color=colors[i], marker='o', markersize=3, linewidth=2)
+            ax2.plot(steps, losses, label=name, color=colors[i], marker='o', markersize=3, linewidth=2)
             has_conv_data = True
             
         if has_conv_data:
-            plt.title(f"Copying Task Convergence (Gap Len = {gap_len})", fontsize=13, pad=12)
-            plt.xlabel("Training Steps", fontsize=11)
-            plt.ylabel("Exact Sequence Accuracy (%)", fontsize=11)
-            plt.legend(loc='best', frameon=True)
-            plt.grid(True, alpha=0.3)
+            # Panel A: Accuracy
+            ax1.set_title(f"(a) Exact Sequence Accuracy (Gap = {gap_len})", fontsize=12, pad=10)
+            ax1.set_xlabel("Training Steps", fontsize=11)
+            ax1.set_ylabel("Accuracy (%)", fontsize=11)
+            ax1.set_ylim(-2, 103)
+            ax1.grid(True, alpha=0.3)
             
+            # Panel B: Loss
+            ax2.axhline(y=random_loss, color='black', linestyle='--', linewidth=1.5, label=fr'Random Guess ($\ln V \approx {random_loss:.2f}$)')
+            ax2.set_title(f"(b) Training Loss (Gap = {gap_len})", fontsize=12, pad=10)
+            ax2.set_xlabel("Training Steps", fontsize=11)
+            ax2.set_ylabel("Cross Entropy Loss", fontsize=11)
+            ax2.grid(True, alpha=0.3)
+            
+            # Shared legend at top center matching profiling style
+            handles1, labels1 = ax1.get_legend_handles_labels()
+            handles2, labels2 = ax2.get_legend_handles_labels()
+            by_label = dict(zip(labels1 + labels2, handles1 + handles2))
+            fig.legend(by_label.values(), by_label.keys(), loc='upper center', bbox_to_anchor=(0.5, 1.08), ncol=4, frameon=False, fontsize=11)
+            
+            plt.tight_layout()
             plot_path = f"{plot_dir}/convergence_gap_{gap_len}.pdf"
             plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
             plt.close()
-            print(f"Convergence plot saved to {plot_path}")
+            print(f"Convergence plot (Accuracy & Loss with shared legend) saved to {plot_path}")
         else:
             plt.close()
 

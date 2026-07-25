@@ -93,11 +93,11 @@ class CopyingExperimentConfig:
         )
     )
     batch_size: int = 32
-    pattern_len: int = 8
-    gap_lengths: list = field(default_factory=lambda: [128, 512, 1024])
+    pattern_len: int = 2
+    gap_lengths: list = field(default_factory=lambda: [32, 64, 128, 256])
     seq_len: int = 1024 # Will be dynamically overridden per-gap
     vocab_size: int = 8192
-    train_steps: int = 5000
+    train_steps: int = 10000
     learning_rate: float = 1e-3
     weight_decay: float = 0.01
     
@@ -106,7 +106,7 @@ class CopyingExperimentConfig:
     
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    print_every: int = 250
+    print_every: int = 50
     grad_clip_norm: float = 1.0
     use_mixed_precision: bool = True
     models_to_test: list = field(

@@ -67,9 +67,10 @@ def extract_measured_gamma(seq_lengths, models_to_test, r_target=10, d_h=32, num
       S = sqrt(d_h / r)
       Layer Shift = S * (1 / sqrt(d_h)) * sum_{k=1}^r ||WQ_k||_2 * ||WK_k||_2
       mu_weights = sum_{l=0}^{L-1} Layer Shift^(l)
+    Returns a dictionary mapping seq_len -> mu_weights.
     """
     S = math.sqrt(d_h / r_target)
-    measured_shifts = []
+    measured_shifts = {}
     
     for seq_len in seq_lengths:
         for name, _, _ in models_to_test:
@@ -91,10 +92,9 @@ def extract_measured_gamma(seq_lengths, models_to_test, r_target=10, d_h=32, num
                         total_shift += layer_shift
                         
                 if total_shift > 0:
-                    measured_shifts.append(total_shift)
+                    measured_shifts[seq_len] = total_shift
                     
-    mean_shift = np.mean(measured_shifts) if len(measured_shifts) > 0 else None
-    return mean_shift
+    return measured_shifts
 
 def fit_theory(N_vals, acc_vals, r=10, N_range=None, measured_shift=None):
     N_arr = np.array(N_vals, dtype=float)
@@ -152,8 +152,13 @@ def fit_theory(N_vals, acc_vals, r=10, N_range=None, measured_shift=None):
         print(f" Empirical Accuracies: {[round(a, 2) for a in acc_fit.tolist()]}")
         print(f" Predicted Accuracies: {[round(a, 2) for a in preds_fit.tolist()]}")
         print(f" Fitted Signal Gain (γ_fit): {gamma_fit:.4f}")
-        if measured_shift is not None:
-            print(f" Measured Outlier Signal Shift (μ_weights): {measured_shift:.4f} (Accumulated across 4 layers)")
+        if measured_shift and isinstance(measured_shift, dict):
+            print(f" Measured Outlier Signal Shift (μ_weights) per sequence length:")
+            for s_len, s_val in sorted(measured_shift.items()):
+                status = "(Grokked)" if s_len in N_fit else "(Un-grokked / Collapsed)"
+                print(f"   - N={s_len:<5d}: μ_weights = {s_val:.4f}  {status}")
+        elif measured_shift is not None:
+            print(f" Measured Outlier Signal Shift (μ_weights): {measured_shift:.4f}")
         print(f" Fitted Distractor Ratio (c): {c_fit:.6f}")
         print(f" Mean Absolute Error (MAE): {mae:.3f}%")
         print(f" Root Mean Square Error (RMSE): {rmse:.3f}%")
