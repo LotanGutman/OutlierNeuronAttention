@@ -30,6 +30,7 @@ def main():
     parser_profile.add_argument("--decode", action="store_true", help="Profile decode throughput and memory")
     parser_profile.add_argument("--save", action=argparse.BooleanOptionalAction, default=True, help="Save plotting results (default: True)")
     parser_profile.add_argument("--use-cache", action=argparse.BooleanOptionalAction, default=True, help="Use cached results if available (default: True)")
+    parser_profile.add_argument("--plot-shared", action="store_true", help="Plot a shared 2x3 figure of both prefill and decode results")
 
     parser_bench = subparsers.add_parser("benchmark", help="Run synthetic capability benchmarks")
     parser_bench.add_argument("--induction", action="store_true", help="Run the Induction Head capability benchmark")
@@ -85,7 +86,10 @@ def main():
             do_inference(config, inference_cfg, use_debug=args.train, latest=args.latest_ckp)
     elif args.command == "profile":
         force_rerun = not args.use_cache
-        if args.prefill:
+        if args.plot_shared:
+            from benchmarks.plotting.plot_shared_profiling import plot_shared_profiling
+            plot_shared_profiling()
+        elif args.prefill:
             from benchmarks.profile_prefill import run_profiling_experiment
             from benchmarks.benchmarks_configs import PrefillExperimentConfig
             run_profiling_experiment(config=PrefillExperimentConfig(), force_rerun=force_rerun, save_results=args.save)

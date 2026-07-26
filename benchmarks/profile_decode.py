@@ -53,6 +53,14 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
         print(f"Loading cached results from {cache_path}")
         data = torch.load(cache_path)
         valid_lens, times_mha, times_hyb, cache_mha_mb, cache_hyb_mb = data
+        
+        # Filter points not in config.seq_lengths
+        filtered_idx = [i for i, l in enumerate(valid_lens) if l in seq_lengths]
+        valid_lens = [valid_lens[i] for i in filtered_idx]
+        times_mha = [times_mha[i] for i in filtered_idx]
+        times_hyb = [times_hyb[i] for i in filtered_idx]
+        cache_mha_mb = [cache_mha_mb[i] for i in filtered_idx]
+        cache_hyb_mb = [cache_hyb_mb[i] for i in filtered_idx]
     else:
         times_mha, times_hyb = [], []
         cache_mha_mb, cache_hyb_mb = [], []
@@ -162,7 +170,7 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
     valid_hyb_times = [t for t in t_hyb if not np.isnan(t)]
     
     ax1.plot(valid_mha_lens, valid_mha_times, marker='o', color='#D55E00', lw=2.5, label='MHA')
-    ax1.plot(valid_hyb_lens, valid_hyb_times, marker='s', color='#0072B2', lw=2.5, label='HOFA, r = 16 (Ours)')
+    ax1.plot(valid_hyb_lens, valid_hyb_times, marker='s', color='#0072B2', lw=2.5, label='HOFA, r = 16')
     
     ax1.set_xscale('log', base=2)
     ax1.xaxis.set_major_formatter(formatter_x)
@@ -236,7 +244,7 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
         ax1.add_artist(con2)
 
     ax2.plot(lens, c_mha, marker='o', color='#D55E00', lw=2.5, label='MHA')
-    ax2.plot(lens, c_hyb, marker='s', color='#0072B2', lw=2.5, label='HOFA, r = 16 (Ours)')
+    ax2.plot(lens, c_hyb, marker='s', color='#0072B2', lw=2.5, label='HOFA, r = 16')
     
     ax2.set_xscale('log', base=2)
     ax2.xaxis.set_major_formatter(formatter_x)
@@ -301,10 +309,10 @@ def plot_decode_results(lens, t_mha, t_hyb, c_mha, c_hyb):
 
     # Add shared legend
     handles, labels = ax1.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.05), ncol=2, frameon=False, fontsize=12)
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.04), ncol=2, frameon=False, fontsize=12)
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.85) 
+    plt.subplots_adjust(top=0.88) 
     os.makedirs('data/plots/profiling', exist_ok=True)
     plt.savefig('data/plots/profiling/profile_decode.pdf', bbox_inches='tight')
     print("Saved plot to data/plots/profiling/profile_decode.pdf")

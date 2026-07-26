@@ -53,6 +53,14 @@ def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperiment
         print(f"Loading cached results from {cache_path}")
         data = torch.load(cache_path)
         times_mha, times_hyb, flops_mha, flops_hyb, valid_lens = data
+        
+        # Filter points not in config.seq_lengths
+        filtered_idx = [i for i, l in enumerate(valid_lens) if l in seq_lengths]
+        valid_lens = [valid_lens[i] for i in filtered_idx]
+        times_mha = [times_mha[i] for i in filtered_idx]
+        times_hyb = [times_hyb[i] for i in filtered_idx]
+        flops_mha = [flops_mha[i] for i in filtered_idx]
+        flops_hyb = [flops_hyb[i] for i in filtered_idx]
     else:
         times_mha, times_hyb = [], []
         flops_mha, flops_hyb = [], []
@@ -182,7 +190,7 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     
     # --- Plot 1: Latency (Linear Y for the massive gap) ---
     ax1.plot(vl1, times_mha_s, label='MHA (FlashAttention)', **style_mha)
-    ax1.plot(vl2, times_hyb_s, label='HOFA, r = 16 (Ours)', **style_hyb)
+    ax1.plot(vl2, times_hyb_s, label='HOFA, r = 16', **style_hyb)
     ax1.set_xscale('log', base=2)
     ax1.set_yscale('linear') # Restored to linear for the big visual gap
     ax1.xaxis.set_major_formatter(formatter_x)
@@ -190,7 +198,7 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     ax1.set_xticks(valid_lens)
     ax1.set_xlabel('Sequence Length ($N$)')
     ax1.set_ylabel('Forward Pass Latency [s]')
-    ax1.set_title('Computational Scaling (Time)')
+    ax1.set_title('Prefill Latency')
     ax1.grid(True, which="both", linestyle=':', alpha=0.6)
 
     # Inset zoom
@@ -251,14 +259,14 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     flops_hyb_g = [f / 1e9 for f in flops_hyb]
 
     ax2.plot(valid_lens[:len(flops_mha_g)], flops_mha_g, label='MHA (FlashAttention)', **style_mha)
-    ax2.plot(valid_lens[:len(flops_hyb_g)], flops_hyb_g, label='HOFA, r = 16 (Ours)', **style_hyb)
+    ax2.plot(valid_lens[:len(flops_hyb_g)], flops_hyb_g, label='HOFA, r = 16', **style_hyb)
     ax2.set_xscale('log', base=2)
     ax2.set_yscale('log', base=10) 
     ax2.xaxis.set_major_formatter(formatter_x)
     ax2.set_xticks(valid_lens)
     ax2.set_xlabel('Sequence Length ($N$)')
     ax2.set_ylabel('Forward Compute [GFLOPs]')
-    ax2.set_title('Computational Scaling (FLOPs)')
+    ax2.set_title('Prefill Compute (FLOPs)')
     ax2.grid(True, which="both", linestyle=':', alpha=0.6)
     
     min_len = min(len(times_mha), len(times_hyb))
@@ -299,10 +307,10 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     ax3.grid(True, linestyle=':', alpha=0.6)
     
     handles, labels = ax1.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.05), ncol=2, frameon=False, fontsize=12)
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.04), ncol=2, frameon=False, fontsize=12)
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.85) 
+    plt.subplots_adjust(top=0.88) 
     if save_plot:
         plot_path = 'data/plots/profiling/profile_prefill.pdf'
         os.makedirs(os.path.dirname(plot_path), exist_ok=True)
@@ -311,9 +319,7 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     plt.close()
 
 if __name__ == "__main__":
-    from src.config import ModelConfig
     from benchmarks.benchmarks_configs import PrefillExperimentConfig
     
-    model_cfg = ModelConfig(r=16)
-    config = PrefillExperimentConfig(model_config=model_cfg)
+    config = PrefillExperimentConfig()
     run_profiling_experiment(config=config, force_rerun=True)
