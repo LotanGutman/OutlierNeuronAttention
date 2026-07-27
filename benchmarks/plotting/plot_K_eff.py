@@ -8,18 +8,22 @@ import seaborn as sns
 MODEL_METADATA = {
     "gpt2": 768,
     "EleutherAI/pythia-410m": 1024,
+    "EleutherAI/pythia-1.4b": 2048,
+    "EleutherAI/pythia-2.8b": 2560,
     "meta-llama/Llama-3.2-1B": 2048,
-    "meta-llama/Llama-3.2-3B": 3072
+    "meta-llama/Llama-3.2-3B": 3072,
+    "meta-llama/Llama-3.1-8B": 4096,
+    "Qwen/Qwen2.5-7B": 3584
 }
 
 def plot_heatmap(results, max_r=128, normalize_y=False):
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10), sharey=not normalize_y)
+    fig, axes = plt.subplots(2, 4, figsize=(24, 10), sharey=not normalize_y)
     sns.set_theme(style="whitegrid")
     
-    models = list(results.keys())
+    models = list(MODEL_METADATA.keys())
     
     for idx, model_name in enumerate(models):
-        row, col = divmod(idx, 2)
+        row, col = divmod(idx, 4)
         ax = axes[row, col]
         
         layerwise_cumsum = results[model_name]
@@ -73,13 +77,13 @@ def plot_heatmap(results, max_r=128, normalize_y=False):
         short_name = model_name.split('/')[-1]
         ax.set_title(f"{short_name} ($d_{{model}}={d_model}$)")
         
-        if col == 0 or normalize_y:
+        if col == 0:
             if not normalize_y:
                 ax.set_ylabel("Routing Dimension ($r$)")
             else:
                 ax.set_ylabel("Routing Dimension Ratio ($r / d_{model}$)")
 
-    fig.subplots_adjust(right=0.90, hspace=0.3, wspace=0.3)
+    fig.subplots_adjust(right=0.90, hspace=0.2, wspace=0.2)
     cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     cbar = fig.colorbar(mesh, cax=cbar_ax)
     cbar.set_label("Cumulative Attention Mass Fraction")
@@ -93,10 +97,13 @@ def plot_heatmap(results, max_r=128, normalize_y=False):
     print(f"Saved {out_path}")
     plt.close()
 
-if __name__ == "__main__":
+def run_plot_k_eff():
     cache_path = "data/experiments_cache/layerwise_cumsum_results.pkl"
     with open(cache_path, "rb") as f:
         results = pickle.load(f)
         
     plot_heatmap(results, max_r=128, normalize_y=False)
     plot_heatmap(results, normalize_y=True)
+
+if __name__ == "__main__":
+    run_plot_k_eff()

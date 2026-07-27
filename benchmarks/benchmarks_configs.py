@@ -3,7 +3,6 @@
 src/config.py is reserved purely for model and training configs.
 """
 
-from src import HybridOutlierFactorizedAttentionTrain
 from dataclasses import dataclass, field
 import torch
 from src.config import ModelConfig
@@ -135,12 +134,16 @@ class CopyingExperimentConfig:
 class KEffExperimentConfig:
     num_sequences: int = 100
     seq_len: int = 1024
-    batch_size: int = 2
+    batch_size: int = 1
     models_to_test: tuple[str, ...] = (
         "gpt2",
         "EleutherAI/pythia-410m",
+        "EleutherAI/pythia-1.4b",
+        "EleutherAI/pythia-2.8b",
         "meta-llama/Llama-3.2-1B",
-        "meta-llama/Llama-3.2-3B"
+        "meta-llama/Llama-3.2-3B",
+        "meta-llama/Llama-3.1-8B",
+        "Qwen/Qwen2.5-7B"
     )
     dataset_name: str = "HuggingFaceFW/fineweb-edu"
     dataset_config: str = "sample-10BT"

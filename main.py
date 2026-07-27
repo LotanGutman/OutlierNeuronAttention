@@ -37,6 +37,7 @@ def main():
     parser_bench.add_argument("--induction-degradation", action="store_true", help="Run the r=10 extended context degradation benchmark")
     parser_bench.add_argument("--copy", action="store_true", help="Run the Sequential Copying capability benchmark")
     parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (gate) distribution analysis")
+    parser_bench.add_argument("--keff", action="store_true", help="Run the K_eff Probability Mass benchmark")
     parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
 
     args = parser.parse_args()
@@ -125,8 +126,15 @@ def main():
         elif args.alpha:
             from benchmarks.analyze_alpha import run_alpha_analysis
             run_alpha_analysis(config)
+        elif args.keff:
+            if args.plot:
+                from benchmarks.plotting.plot_K_eff import run_plot_k_eff
+                run_plot_k_eff()
+            else:
+                from benchmarks.benchmark_K_eff import run_k_eff_experiment
+                run_k_eff_experiment()
         else:
-            print("Please specify either --induction, --copy, or --alpha to run a benchmark.")
+            print("Please specify either --induction, --copy, --alpha, or --keff to run a benchmark.")
     else:
         parser.print_help()
 

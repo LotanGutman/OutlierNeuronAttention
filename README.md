@@ -167,6 +167,8 @@ python main.py benchmark --induction              # Run Induction Head sequence 
 python main.py benchmark --induction --plot       # Generate unified trendline and feature norm disparity plots
 python main.py benchmark --induction-degradation  # Run extended context length degradation sweep (N=1024..4096, r=10)
 python main.py benchmark --copy                   # Run sequential copying benchmark
+python main.py benchmark --keff                   # Run Probability Mass Decomposition (K_eff) scaling benchmark on HuggingFace LLMs
+python main.py benchmark --keff --plot            # Generate the 2x4 Attention Mass Heatmaps
 
 # 8. Interactive generation
 python main.py infer

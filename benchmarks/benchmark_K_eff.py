@@ -47,12 +47,13 @@ def measure_k_eff(model_name, config: KEffExperimentConfig):
     tokenizer = AutoTokenizer.from_pretrained(model_name, token=os.environ["HF_TOKEN"])
     
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, output_attentions=True, token=os.environ["HF_TOKEN"]).to(device)
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, output_attentions=True, token=os.environ["HF_TOKEN"], device_map="auto")
     model.eval()
     
     print("Collecting validation sequences from FineWeb-Edu...")
     input_ids = get_eval_sequences(tokenizer, config)
-    input_ids = input_ids.to(model.device)
+    target_device = next(model.parameters()).device
+    input_ids = input_ids.to(target_device)
     
     batch_size = config.batch_size
     all_cumsums = {}
@@ -94,7 +95,7 @@ def measure_k_eff(model_name, config: KEffExperimentConfig):
 
 import pickle
 
-if __name__ == "__main__":
+def run_k_eff_experiment():
     config = KEffExperimentConfig()
     
     results = {}
@@ -102,11 +103,23 @@ if __name__ == "__main__":
     cache_path = os.path.join(CACHE_PATH, config.cache_file_name)
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     
+    if os.path.exists(cache_path):
+        print(f"Loading cached results from {cache_path}")
+        with open(cache_path, "rb") as f:
+            results = pickle.load(f)
+            
     for m in config.models_to_test:
+        if m in results:
+            print(f"Skipping {m} (already cached)")
+            continue
         layerwise_cumsum = measure_k_eff(m, config)
         results[m] = layerwise_cumsum
         
-    with open(cache_path, "wb") as f:
-        pickle.dump(results, f)
+        # Save incrementally
+        with open(cache_path, "wb") as f:
+            pickle.dump(results, f)
         
     print(f"\nSaved layerwise cumulative mass results to {cache_path}.")
+
+if __name__ == "__main__":
+    run_k_eff_experiment()
