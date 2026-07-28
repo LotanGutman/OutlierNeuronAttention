@@ -149,6 +149,20 @@ class KEffExperimentConfig:
     dataset_config: str = "sample-10BT"
     dataset_split: str = "train"
     cache_file_name: str = "layerwise_cumsum_results.pkl"
+
+@dataclass
+class DistanceExperimentConfig:
+    num_sequences: int = 1000
+    seq_len: int = 1024
+    batch_size: int = 8
+    models_to_test: tuple[str, ...] = (
+        "125M_MHA",
+        "125M_HOFA"
+    )
+    dataset_name: str = "HuggingFaceFW/fineweb-edu"
+    dataset_config: str = "sample-10BT"
+    dataset_split: str = "train"
+    cache_file_name: str = "effective_distance_results.pkl"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 @dataclass

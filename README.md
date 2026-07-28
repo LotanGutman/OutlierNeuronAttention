@@ -109,12 +109,14 @@ benchmarks/
 ├── benchmark_induction_degradation.py         # Extended context length degradation sweep for HOFA (r=10)
 ├── benchmark_copying.py                       # Selective copying benchmark (MHA vs HOFA vs GLA vs Mamba)
 ├── benchmark_K_eff.py                         # Effective attention-mass measurement on real LLMs
+├── benchmark_distance.py                      # Effective Attention Distance layerwise scaling
 ├── profile_prefill.py                         # Prefill latency + FLOPs (MHA vs HOFA)
 ├── profile_decode.py                          # Decode throughput + KV-cache footprint
 └── plotting/
     ├── plot_induction.py                      # Induction head convergence plots
     ├── plot_K_eff.py                          # Attention-mass heatmaps
-    └── plot_layerwise.py                      # Per-layer regime stacking plots
+    ├── plot_layerwise.py                      # Per-layer regime stacking plots
+    └── plot_distance.py                       # Layerwise distance magnifying plots
 
 main.py                                         # CLI entry point (download-data | train | infer | profile)
 ```
@@ -136,6 +138,9 @@ HOFA matches standard MHA accuracy when $r \ge \lceil\log_2(N)\rceil$ (where $N$
 
 ### Prefill Scaling
 HOFA's exact pathway is bounded at `r` dimensions, so FLOPs scale as **O(N · r)** rather than **O(N · d_head)**. This yields 2-3× speedup over standard MHA at 131K sequence length, with the gap widening at longer contexts.
+
+### Effective Attention Distance
+By analyzing 125M evaluation checkpoints, we trace the "effective distance" of attention lookups layer by layer. HOFA's exact outlier pathway ($r=16$) maintains an effective distance of $\sim 257$ tokens (matching full MHA), preserving global reach. In stark contrast, the GLA-effective inlier pathway operates at a localized $\sim 4$ tokens, cleanly absorbing local context. This validates HOFA's core architectural claim of a division of labor: linear recurrence for short-term memory, and exact attention for long-range retrieval.
 
 ### Memory Footprint
 Strict **O(N)** memory during training — no materialization of full attention matrices. The exact pathway uses softmax merging (online softmax) and the GLA pathway maintains only a compact recurrent state $S \in \mathbb{R}^{j \times d_{\text{head}}}$.

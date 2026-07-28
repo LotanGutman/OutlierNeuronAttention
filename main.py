@@ -38,6 +38,7 @@ def main():
     parser_bench.add_argument("--copy", action="store_true", help="Run the Sequential Copying capability benchmark")
     parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (gate) distribution analysis")
     parser_bench.add_argument("--keff", action="store_true", help="Run the K_eff Probability Mass benchmark")
+    parser_bench.add_argument("--distance", action="store_true", help="Run the Effective Attention Distance benchmark")
     parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
 
     args = parser.parse_args()
@@ -133,8 +134,15 @@ def main():
             else:
                 from benchmarks.benchmark_K_eff import run_k_eff_experiment
                 run_k_eff_experiment()
+        elif args.distance:
+            if args.plot:
+                from benchmarks.plotting.plot_distance import run_plot_distance
+                run_plot_distance()
+            else:
+                from benchmarks.benchmark_distance import run_distance_experiment
+                run_distance_experiment()
         else:
-            print("Please specify either --induction, --copy, --alpha, or --keff to run a benchmark.")
+            print("Please specify either --induction, --copy, --alpha, --keff, or --distance to run a benchmark.")
     else:
         parser.print_help()
 

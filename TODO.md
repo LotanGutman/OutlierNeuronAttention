@@ -21,15 +21,15 @@ in parallel where possible (eval-only work can overlap with training runs).
 Eval-only, no training. Do this first — it's cheap and can run while you set up
 Phase 2's training configs.
 
-### Task A: Effective Attention Distance on existing 125M checkpoints
-- [ ] Hook post-softmax `p_ij` from HOFA's outlier pathway (Eq. 8), per layer, per head.
-- [ ] Derive GLA-effective distance approximation from gate decay `γ_t` (inlier pathway).
-- [ ] Compute same for MHA baseline (trivial — direct softmax).
-- [ ] Compute same for pure GLA baseline (comparison reference).
-- [ ] Average `d_i` per layer → one curve per model (+ optional per-head spread bands).
-- [ ] Plot: layer index (x) vs. avg distance (y), lines for MHA / HOFA-outlier /
+### ~~Task A: Effective Attention Distance on existing 125M checkpoints~~
+- [x] Hook post-softmax `p_ij` from HOFA's outlier pathway (Eq. 8), per layer, per head.
+- [x] Derive GLA-effective distance approximation from gate decay `γ_t` (inlier pathway).
+- [x] Compute same for MHA baseline (trivial — direct softmax).
+- [x] Compute same for pure GLA baseline (comparison reference).
+- [x] Average `d_i` per layer → one curve per model (+ optional per-head spread bands).
+- [x] Plot: layer index (x) vs. avg distance (y), lines for MHA / HOFA-outlier /
       HOFA-GLA-effective / pure GLA.
-- [ ] Write up findings honestly — including if outlier curve is shorter/noisier
+- [x] Write up findings honestly — including if outlier curve is shorter/noisier
       than MHA's. This is a genuine diagnostic, not a foregone conclusion.
 
 ### ~~Task B: The 2x4 Attention Mass Scaling Grid~~
