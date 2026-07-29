@@ -109,8 +109,8 @@ def _70M_base(**overrides) -> LanguageModelingExperimentConfig:
         max_tokens=2_800_000_000,
         train_steps=_compute_steps(2_800_000_000, 32, 1024),
         learning_rate=6e-4, warmup_steps=500, print_every=200, save_every=500,
-        micro_batch_size=32,
-        gradient_accumulation_steps=1,
+        micro_batch_size=16,
+        gradient_accumulation_steps=2,
     )
     params.update(overrides)
     return LanguageModelingExperimentConfig(**params)
