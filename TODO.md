@@ -40,7 +40,7 @@ Phase 2's training configs.
 
 **Deliverables:**
 1. New Effective Attention Distance figure + short subsection for the paper.
-2. ~~Upgraded 2x4 Attention Mass Heatmap figure (`heatmap_cumsum_normalized.pdf`) to replace existing heatmap before ES-FoMo workshop submission.~~
+2. ~~Upgraded 2x4 Attention Mass Heatmap figure (`heatmap_cumsum_normalized.pdf`) to replace existing heatmap.~~
 
 ---
 
@@ -52,21 +52,22 @@ second half) — not worth the run.
 
 | # | Run | Purpose |
 |---|---|---|
-| 1 | 70M MHA baseline | fills existing blank Table 1/3 rows; needed as reference |
-| 2 | 70M HOFA, heterogeneous r (current schedule) | canonical 70M HOFA |
-| 3 | 70M HOFA, flat r=16 | tests whether heterogeneous schedule beats flat |
-| 4 | 70M HOFA, flat r=32 | rules out "bigger flat r" as equally good |
-| 5 | Inter-layer alternating MHA/GLA (Jamba-style), param-matched | **core ablation** — channel-axis vs depth-axis |
-| 6 | Head-wise split (Hymba/Falcon-H1 style), param-matched | **core ablation** — channel-axis vs width-axis |
+| 1 | 70M MHA baseline | Control |
+| 2 | 70M HOFA, heterogeneous $r$ | The proposed architecture |
+| 3 | 70M HOFA, flat $r=16$ | Proves the heterogeneous schedule is necessary |
+| 4 | 70M Depth-axis (Jamba-style) | Proves channel-axis beats sequential |
+| 5 | 70M Width-axis (Hymba-style) | Proves channel-axis beats parallel |
+| 6 | 70M HOFA, fixed blend weight | Proves the dynamic $\alpha_h$ gate earns its parameters |
 
 - [ ] Run all 6 configs to completion (2.8B tokens each).
 - [ ] Metrics for all 6: final val perplexity.
 - [ ] Metrics for all 6: zero-shot suite (ARC-e/c, PIQA, Winogrande, OBQA, HellaSwag)
       — fills the blank 70M rows in the existing zero-shot table.
-- [ ] Compare #2 vs #3 vs #4 → **pick winning r-schedule for the 350M run.**
-- [ ] Compare #2 vs #5 vs #6 → this is your primary defense against "why not just
+- [ ] Compare #2 vs #3 → **pick winning r-schedule for the 350M run.**
+- [ ] Compare #2 vs #4 vs #5 → this is your primary defense against "why not just
       alternate/split heads instead of channel-decompose" — write this up as its
       own ablation section.
+- [ ] Compare #2 vs #6 → validates the dynamic mixing gate.
 
 **Deliverable:** ablation table (6 rows × val PPL + 6 benchmarks), new "Architectural
 Ablations" section, r-schedule decision locked for Phase 3.
@@ -124,7 +125,6 @@ choice; 350M is scale-confirmation only, consistent with the paper's own scoping
       architectural derivation, not empirically validated. No new experiments needed.
 - [ ] Final read-through for internal consistency (no more than one number per claim
       across the whole document).
-- [ ] Target: **ES-FoMo workshop** submission.
 
 ---
 
