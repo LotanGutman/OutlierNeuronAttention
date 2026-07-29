@@ -68,6 +68,7 @@ second half) — not worth the run.
       alternate/split heads instead of channel-decompose" — write this up as its
       own ablation section.
 - [ ] Compare #2 vs #6 → validates the dynamic mixing gate.
+- [ ] Check: if ablation results are not 100% conclusive, add a flat `r=16` run.
 
 **Deliverable:** ablation table (6 rows × val PPL + 6 benchmarks), new "Architectural
 Ablations" section, r-schedule decision locked for Phase 3.

@@ -99,11 +99,11 @@ def make_13M_mha() -> LanguageModelingExperimentConfig:
 
 # 70M models (Ablations)
 def _70M_base(**overrides) -> LanguageModelingExperimentConfig:
-    """70M HOFA base."""
+    """70M base."""
     params = dict(
         model_name="70M",
         model_config=ModelConfig(
-            d_model=512, num_heads=8, num_layers=8, r=[32, 16, 16, 16, 16, 16, 16, 32],
+            d_model=512, num_heads=8, num_layers=8, r=16,
             use_rope=True, block_size=1024,
         ),
         max_tokens=2_800_000_000,
@@ -115,20 +115,41 @@ def _70M_base(**overrides) -> LanguageModelingExperimentConfig:
     params.update(overrides)
     return LanguageModelingExperimentConfig(**params)
 
-
-def make_70M_HOFA(r: int) -> LanguageModelingExperimentConfig:
-    """70M with uniform r across all layers. r=0 → pure GLA."""
-    name_suffix = "GLA_r0" if r == 0 else f"HOFA_r{r}"
-    return _70M_base(model_name=f"70M_{name_suffix}", model_config=ModelConfig(
-        d_model=512, num_heads=8, num_layers=8, r=r,
+def make_70M_MHA() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_MHA", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=64,
         use_rope=True, block_size=1024,
     ))
 
+def make_70M_HOFA() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_HOFA", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=[64, 32, 16, 16, 16, 16, 32, 64],
+        use_rope=True, block_size=1024,
+    ))
 
-def make_70M_pure_mha() -> LanguageModelingExperimentConfig:
-    """Ablation: r=d_head=64 everywhere (pure MHA, no GLA)."""
-    return _70M_base(model_name="70M_MHA", model_config=ModelConfig(
-        d_model=512, num_heads=8, num_layers=8, r=64,
+def make_70M_HOFA_flat32() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_HOFA_flat32", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=32,
+        use_rope=True, block_size=1024,
+    ))
+
+def make_70M_HOFA_depth_axis() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_HOFA_depth_axis", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=[0, 64, 64, 0, 0, 64, 64, 0],
+        use_rope=True, block_size=1024,
+    ))
+
+def make_70M_HOFA_width_axis() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_HOFA_width_axis", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=0,
+        mha_heads_for_width_split=4,
+        use_rope=True, block_size=1024,
+    ))
+
+def make_70M_HOFA_fixed_blend() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_HOFA_fixed_blend", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=[64, 32, 16, 16, 16, 16, 32, 64],
+        fixed_blend_weight=True,
         use_rope=True, block_size=1024,
     ))
 
@@ -173,7 +194,7 @@ def make_350M_hofa() -> LanguageModelingExperimentConfig:
         model_name="350M_HOFA",
         model_config=ModelConfig(
             d_model=1024, num_heads=8, num_layers=24,
-            r=[64, 32] + [16] * 20 + [32, 64],
+            r=[64, 32] + [16] * 16 + [32, 64],
             use_rope=True, block_size=1024,
         ),
         max_tokens=14_000_000_000,

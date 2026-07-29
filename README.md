@@ -22,6 +22,11 @@ cd OutlierNeuronAttention/official_code
 bash install.sh
 ```
 
+*Note: If you prefer not to install or run anything requiring `mamba-ssm` (which can be tricky to handle version-wise), you can use the alternative script instead:*
+```bash
+bash install_no_mamba.sh
+```
+
 ---
 
 ## How It Works

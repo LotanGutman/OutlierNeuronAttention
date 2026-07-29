@@ -35,15 +35,22 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.W_v = nn.Linear(self.d_model, self.d_model, bias=False)
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
+        # Architectural Ablations
+        self.forced_mha_heads = getattr(model_cfg, 'mha_heads_for_width_split', 0)
+        self.fixed_blend_weight = getattr(model_cfg, 'fixed_blend_weight', False)
+
         # Dynamic mixing gate between exact and linear pathways
-        self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
-        self.mix_proj._is_gate = True
-        nn.init.zeros_(self.mix_proj.weight)
-        nn.init.constant_(self.mix_proj.bias, getattr(model_cfg, 'mix_gate_bias_init', 0.0))
+        if not self.fixed_blend_weight and self.forced_mha_heads == 0:
+            self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
+            self.mix_proj._is_gate = True
+            nn.init.zeros_(self.mix_proj.weight)
+            nn.init.constant_(self.mix_proj.bias, getattr(model_cfg, 'mix_gate_bias_init', 0.0))
+        elif self.fixed_blend_weight and self.forced_mha_heads == 0:
+            self.fixed_mix = nn.Parameter(torch.zeros(1, self.num_heads, 1, 1))
 
         # RoPE dedicated strictly to the exact-match routing dimension
-        if self.r > 0 and model_cfg.use_rope:
-            self.rotary_emb = RotaryEmbedding(dim=self.r)
+        if (self.r > 0 or self.forced_mha_heads > 0) and model_cfg.use_rope:
+            self.rotary_emb = RotaryEmbedding(dim=self.r if self.r > 0 else self.d_head)
 
         # Inlier normalization and learned LayerScale for the GLA pathway
         self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)
@@ -63,20 +70,25 @@ class HybridOutlierFactorizedAttention(nn.Module):
     def _compute_gates_optimized(self, Q, K):
         # Q, K: (B, H, N, d_head)
         W_g = self.gate_proj.weight  # (H, 2*d_head)
-        W_m = self.mix_proj.weight   # (H, 2*d_head)
-
         W_g_q, W_g_k = W_g.chunk(2, dim=1)
-        W_m_q, W_m_k = W_m.chunk(2, dim=1)
 
         gate_logits = torch.einsum('bhnf,hf->bhn', Q, W_g_q) + \
                       torch.einsum('bhnf,hf->bhn', K, W_g_k) + \
                       self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
 
-        mix_logits = torch.einsum('bhnf,hf->bhn', Q, W_m_q) + \
-                     torch.einsum('bhnf,hf->bhn', K, W_m_k) + \
-                     self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+        if hasattr(self, 'mix_proj'):
+            W_m = self.mix_proj.weight
+            W_m_q, W_m_k = W_m.chunk(2, dim=-1)
+            mix_logits = torch.einsum('bhnf,hf->bhn', Q, W_m_q) + \
+                         torch.einsum('bhnf,hf->bhn', K, W_m_k) + \
+                         self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+            mix_g = torch.sigmoid(mix_logits).unsqueeze(-1)
+        elif hasattr(self, 'fixed_mix'):
+            mix_g = torch.sigmoid(self.fixed_mix).expand(Q.shape[0], -1, Q.shape[2], -1)
+        else:
+            mix_g = None
 
-        return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
+        return gate_logits.unsqueeze(-1), mix_g
 
     def forward(self, x):
         B, N, D = x.shape
@@ -88,6 +100,43 @@ class HybridOutlierFactorizedAttention(nn.Module):
         dtype_in = Q.dtype
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
+
+        if self.forced_mha_heads > 0:
+            Q_mha, Q_gla = Q.split([self.forced_mha_heads, self.num_heads - self.forced_mha_heads], dim=1)
+            K_mha, K_gla = K.split([self.forced_mha_heads, self.num_heads - self.forced_mha_heads], dim=1)
+            V_mha, V_gla = V.split([self.forced_mha_heads, self.num_heads - self.forced_mha_heads], dim=1)
+
+            if getattr(self, 'rotary_emb', None) is not None:
+                cos, sin = self.rotary_emb(N)
+                Q_mha, K_mha = apply_rotary_pos_emb(Q_mha, K_mha, cos, sin)
+
+            Y_mha = F.scaled_dot_product_attention(Q_mha, K_mha, V_mha, is_causal=True, scale=1.0)
+            
+            W_g = self.gate_proj.weight
+            W_g_q, W_g_k = W_g.chunk(2, dim=-1)
+            W_g_q_gla = W_g_q[self.forced_mha_heads:]
+            W_g_k_gla = W_g_k[self.forced_mha_heads:]
+            b_g_gla = self.gate_proj.bias[self.forced_mha_heads:]
+            
+            gate_logits = torch.einsum('bhnf,hf->bhn', Q_gla, W_g_q_gla) + \
+                          torch.einsum('bhnf,hf->bhn', K_gla, W_g_k_gla) + \
+                          b_g_gla.view(1, -1, 1).to(dtype_in)
+            log_gamma = F.logsigmoid(-gate_logits).unsqueeze(-1)
+
+            q_gla_t = Q_gla.transpose(1, 2).to(torch.float32).contiguous()
+            k_gla_t = K_gla.transpose(1, 2).to(torch.float32).contiguous()
+            v_gla_t = V_gla.transpose(1, 2).to(torch.float32).contiguous()
+            g_gla_t = log_gamma.expand(-1, -1, -1, self.d_head).transpose(1, 2).to(torch.float32).contiguous()
+
+            Y_gla_t, _ = chunk_gla(
+                q_gla_t, k_gla_t, v_gla_t, g=g_gla_t, scale=1.0, output_final_state=False
+            )
+            Y_gla = Y_gla_t.transpose(1, 2)
+            Y_gla = (self.inlier_norm(Y_gla.float()) * self.gla_scale[:, self.forced_mha_heads:]).to(dtype_in)
+
+            Y_out = torch.cat([Y_mha, Y_gla], dim=1)
+            Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
+            return self.out_proj(Y_out)
 
         # ----- special cases: r = 0 or r = d_head -----
         if self.r == 0:
@@ -127,7 +176,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
             return self.out_proj(Y)
 
         gate_logits, mix_g = self._compute_gates_optimized(Q, K)
-        self.last_mix_g = mix_g.detach()
+        if mix_g is not None:
+            self.last_mix_g = mix_g.detach()
+        else:
+            self.last_mix_g = None
         log_gamma = F.logsigmoid(-gate_logits)
 
         # ----- outlier exact attention -----

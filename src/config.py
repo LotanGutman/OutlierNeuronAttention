@@ -19,6 +19,10 @@ class ModelConfig:
     initializer_range: float = 0.02 # model weight initialization std    
     scale_residual_proj: bool = True # Whether to scale down the residual projection (out_proj) initialization by 1/sqrt(2 * num_layers).
     
+    # Ablation flags
+    mha_heads_for_width_split: int = 0 # For Hymba
+    fixed_blend_weight: bool = False # No gating ablation
+    
     @property
     def d_head(self) -> int:
         return self.d_model // self.num_heads

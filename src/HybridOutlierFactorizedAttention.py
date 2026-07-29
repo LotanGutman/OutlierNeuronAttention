@@ -28,10 +28,17 @@ class HybridOutlierFactorizedAttention(nn.Module):
         nn.init.constant_(self.gate_proj.bias, -1.0)
         nn.init.zeros_(self.gate_proj.weight)
         
+        # Architectural Ablations
+        self.forced_mha_heads = getattr(model_cfg, 'mha_heads_for_width_split', 0)
+        self.fixed_blend_weight = getattr(model_cfg, 'fixed_blend_weight', False)
+
         # Dynamic mixing gate between exact and linear pathways
-        self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
-        nn.init.zeros_(self.mix_proj.weight)
-        nn.init.constant_(self.mix_proj.bias, getattr(model_cfg, 'mix_gate_bias_init', 0.0))
+        if not self.fixed_blend_weight and self.forced_mha_heads == 0:
+            self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
+            nn.init.zeros_(self.mix_proj.weight)
+            nn.init.constant_(self.mix_proj.bias, getattr(model_cfg, 'mix_gate_bias_init', 0.0))
+        elif self.fixed_blend_weight and self.forced_mha_heads == 0:
+            self.fixed_mix = nn.Parameter(torch.zeros(1, self.num_heads, 1, 1))
 
         # Shared projections (no bias, standard for attention)
         self.W_q = nn.Linear(self.d_model, self.d_model, bias=False)
@@ -40,8 +47,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
         # RoPE dedicated strictly to the exact-match routing dimension
-        if self.r > 0 and getattr(model_cfg, 'use_rope', True):
-            self.rotary_emb = RotaryEmbedding(dim=self.r)
+        if (self.r > 0 or self.forced_mha_heads > 0) and getattr(model_cfg, 'use_rope', True):
+            self.rotary_emb = RotaryEmbedding(dim=self.r if self.r > 0 else self.d_head)
 
         # Inlier normalization and learned LayerScale for the GLA pathway
         self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)
@@ -50,20 +57,25 @@ class HybridOutlierFactorizedAttention(nn.Module):
     def _compute_gates_optimized(self, Q, K):
         # Q, K: (B, H, N, d_head)
         W_g = self.gate_proj.weight  # (H, 2*d_head)
-        W_m = self.mix_proj.weight   # (H, 2*d_head)
-
         W_g_q, W_g_k = W_g.chunk(2, dim=1)
-        W_m_q, W_m_k = W_m.chunk(2, dim=1)
-
+        
         gate_logits = torch.einsum('bhnf,hf->bhn', Q, W_g_q) + \
                       torch.einsum('bhnf,hf->bhn', K, W_g_k) + \
                       self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
 
-        mix_logits = torch.einsum('bhnf,hf->bhn', Q, W_m_q) + \
-                     torch.einsum('bhnf,hf->bhn', K, W_m_k) + \
-                     self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+        if hasattr(self, 'mix_proj'):
+            W_m = self.mix_proj.weight   # (H, 2*d_head)
+            W_m_q, W_m_k = W_m.chunk(2, dim=1)
+            mix_logits = torch.einsum('bhnf,hf->bhn', Q, W_m_q) + \
+                         torch.einsum('bhnf,hf->bhn', K, W_m_k) + \
+                         self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+            mix_g = torch.sigmoid(mix_logits).unsqueeze(-1)
+        elif hasattr(self, 'fixed_mix'):
+            mix_g = torch.sigmoid(self.fixed_mix).expand(Q.shape[0], -1, Q.shape[2], -1)
+        else:
+            mix_g = None
 
-        return gate_logits.unsqueeze(-1), torch.sigmoid(mix_logits).unsqueeze(-1)
+        return gate_logits.unsqueeze(-1), mix_g
 
     def forward(self, x, return_state=False):
         B, N, D = x.shape
@@ -74,21 +86,50 @@ class HybridOutlierFactorizedAttention(nn.Module):
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
-        # ----- special cases: If r=0, fallback to pure GLA
+        if self.forced_mha_heads > 0:
+            Q_mha, Q_gla = Q.split([self.forced_mha_heads, self.num_heads - self.forced_mha_heads], dim=1)
+            K_mha, K_gla = K.split([self.forced_mha_heads, self.num_heads - self.forced_mha_heads], dim=1)
+            V_mha, V_gla = V.split([self.forced_mha_heads, self.num_heads - self.forced_mha_heads], dim=1)
+
+            if hasattr(self, 'rotary_emb'):
+                cos, sin = self.rotary_emb(N)
+                Q_mha, K_mha = apply_rotary_pos_emb(Q_mha, K_mha, cos, sin)
+
+            Y_mha = F.scaled_dot_product_attention(Q_mha, K_mha, V_mha, is_causal=True, scale=1.0)
+
+            W_g = self.gate_proj.weight
+            W_g_q, W_g_k = W_g.chunk(2, dim=1)
+            W_g_q_gla = W_g_q[self.forced_mha_heads:]
+            W_g_k_gla = W_g_k[self.forced_mha_heads:]
+            b_g_gla = self.gate_proj.bias[self.forced_mha_heads:]
+
+            gate_logits = torch.einsum('bhnf,hf->bhn', Q_gla, W_g_q_gla) + \
+                          torch.einsum('bhnf,hf->bhn', K_gla, W_g_k_gla) + \
+                          b_g_gla.view(1, -1, 1).to(dtype_in)
+            log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
+
+            Y_gla, states_out = chunk_gla_inlier_fwd(Q_gla, K_gla, V_gla, log_gamma, 0, self.chunk_size)
+            Y_gla_float = Y_gla.float()
+            Y_gla_float = self.inlier_norm(Y_gla_float) * self.gla_scale[:, self.forced_mha_heads:]
+            Y_gla = Y_gla_float.to(Y_gla.dtype)
+
+            Y_out = torch.cat([Y_mha, Y_gla], dim=1).transpose(1, 2).reshape(B, N, D)
+            Y_out = self.out_proj(Y_out).to(dtype_in)
+
+            if return_state:
+                cache_O = (K_mha.contiguous(), V_mha.contiguous())
+                state_I = states_out[:, :, :self.d_head, :self.d_head]
+                cache_I = (state_I, torch.empty_like(state_I))
+                return Y_out, cache_O, cache_I
+            return Y_out
+
+        # ----- special cases: r = 0 or r = d_head -----fallback to pure GLA
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
             log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
             Y_I, states_out = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
             del gate_logits, log_gamma
             Y_I_float = Y_I.float()
-            Y_I_float = self.inlier_norm(Y_I_float) * self.gla_scale
-            Y_I = Y_I_float.to(Y_I.dtype)
-            Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
-            Y_out = self.out_proj(Y_out).to(dtype_in)
-            if return_state:
-                state_I = states_out[:, :, :self.j, :self.d_head]
-                return Y_out, None, (state_I, torch.empty_like(state_I))
-            return Y_out
 
         if self.r == self.d_head:
             if hasattr(self, 'rotary_emb'):
@@ -169,6 +210,68 @@ class HybridOutlierFactorizedAttention(nn.Module):
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
+        if self.forced_mha_heads > 0:
+            Q_mha, Q_gla = Q.split([self.forced_mha_heads, self.num_heads - self.forced_mha_heads], dim=1)
+            K_mha, K_gla = K.split([self.forced_mha_heads, self.num_heads - self.forced_mha_heads], dim=1)
+            V_mha, V_gla = V.split([self.forced_mha_heads, self.num_heads - self.forced_mha_heads], dim=1)
+
+            if hasattr(self, 'rotary_emb'):
+                seq_idx = cache_seq_len if cache_seq_len is not None else (cache_O[0].shape[2] if cache_O is not None else 0)
+                cos, sin = self.rotary_emb(seq_idx + 1)
+                cos = cos[-1:, :]
+                sin = sin[-1:, :]
+                Q_mha, K_mha = apply_rotary_pos_emb(Q_mha, K_mha, cos, sin)
+
+            if cache_O is None:
+                K_past, V_past = K_mha, V_mha
+                cache_new = (K_past, V_past)
+            elif cache_seq_len is not None and cache_O[0].shape[2] > cache_seq_len:
+                cache_O[0][:, :, cache_seq_len:cache_seq_len+1, :] = K_mha
+                cache_O[1][:, :, cache_seq_len:cache_seq_len+1, :] = V_mha
+                K_past = cache_O[0][:, :, :cache_seq_len+1, :]
+                V_past = cache_O[1][:, :, :cache_seq_len+1, :]
+                cache_new = cache_O
+            else:
+                K_past = torch.cat([cache_O[0], K_mha], dim=2)
+                V_past = torch.cat([cache_O[1], V_mha], dim=2)
+                cache_new = (K_past, V_past)
+            Y_mha = F.scaled_dot_product_attention(Q_mha, K_past, V_past, is_causal=False, scale=1.0)
+
+            W_g = self.gate_proj.weight
+            W_g_q, W_g_k = W_g.chunk(2, dim=1)
+            W_g_q_gla = W_g_q[self.forced_mha_heads:]
+            W_g_k_gla = W_g_k[self.forced_mha_heads:]
+            b_g_gla = self.gate_proj.bias[self.forced_mha_heads:]
+
+            gate_logits = torch.einsum('bhnf,hf->bhn', Q_gla, W_g_q_gla) + \
+                          torch.einsum('bhnf,hf->bhn', K_gla, W_g_k_gla) + \
+                          b_g_gla.view(1, -1, 1).to(dtype_in)
+            gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads - self.forced_mha_heads, 1, 1)
+
+            if cache_I is None:
+                state_I = torch.zeros(B, self.num_heads - self.forced_mha_heads, self.d_head, self.d_head,
+                                      device=x.device, dtype=torch.float32)
+            else:
+                state_I = cache_I[0]
+
+            K_s = K_gla.squeeze(2).to(torch.float32)
+            V_s = V_gla.squeeze(2).to(torch.float32)
+            q_bmm = Q_gla.squeeze(2).to(torch.float32).reshape(B * (self.num_heads - self.forced_mha_heads), 1, self.d_head)
+            k_bmm = K_s.reshape(B * (self.num_heads - self.forced_mha_heads), self.d_head, 1)
+            v_bmm = V_s.reshape(B * (self.num_heads - self.forced_mha_heads), 1, self.d_head)
+            state_I_bmm = state_I.reshape(B * (self.num_heads - self.forced_mha_heads), self.d_head, self.d_head)
+            gamma_bmm = gamma.reshape(B * (self.num_heads - self.forced_mha_heads), 1, 1)
+
+            state_I_new_bmm = torch.baddbmm(state_I_bmm * gamma_bmm, k_bmm, v_bmm)
+            Y_gla = torch.bmm(q_bmm, state_I_new_bmm).reshape(B, self.num_heads - self.forced_mha_heads, 1, self.d_head)
+            Y_gla_float = Y_gla.float()
+            Y_gla_float = self.inlier_norm(Y_gla_float) * self.gla_scale[:, self.forced_mha_heads:]
+            Y_gla = Y_gla_float.to(dtype_in)
+            state_I_new = state_I_new_bmm.reshape(B, self.num_heads - self.forced_mha_heads, self.d_head, self.d_head)
+
+            Y_out = torch.cat([Y_mha, Y_gla], dim=1).transpose(1, 2).reshape(B, N, D)
+            return self.out_proj(Y_out).to(dtype_in), cache_new, (state_I_new, torch.empty_like(state_I_new))
+
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
@@ -233,7 +336,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # Compute gates BEFORE rotating Q and K
         gate_logits, mix_g = self._compute_gates_optimized(Q, K)
         log_gamma = F.logsigmoid(-gate_logits).squeeze(-1) # (B, H, N)
-        mix_g = mix_g.squeeze(-1) # (B, H, N)
+        if mix_g is not None:
+            mix_g = mix_g.squeeze(-1) # (B, H, N)
         
         if hasattr(self, 'rotary_emb'):
             # Determine correct sequence length for RoPE

@@ -6,7 +6,6 @@ import numpy as np
 
 from src.HybridOutlierFactorizedAttentionTrain import HybridOutlierFactorizedAttention
 from fla.layers import DeltaNet, GatedLinearAttention as GLA
-from mamba_ssm import Mamba2
 from src.modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 
@@ -82,6 +81,7 @@ def build_attention(attn_type, model_cfg):
     if attn_type == AttentionType.GLA:
         return FLAWrapper(GLA(hidden_size=d_model, num_heads=num_heads))
     if attn_type == AttentionType.MAMBA:
+        from mamba_ssm import Mamba2
         return Mamba2(
             d_model=d_model,
             d_state=2 ** int(np.log2(d_model // num_heads)),
