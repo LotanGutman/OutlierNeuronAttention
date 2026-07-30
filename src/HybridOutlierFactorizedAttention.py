@@ -130,6 +130,14 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Y_I, states_out = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
             del gate_logits, log_gamma
             Y_I_float = Y_I.float()
+            Y_I_float = self.inlier_norm(Y_I_float) * self.gla_scale
+            Y_I = Y_I_float.to(Y_I.dtype)
+            Y_out = Y_I.transpose(1, 2).reshape(B, N, D)
+            Y_out = self.out_proj(Y_out).to(dtype_in)
+            if return_state:
+                state_I = states_out[:, :, :self.j, :self.d_head]
+                return Y_out, None, (state_I, torch.empty_like(state_I))
+            return Y_out
 
         if self.r == self.d_head:
             if hasattr(self, 'rotary_emb'):

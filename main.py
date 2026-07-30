@@ -1,11 +1,11 @@
-from training.training_config import make_70M_MHA, make_13M_mha, make_13M_hofa, make_125M_hofa, make_125M_mha, LanguageModelingExperimentConfig
+from training.training_config import make_70M_HOFA_depth_axis
 
 
 import argparse
 
 
 def main():
-    config = make_70M_MHA()
+    config = make_70M_HOFA_depth_axis()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")

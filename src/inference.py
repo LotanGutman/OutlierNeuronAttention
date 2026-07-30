@@ -155,7 +155,10 @@ class InferenceEngine:
             
             # Pre-allocate exact cache for O(1) decoding
             if cache_O_list is not None:
-                for i, (k_cache, v_cache) in enumerate(cache_O_list):
+                for i, cache in enumerate(cache_O_list):
+                    if cache is None:
+                        continue
+                    k_cache, v_cache = cache
                     b, h, seq, d = k_cache.shape
                     new_k = torch.zeros(b, h, seq + self.inference_cfg.max_new_tokens, d, device=k_cache.device, dtype=k_cache.dtype)
                     new_v = torch.zeros(b, h, seq + self.inference_cfg.max_new_tokens, v_cache.shape[-1], device=v_cache.device, dtype=v_cache.dtype)
@@ -169,8 +172,10 @@ class InferenceEngine:
                 if step == 0 and DEBUG_MODE:
                     # 1. Check exact cache size (should match prompt length + 1)
                     if cache_O_list is not None:
-                        cache_len = cache_O_list[0][0].shape[2]
-                        print(f"Exact Cache Length: {cache_len} (Prompt length: {context.shape[1]})")
+                        first_valid_cache = next((c for c in cache_O_list if c is not None), None)
+                        if first_valid_cache is not None:
+                            cache_len = first_valid_cache[0].shape[2]
+                            print(f"Exact Cache Length: {cache_len} (Prompt length: {context.shape[1]})")
                     
                     # 2. Check GLA State and Dynamic Gates
                     state_msg = ""
