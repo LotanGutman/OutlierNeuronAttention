@@ -130,8 +130,9 @@ class InferenceEngine:
             print(f"Layer 0 out_proj norm: {norm_val:.4f}")
             gate_bias = attn_layer.gate_proj.bias
             print(f"Layer 0 Gate bias mean: {gate_bias.mean().item():.4f}")
-            mix_bias = attn_layer.mix_proj.bias
-            print(f"Layer 0 Mix gate bias mean: {mix_bias.mean().item():.4f}")
+            if hasattr(attn_layer, 'mix_proj'):
+                mix_bias = attn_layer.mix_proj.bias
+                print(f"Layer 0 Mix gate bias mean: {mix_bias.mean().item():.4f}")
             print(f"----------------------------")
     
     def generate(self, prompt: str = ""):

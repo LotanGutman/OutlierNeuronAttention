@@ -1,11 +1,11 @@
-from training.training_config import make_70M_HOFA_depth_axis
+from training.training_config import make_70M_HOFA_width_axis
 
 
 import argparse
 
 
 def main():
-    config = make_70M_HOFA_depth_axis()
+    config = make_70M_HOFA_width_axis()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")

@@ -256,18 +256,18 @@ class HybridOutlierFactorizedAttention(nn.Module):
                           b_g_gla.view(1, -1, 1).to(dtype_in)
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads - self.forced_mha_heads, 1, 1)
 
-            if cache_I is None:
-                state_I = torch.zeros(B, self.num_heads - self.forced_mha_heads, self.d_head, self.d_head,
+            if state_I is None:
+                current_state_I = torch.zeros(B, self.num_heads - self.forced_mha_heads, self.d_head, self.d_head,
                                       device=x.device, dtype=torch.float32)
             else:
-                state_I = cache_I[0]
+                current_state_I = state_I[0]
 
             K_s = K_gla.squeeze(2).to(torch.float32)
             V_s = V_gla.squeeze(2).to(torch.float32)
             q_bmm = Q_gla.squeeze(2).to(torch.float32).reshape(B * (self.num_heads - self.forced_mha_heads), 1, self.d_head)
             k_bmm = K_s.reshape(B * (self.num_heads - self.forced_mha_heads), self.d_head, 1)
             v_bmm = V_s.reshape(B * (self.num_heads - self.forced_mha_heads), 1, self.d_head)
-            state_I_bmm = state_I.reshape(B * (self.num_heads - self.forced_mha_heads), self.d_head, self.d_head)
+            state_I_bmm = current_state_I.reshape(B * (self.num_heads - self.forced_mha_heads), self.d_head, self.d_head)
             gamma_bmm = gamma.reshape(B * (self.num_heads - self.forced_mha_heads), 1, 1)
 
             state_I_new_bmm = torch.baddbmm(state_I_bmm * gamma_bmm, k_bmm, v_bmm)
