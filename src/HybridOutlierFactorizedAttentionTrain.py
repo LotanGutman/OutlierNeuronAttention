@@ -84,7 +84,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
                          self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
             mix_g = torch.sigmoid(mix_logits).unsqueeze(-1)
         elif hasattr(self, 'fixed_mix'):
-            mix_g = torch.sigmoid(self.fixed_mix).expand(Q.shape[0], -1, Q.shape[2], -1)
+            mix_g = torch.sigmoid(self.fixed_mix).to(Q.dtype).expand(Q.shape[0], -1, Q.shape[2], -1)
         else:
             mix_g = None
 
