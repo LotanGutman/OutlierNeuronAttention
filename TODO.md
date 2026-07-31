@@ -59,8 +59,8 @@ second half) — not worth the run.
 | 5 | 70M Width-axis (Hymba-style) | Proves channel-axis beats parallel |
 | 6 | 70M HOFA, fixed blend weight | Proves the dynamic $\alpha_h$ gate earns its parameters |
 
-- [ ] Run all 6 configs to completion (2.8B tokens each).
-- [ ] Metrics for all 6: final val perplexity.
+- [x] Run all 6 configs to completion (2.8B tokens each).
+- [x] Metrics for all 6: final val perplexity.
 - [ ] Metrics for all 6: zero-shot suite (ARC-e/c, PIQA, Winogrande, OBQA, HellaSwag)
       — fills the blank 70M rows in the existing zero-shot table.
 - [ ] Compare #2 vs #3 → **pick winning r-schedule for the 350M run.**

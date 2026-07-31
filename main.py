@@ -1,11 +1,14 @@
-from training.training_config import make_70M_HOFA
+from training.training_config import (
+    make_70M_MHA, make_70M_HOFA, make_70M_HOFA_flat32, 
+    make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend
+)
 
 
 import argparse
 
 
 def main():
-    config = make_70M_HOFA()
+    config = make_70M_HOFA_flat32()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -15,6 +18,7 @@ def main():
     parser_train = subparsers.add_parser("train", help="Run training, plotting, or evaluation")
     parser_train.add_argument("--plot", action="store_true", help="Plot training metrics")
     parser_train.add_argument("--shared", action="store_true", help="Plot shared training metrics for HOFA and MHA")
+    parser_train.add_argument("--70m", dest="plot_70m", action="store_true", help="Plot shared training metrics for all 70M ablations")
     parser_train.add_argument("--eval", action="store_true", help="Evaluate the model on zero-shot reasoning benchmarks")
     parser_train.add_argument("--simple", action="store_true", help="Only run the HellaSwag benchmark instead of the full suite")
 
@@ -52,8 +56,14 @@ def main():
     elif args.command == "train":
         if args.plot:
             from training.plot_training import plot_training_metrics
-            if args.shared:
-                plot_training_metrics([make_125M_hofa(), make_125M_mha()])
+            if args.plot_70m:
+                plot_training_metrics([
+                    make_70M_MHA(), make_70M_HOFA(), make_70M_HOFA_flat32(),
+                    make_70M_HOFA_depth_axis(), make_70M_HOFA_width_axis(), make_70M_HOFA_fixed_blend()
+                ], subdirectory="70M")
+            elif args.shared:
+                from training.training_config import make_125M_hofa, make_125M_mha
+                plot_training_metrics([make_125M_hofa(), make_125M_mha()], subdirectory="125M")
             else:
                 plot_training_metrics(config)
         elif args.eval:

@@ -15,6 +15,7 @@ when training different models architectures of the same size (require same data
 class LanguageModelingExperimentConfig:
     # Model identity — change model_name to scale up/down
     model_name: str = "30M_HOFA"
+    plot_name: str = "30M HOFA"
 
     # Architecture
     model_config: ModelConfig = field(
@@ -68,6 +69,7 @@ def make_13M_hofa() -> LanguageModelingExperimentConfig:
     """13M HOFA for rapid testing. d_head=64."""
     return LanguageModelingExperimentConfig(
         model_name="13M_HOFA",
+        plot_name="13M HOFA",
         model_config=ModelConfig(
             d_model=256, num_heads=4, num_layers=4,
             r=[32, 16, 16, 32],
@@ -85,6 +87,7 @@ def make_13M_mha() -> LanguageModelingExperimentConfig:
     """13M pure MHA baseline. r=d_head=64."""
     return LanguageModelingExperimentConfig(
         model_name="13M_MHA",
+        plot_name="13M MHA",
         model_config=ModelConfig(
             d_model=256, num_heads=4, num_layers=4,
             r=64,
@@ -102,6 +105,7 @@ def _70M_base(**overrides) -> LanguageModelingExperimentConfig:
     """70M base."""
     params = dict(
         model_name="70M",
+        plot_name="70M",
         model_config=ModelConfig(
             d_model=512, num_heads=8, num_layers=8, r=16,
             use_rope=True, block_size=1024,
@@ -116,38 +120,38 @@ def _70M_base(**overrides) -> LanguageModelingExperimentConfig:
     return LanguageModelingExperimentConfig(**params)
 
 def make_70M_MHA() -> LanguageModelingExperimentConfig:
-    return _70M_base(model_name="70M_MHA", model_config=ModelConfig(
+    return _70M_base(model_name="70M_MHA", plot_name="MHA", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=64,
         use_rope=True, block_size=1024,
     ))
 
 def make_70M_HOFA() -> LanguageModelingExperimentConfig:
-    return _70M_base(model_name="70M_HOFA", model_config=ModelConfig(
+    return _70M_base(model_name="70M_HOFA", plot_name="U-Shaped HOFA", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=[64, 32, 16, 16, 16, 16, 32, 64],
         use_rope=True, block_size=1024,
     ))
 
 def make_70M_HOFA_flat32() -> LanguageModelingExperimentConfig:
-    return _70M_base(model_name="70M_HOFA_flat32", model_config=ModelConfig(
+    return _70M_base(model_name="70M_HOFA_flat32", plot_name="HOFA (Flat r=32)", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=32,
         use_rope=True, block_size=1024,
     ))
 
 def make_70M_HOFA_depth_axis() -> LanguageModelingExperimentConfig:
-    return _70M_base(model_name="70M_HOFA_depth_axis", model_config=ModelConfig(
+    return _70M_base(model_name="70M_HOFA_depth_axis", plot_name="Depth-Axis Hybrid", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=[0, 64, 64, 0, 0, 64, 64, 0],
         use_rope=True, block_size=1024,
     ))
 
 def make_70M_HOFA_width_axis() -> LanguageModelingExperimentConfig:
-    return _70M_base(model_name="70M_HOFA_width_axis", model_config=ModelConfig(
+    return _70M_base(model_name="70M_HOFA_width_axis", plot_name="Width-Axis Hybrid", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=0,
         mha_heads_for_width_split=4,
         use_rope=True, block_size=1024,
     ))
 
 def make_70M_HOFA_fixed_blend() -> LanguageModelingExperimentConfig:
-    return _70M_base(model_name="70M_HOFA_fixed_blend", model_config=ModelConfig(
+    return _70M_base(model_name="70M_HOFA_fixed_blend", plot_name="No Mixing Gate HOFA", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=[64, 32, 16, 16, 16, 16, 32, 64],
         fixed_blend_weight=True,
         use_rope=True, block_size=1024,
@@ -159,6 +163,7 @@ def make_125M_hofa() -> LanguageModelingExperimentConfig:
     """125M HOFA. d_head=128 (768/6)."""
     return LanguageModelingExperimentConfig(
         model_name="125M_HOFA",
+        plot_name="125M HOFA",
         model_config=ModelConfig(
             d_model=768, num_heads=6, num_layers=12,
             r=[64, 32, 16, 16, 16, 16, 16, 16, 16, 16, 32, 64],
@@ -176,6 +181,7 @@ def make_125M_mha() -> LanguageModelingExperimentConfig:
     """125M pure MHA baseline. r=d_head=128."""
     return LanguageModelingExperimentConfig(
         model_name="125M_MHA",
+        plot_name="125M MHA",
         model_config=ModelConfig(
             d_model=768, num_heads=6, num_layers=12, r=128,
             use_rope=True, block_size=1024,
@@ -192,6 +198,7 @@ def make_350M_hofa() -> LanguageModelingExperimentConfig:
     """350M HOFA. d_head=128 (1024/8)."""
     return LanguageModelingExperimentConfig(
         model_name="350M_HOFA",
+        plot_name="350M HOFA",
         model_config=ModelConfig(
             d_model=1024, num_heads=8, num_layers=24,
             r=[64, 32] + [16] * 16 + [32, 64],
@@ -209,6 +216,7 @@ def make_350M_mha() -> LanguageModelingExperimentConfig:
     """350M pure MHA baseline. r=d_head=128."""
     return LanguageModelingExperimentConfig(
         model_name="350M_MHA",
+        plot_name="350M MHA",
         model_config=ModelConfig(
             d_model=1024, num_heads=8, num_layers=24, r=128,
             use_rope=True, block_size=1024,

@@ -84,7 +84,7 @@ def run_alpha_analysis(config: LanguageModelingExperimentConfig):
         
     parts['cmeans'].set_color('red')
     
-    plt.title(f"Mixing Gate $\\alpha_h$ Distribution per Layer ({config.model_name})")
+    plt.title(f"Mixing Gate $\\alpha_h$ Distribution per Layer ({config.plot_name})")
     plt.xlabel("Layer")
     plt.ylabel("Gate Value ($\sigma$)")
     plt.xticks(range(num_layers), [f"L{i}" for i in range(num_layers)])

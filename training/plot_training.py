@@ -32,7 +32,7 @@ def calc_hofa_flops_per_token(P, H, d_h, r_list, N):
     return dense_flops + outlier_flops + inlier_flops
 
 
-def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[LanguageModelingExperimentConfig]]):
+def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[LanguageModelingExperimentConfig]], subdirectory: str = ""):
     if not isinstance(configs, list):
         configs = [configs]
 
@@ -40,6 +40,7 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
 
     for config in configs:
         model_name = config.model_name
+        plot_name = getattr(config, "plot_name", model_name)
         checkpoint_path = f"data/training/{model_name}/checkpoint.pt"
         plot_dir = f"data/plots/training/{model_name}"
 
@@ -95,7 +96,8 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
         flops_x = [t * flops_per_token for t in tokens]
         val_flops_x = [t * flops_per_token for t in val_tokens] if has_val else []
 
-        all_data[model_name] = {
+        all_data[plot_name] = {
+            "model_name": model_name,
             "tokens": tokens,
             "losses": losses,
             "val_tokens": val_tokens,
@@ -128,7 +130,7 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
         plt.xscale("log")
         plt.ylim(3.0, 6.0)
         plt.xlim(10**7, tokens[-1])
-        plt.title(f"{model_name} HOFA: Training Loss vs. Tokens (Log X)")
+        plt.title(f"{plot_name}: Training Loss vs. Tokens (Log X)")
         plt.xlabel("Processed Tokens (log scale)")
         plt.ylabel("Cross Entropy Loss")
         plt.grid(True, which="both", linestyle="--", alpha=0.4)
@@ -145,7 +147,7 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
             plt.figure(figsize=(10, 6))
             plt.plot(tokens, losses, color="red", alpha=0.6, linewidth=0.8, label="Training Loss (raw)")
             plt.plot(val_tokens, val_loss, color="green", marker="o", markersize=4, linewidth=1.5, linestyle="-", label="Validation Loss (log PPL)")
-            plt.title(f"{model_name} HOFA: Training & Validation Loss (Linear X)")
+            plt.title(f"{plot_name}: Training & Validation Loss (Linear X)")
             plt.xlabel("Processed Tokens")
             plt.ylabel("Cross Entropy Loss")
             plt.grid(True, linestyle="--", alpha=0.4)
@@ -170,7 +172,7 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
             if len(val_ppl) > 1:
                 plt.ylim(bottom=0, top=max(val_ppl[1:]) * 1.1)
                 
-            plt.title(f"{model_name} HOFA: Validation Perplexity")
+            plt.title(f"{plot_name}: Validation Perplexity")
             plt.xlabel("Processed Tokens")
             plt.ylabel("Perplexity")
             plt.grid(True, linestyle=":", alpha=0.6)
@@ -195,7 +197,7 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
             plt.figure(figsize=(10, 6))
             plt.plot(flops_x, losses, color="red", alpha=0.6, linewidth=0.8, label="Training Loss (raw)")
             plt.plot(val_flops_x, val_loss, color="green", marker="o", markersize=4, linewidth=1.5, linestyle="-", label="Validation Loss (log PPL)")
-            plt.title(f"{model_name} HOFA: Training & Validation Loss (Linear FLOPs)")
+            plt.title(f"{plot_name}: Training & Validation Loss (Linear FLOPs)")
             plt.xlabel("Total FLOPs")
             plt.ylabel("Cross Entropy Loss")
             plt.grid(True, linestyle="--", alpha=0.4)
@@ -216,10 +218,14 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
         colors = sns.color_palette("tab10", n_colors=len(all_data))
         
         shared_dir = "data/plots/training/shared"
+        if subdirectory:
+            import re
+            safe_subdir = re.sub(r'[^a-zA-Z0-9_\-]', '', subdirectory)
+            shared_dir = os.path.join(shared_dir, safe_subdir)
         os.makedirs(shared_dir, exist_ok=True)
         
-        sorted_names = sorted(list(all_data.keys()))
-        combined_name = "_".join(sorted_names)
+        sorted_model_names = sorted([d["model_name"] for d in all_data.values()])
+        combined_name = "_".join(sorted_model_names)
 
         # Pre-calculate global limits
         min_token_visible = float('inf')
@@ -245,8 +251,9 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
                     max_ppl = max(max_ppl, max(d["val_ppl"][1:]))
                     min_ppl = min(min_ppl, min(d["val_ppl"]))
 
-        def _plot_shared(metric, x_axis, is_log):
-            plt.figure(figsize=(8, 6))
+        def _plot_shared(metric, x_axis, is_log, is_zoomed=False):
+            figsize = (12.5, 5) if is_zoomed else (8, 6)
+            plt.figure(figsize=figsize)
             
             for i, (name, data) in enumerate(all_data.items()):
                 color = colors[i]
@@ -260,7 +267,15 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
                 elif metric == "ppl":
                     if data["has_val"]:
                         x_data_val = data["val_tokens"] if x_axis == "tokens" else data["val_flops_x"]
-                        plt.plot(x_data_val, data["val_ppl"], color=color, label=name, marker='o', markersize=4, linewidth=1.5)
+                        if is_zoomed:
+                            window = min(5, len(data["val_ppl"]))
+                            smoothed_ppl = moving_average(data["val_ppl"], window=window)
+                            if smoothed_ppl is not None:
+                                plt.plot(x_data_val[window-1:], smoothed_ppl, color=color, label=name, linewidth=2.5)
+                            else:
+                                plt.plot(x_data_val, data["val_ppl"], color=color, label=name, linewidth=2.5)
+                        else:
+                            plt.plot(x_data_val, data["val_ppl"], color=color, label=name, marker='o', markersize=4, linewidth=1.5)
 
             title_metric = "Validation & Train Loss" if metric == "loss" else "Validation Perplexity"
             title_x = "Tokens" if x_axis == "tokens" else "FLOPs"
@@ -288,21 +303,51 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
                 else:
                     plt.ylim(bottom=0, top=max_ppl * 1.1)
                     
+            if is_zoomed:
+                max_x = max([data["tokens"][-1] if x_axis == "tokens" else data["flops_x"][-1] for data in all_data.values() if len(data["tokens"]) > 0] or [1])
+                zoom_start = max_x / 20.0
+                plt.xlim(left=zoom_start, right=max_x * 1.05)
+                
+                # Dynamically compute max_ppl and min_ppl in this window
+                window_max_ppl = 0
+                window_min_ppl = float('inf')
+                for d in all_data.values():
+                    if d["has_val"]:
+                        x_arr = d["val_tokens"] if x_axis == "tokens" else d["val_flops_x"]
+                        ppl_arr = d["val_ppl"]
+                        window = min(5, len(ppl_arr))
+                        smoothed_ppl = moving_average(ppl_arr, window=window)
+                        if smoothed_ppl is not None:
+                            x_arr = x_arr[window-1:]
+                            ppl_arr = smoothed_ppl
+                            
+                        for x_val, p_val in zip(x_arr, ppl_arr):
+                            if x_val >= zoom_start:
+                                window_max_ppl = max(window_max_ppl, p_val)
+                                window_min_ppl = min(window_min_ppl, p_val)
+                if window_max_ppl > 0 and window_min_ppl != float('inf'):
+                    plt.ylim(bottom=window_min_ppl * 0.95, top=window_max_ppl * 1.05)
+                    
             plt.tight_layout()
             
             suffix_str = "_log" if is_log else ""
+            if is_zoomed:
+                suffix_str += "_zoomed"
             filename = f"{combined_name}_{metric}_vs_{x_axis}{suffix_str}.pdf"
             pdf_path = os.path.join(shared_dir, filename)
             plt.savefig(pdf_path, bbox_inches='tight', format='pdf')
             plt.close()
 
-        # Generate the 8 plots
+        # Generate the plots
         for metric in ["loss", "ppl"]:
             if metric == "ppl" and not has_any_val:
                 continue
             for x_axis in ["tokens", "flops"]:
                 for is_log in [False, True]:
-                    _plot_shared(metric, x_axis, is_log)
+                    _plot_shared(metric, x_axis, is_log, is_zoomed=False)
+                    # Create the extra zoomed plots for log-log perplexity
+                    if metric == "ppl" and is_log:
+                        _plot_shared(metric, x_axis, is_log, is_zoomed=True)
 
         # Generate an extra 1x2 grid specifically for Loss vs FLOPs (Linear | Log)
         fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
