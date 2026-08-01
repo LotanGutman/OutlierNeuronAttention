@@ -71,9 +71,6 @@ def plot_unified_trendline():
     
     plot_path = "data/plots/induction/unified_seqlen_trendline.pdf"
     plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
-    
-    png_path = plot_path.replace('.pdf', '.png')
-    plt.savefig(png_path, bbox_inches='tight', format='png', dpi=300)
     plt.close()
     
     print(f"\nUnified trendline plot successfully saved to {plot_path}")

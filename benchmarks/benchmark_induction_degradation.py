@@ -23,7 +23,7 @@ def run_induction_degradation_experiment(config=None):
     seq_lengths = config.seq_lengths
     
     print(f"\n========================================")
-    print(f" Starting r=10 Context Length Degradation Experiment")
+    print(f" Starting r={config.model_config.r} Context Length Degradation Experiment")
     print(f"========================================")
     
     for seq_len in seq_lengths:
@@ -61,7 +61,7 @@ def run_induction_degradation_experiment(config=None):
             del model
             torch.cuda.empty_cache()
 
-def extract_measured_gamma(seq_lengths, models_to_test, r_target=10, d_h=32, num_layers=4):
+def extract_measured_gamma(seq_lengths, models_to_test, r_target=8, d_h=32, num_layers=4):
     """
     Extracts the actual accumulated outlier signal shift directly from the model weight matrices:
       S = sqrt(d_h / r)
@@ -96,12 +96,12 @@ def extract_measured_gamma(seq_lengths, models_to_test, r_target=10, d_h=32, num
                     
     return measured_shifts
 
-def fit_theory(N_vals, acc_vals, r=10, N_range=None, measured_shift=None):
+def fit_theory(N_vals, acc_vals, r=8, N_range=None, measured_shift=None):
     N_arr = np.array(N_vals, dtype=float)
     acc_arr = np.array(acc_vals, dtype=float)
     
-    # Throw away un-converged points (< 5% accuracy) to fit Section 3.11 capacity degradation on grokked points
-    mask = acc_arr >= 5.0
+    # a mask to ignore point which were not trained
+    mask = acc_arr >= 0.0
     N_fit = N_arr[mask]
     acc_fit = acc_arr[mask]
     
@@ -112,19 +112,21 @@ def fit_theory(N_vals, acc_vals, r=10, N_range=None, measured_shift=None):
     def phi(x):
         return 0.5 * (1.0 + erf(x / np.sqrt(2.0)))
 
-    # Pure Section 3.11 theoretical model: P = 100 * Phi(mu - b_n)
-    def model_fn(N, gamma, c):
-        n = np.maximum(2.0, c * N)
+    # Pure Section 3.11 theoretical model: P = 100 * Phi((mu - b_n) / sigma)
+    def model_fn(N, gamma, sigma):
+        c = 1.0 / 32.0  # Fixed theoretical capacity bound c = 1/d_h
+        n = np.maximum(np.e, c * N - 1.0)
         log_n = np.log(n)
         b_n = np.sqrt(2.0 * log_n) - (np.log(log_n) + np.log(4.0 * np.pi)) / (2.0 * np.sqrt(2.0 * log_n))
         mu = np.sqrt(gamma * r / (N - r))
-        return 100.0 * phi(mu - b_n)
+        return 100.0 * phi((mu - b_n) / sigma)
         
     try:
-        popt, _ = curve_fit(model_fn, N_fit, acc_fit, p0=[1500.0, 0.001], bounds=([0.0, 1e-6], [np.inf, 0.5]))
-        gamma_fit, c_fit = popt[0], popt[1]
+        popt, _ = curve_fit(model_fn, N_fit, acc_fit, p0=[250.0, 0.1], bounds=([0.0, 0.0001], [np.inf, 10.0]), maxfev=10000)
+        gamma_fit, sigma_fit = popt[0], popt[1]
+        c_fit = 1.0 / 32.0
         
-        preds_fit = model_fn(N_fit, gamma_fit, c_fit)
+        preds_fit = model_fn(N_fit, gamma_fit, sigma_fit)
         
         # Calculate error metrics strictly on grokked points
         mae = np.mean(np.abs(preds_fit - acc_fit))
@@ -142,12 +144,12 @@ def fit_theory(N_vals, acc_vals, r=10, N_range=None, measured_shift=None):
             
         x_span = max_x - min_x
         N_dense = np.linspace(max(10.0, min_x - 0.05 * x_span), max_x + 0.05 * x_span, 400)
-        acc_dense = model_fn(N_dense, gamma_fit, c_fit)
+        acc_dense = model_fn(N_dense, gamma_fit, sigma_fit)
         
         print(f"\n========================================")
-        print(f" THEORY FIT RESULTS (GROKKED POINTS, r={r})")
+        print(f" THEORY FIT RESULTS (r={r})")
         print(f"========================================")
-        print(f" Points fitted (acc >= 5%): {len(N_fit)}")
+        print(f" Points fitted: {len(N_fit)}")
         print(f" Sequence Lengths: {N_fit.astype(int).tolist()}")
         print(f" Empirical Accuracies: {[round(a, 2) for a in acc_fit.tolist()]}")
         print(f" Predicted Accuracies: {[round(a, 2) for a in preds_fit.tolist()]}")
@@ -155,11 +157,11 @@ def fit_theory(N_vals, acc_vals, r=10, N_range=None, measured_shift=None):
         if measured_shift and isinstance(measured_shift, dict):
             print(f" Measured Outlier Signal Shift (μ_weights) per sequence length:")
             for s_len, s_val in sorted(measured_shift.items()):
-                status = "(Grokked)" if s_len in N_fit else "(Un-grokked / Collapsed)"
-                print(f"   - N={s_len:<5d}: μ_weights = {s_val:.4f}  {status}")
+                print(f"   - N={s_len:<5d}: μ_weights = {s_val:.4f}")
         elif measured_shift is not None:
             print(f" Measured Outlier Signal Shift (μ_weights): {measured_shift:.4f}")
-        print(f" Fitted Distractor Ratio (c): {c_fit:.6f}")
+        print(f" Theoretical Distractor Ratio (c): {c_fit:.6f} (Fixed = 1/d_h)")
+        print(f" Fitted Phase Transition Sharpness (σ): {sigma_fit:.6f}")
         print(f" Mean Absolute Error (MAE): {mae:.3f}%")
         print(f" Root Mean Square Error (RMSE): {rmse:.3f}%")
         print(f" Theoretical R^2 Score: {r2:.4f}")
@@ -204,56 +206,45 @@ def plot_induction_degradation(config=None):
     
     has_data = False
     in_frame_ticks = set()
-    y_min_limit = 84.5
-    y_max_limit = 100.5
     
     # Extract measured empirical signal shift
-    measured_shift = extract_measured_gamma(seq_lengths, models_to_test, r_target=10)
+    measured_shift = extract_measured_gamma(seq_lengths, models_to_test, r_target=8)
     
     for name, attn_type, r_val in models_to_test:
         if len(results[name]) > 0:
             N_vals = np.array(valid_seq_lens[name])
             acc_vals = np.array(results[name])
             
-            # Filter in-frame points (acc >= y_min_limit) for X-axis ticks
-            in_frame_mask = acc_vals >= y_min_limit
-            in_frame_seqs = N_vals[in_frame_mask]
-            for s in in_frame_seqs:
+            # Use all points for X-axis ticks
+            for s in N_vals:
                 in_frame_ticks.add(int(s))
             
             # Plot empirical data
-            plt.plot(N_vals, acc_vals, label=f"Empirical {name}", marker='o', markersize=6, linewidth=2)
+            plt.scatter(N_vals, acc_vals, s=70, facecolor='tab:blue', edgecolor='white', linewidth=1.2, zorder=3, label=f"Empirical {name}")
             has_data = True
             
             # Fit theory curve over full sequence length range (filtering acc < 5% inside fit_theory)
-            r_target = r_val if r_val is not None else 10
-            x_range = (min(in_frame_seqs), max(in_frame_seqs)) if len(in_frame_seqs) > 0 else (min(N_vals), max(N_vals))
+            r_target = r_val if r_val is not None else 8
+            x_range = (min(N_vals), max(N_vals))
             gamma_fit, c_fit, r2, mae, N_dense, acc_dense = fit_theory(N_vals, acc_vals, r=r_target, N_range=x_range, measured_shift=measured_shift)
             if mae is not None:
-                plt.plot(N_dense, acc_dense, '--', color='tab:red', linewidth=2, label=f"Theory Fit (MAE={mae:.1f}%)")
+                plt.plot(N_dense, acc_dense, '--', color='tab:red', linewidth=2, zorder=2, label=r"Theory ($c=1/d_h$)")
             
     if not has_data:
         print("No degradation checkpoints found to plot.")
         plt.close()
         return
 
-    plt.title("Context Length Degradation (HOFA r=10)", fontsize=13, pad=12)
+    plt.title("Context Length Degradation (HOFA r=8)", fontsize=13, pad=12)
     plt.xlabel("Sequence Length (N)", fontsize=11)
     plt.ylabel("Accuracy (%)", fontsize=11)
     
-    sorted_ticks = sorted(list(in_frame_ticks)) if len(in_frame_ticks) > 0 else sorted(seq_lengths)
-    plt.xticks(sorted_ticks, sorted_ticks, rotation=45, ha='right')
-    
-    if len(sorted_ticks) > 1:
-        x_pad = (sorted_ticks[-1] - sorted_ticks[0]) * 0.05
-        plt.xlim(sorted_ticks[0] - x_pad, sorted_ticks[-1] + x_pad)
-        
-    plt.ylim(y_min_limit, y_max_limit)
-    plt.yticks([85, 90, 95, 100], ['85', '90', '95', '100'])
+    plt.xlim(left=768)
+
     plt.legend(loc='best', frameon=True)
     plt.grid(True, alpha=0.3)
     
-    plot_path = os.path.join(output_dir, "r10_context_degradation.pdf")
+    plot_path = os.path.join(output_dir, "r8_context_degradation.pdf")
     plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
     plt.close()
     

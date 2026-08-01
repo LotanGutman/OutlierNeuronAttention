@@ -80,12 +80,25 @@ class InductionDegradationExperimentConfig(InductionExperimentConfig):
     batch_size: int = 32
     vocab_size: int = 8192
     seq_lengths: list = field(
-        default_factory=lambda: [4096, 4032, 3968, 3840, 3584, 3072, 2048, 1024]
+        default_factory=lambda: [920, 910, 896, 892, 880, 864, 832, 768, 640]
     )
     models_to_test: list = field(
         default_factory=lambda: [
-            ("HOFA (r=10)", AttentionType.HOFA, 10)
+            ("HOFA (r=8)", AttentionType.HOFA, 8)
         ]
+    )
+    model_config: ModelConfig = field(
+        default_factory=lambda: ModelConfig(
+            d_model=128,
+            num_heads=4, 
+            num_layers=4, 
+            r=16,
+            use_rope=True,
+            mix_gate_bias_init=2.5,
+            initializer_range=0.05,
+            scale_residual_proj=False,
+            block_size=2048
+        )
     )
 
 @dataclass
