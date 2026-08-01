@@ -1,6 +1,6 @@
 from training.training_config import (
     make_70M_MHA, make_70M_HOFA, make_70M_HOFA_flat32, 
-    make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend
+    make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend, make_350M_hofa
 )
 
 
@@ -8,7 +8,7 @@ import argparse
 
 
 def main():
-    config = make_70M_HOFA_flat32()
+    config = make_350M_hofa()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")

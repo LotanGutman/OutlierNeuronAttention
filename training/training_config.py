@@ -201,7 +201,7 @@ def make_350M_hofa() -> LanguageModelingExperimentConfig:
         plot_name="350M HOFA",
         model_config=ModelConfig(
             d_model=1024, num_heads=8, num_layers=24,
-            r=[64, 32] + [16] * 16 + [32, 64],
+            r=[64, 32, 32] + [16] * 18 + [32, 32, 64],
             use_rope=True, block_size=1024,
         ),
         max_tokens=14_000_000_000,
