@@ -157,6 +157,7 @@ Strict **O(N)** memory during training — no materialization of full attention 
 
 ```bash
 # 1. Download and cache the dataset
+# (Automatically handles 10B+ scale token sets with ultra-fast PyArrow metadata skipping)
 python main.py download-data
 
 # 2. Validate custom Triton decoding against PyTorch JIT compiler

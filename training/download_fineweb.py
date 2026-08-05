@@ -1,3 +1,20 @@
+"""
+FineWeb-Edu Downloader and Tokenizer
+
+This script prepares validation and training data for language modeling.
+It conditionally alters its loading strategy based on target token count to prevent
+network timeouts and memory OOM kills on massive datasets:
+
+- Target <= 10B tokens: Streams 'sample-10BT' via HuggingFace datasets with local shuffling.
+- Target > 10B tokens: Fetches raw parquets from 'sample-100BT' and streams via PyArrow.
+  This bypasses HF dataset memory leaks and natively skips documents instantly via metadata.
+  (Note: Raw parquets are already pre-shuffled by HuggingFace, so skipping a local buffer
+  shuffle at this scale does not impact training diversity).
+
+A single iterator is used sequentially for both validation and training to guarantee
+disjoint sets. Output files are safely truncated to the exact token count requested.
+"""
+
 import os
 import sys
 import types
@@ -18,20 +35,23 @@ except ImportError:
 import numpy as np
 import tiktoken
 from datasets import load_dataset
+from huggingface_hub import list_repo_files, hf_hub_download
 from tqdm import tqdm
 from training.training_config import LanguageModelingExperimentConfig
 
-def download_and_tokenize(config: LanguageModelingExperimentConfig):
-    """
-        Downloads and tokenizes FineWeb-Edu in streaming mode.
-        It processes validation and training sets in a single pass to guarantee disjoint sets.
-        Tracks consumed documents in a JSON sidecar to allow safe resumption without data duplication.
-    """
-    dataset_name = config.dataset_name
-    dataset_config = config.dataset_config
+import itertools
+from collections import deque
+
+
     
+
+def download_and_tokenize(config: LanguageModelingExperimentConfig):
+    dataset_name = "HuggingFaceFW/fineweb-edu"
     model_size = config.model_name.split('_')[0]
 
+    base_dir = os.path.expanduser("data/datasets")
+    os.makedirs(base_dir, exist_ok=True)
+    
     val_cache_path = f"data/datasets/data_{model_size}_val_cache.bin"
     train_cache_path = f"data/datasets/data_{model_size}_cache.bin"
     offset_path = f"data/datasets/offset_state_{model_size}.json"
@@ -39,8 +59,7 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
     # Evaluation needs seq_len + 1 tokens per sequence to form input and target pairs
     val_max_tokens = int(config.val_num_batches) * int(config.batch_size) * (int(config.seq_len) + 1)
     train_max_tokens = config.max_tokens
-
-    os.makedirs(os.path.dirname(train_cache_path), exist_ok=True)
+    total_requested_tokens = val_max_tokens + train_max_tokens
     
     # Load offset state
     if os.path.exists(offset_path):
@@ -82,21 +101,78 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
         print("Both validation and training caches already exist with enough tokens. Skipping download.")
         return val_cache_path, train_cache_path
     
-    print(f"Loading {dataset_name} ({dataset_config}) split='train' in streaming mode...")
-    dataset = load_dataset(dataset_name, name=dataset_config, split="train", streaming=True)
-    dataset = dataset.shuffle(seed=config.seed, buffer_size=10000)
+    # Conditional loading logic based on required size
+    if total_requested_tokens > 10_000_000_000:
+        num_parquets = int(total_requested_tokens / 750_000_000) + 2
+        print(f"Target size ({total_requested_tokens} tokens) > 10B. Fetching file list from HF...")
+        
+        all_files = list_repo_files(dataset_name, repo_type="dataset")
+        valid_files = sorted([f for f in all_files if f.startswith("sample/100BT/") and f.endswith(".parquet")])
+        data_files = valid_files[:num_parquets]
+        
+        print(f"Downloading {len(data_files)} raw parquets...")
+        local_files = []
+        for hf_file in data_files:
+            local_path = hf_hub_download(
+                repo_id=dataset_name, 
+                filename=hf_file, 
+                repo_type="dataset"
+            )
+            local_files.append(local_path)
+            
+        import pyarrow.parquet as pq
 
-    total_skip = offset_state["validation_docs"] + offset_state["training_docs"]
+        def raw_parquet_iterator(files, skip_count):
+            skipped = 0
+            for file_path in files:
+                pf = pq.ParquetFile(file_path)
+                file_rows = pf.metadata.num_rows
+                
+                # Instantly skip entire files via metadata without reading a single byte
+                if skipped + file_rows <= skip_count:
+                    skipped += file_rows
+                    continue
+                    
+                for batch in pf.iter_batches(batch_size=1000, columns=["text"]):
+                    for text in batch["text"].to_pylist():
+                        if skipped < skip_count:
+                            skipped += 1
+                            continue
+                        yield {"text": text}
+                        
+        total_skip = offset_state["validation_docs"] + offset_state["training_docs"]
+        print(f"Instantly skipping {total_skip} documents and streaming via raw PyArrow...")
+        dataset_iter = raw_parquet_iterator(local_files, total_skip)
+        
+    else:
+        print(f"Target size ({total_requested_tokens} tokens) <= 10B. Streaming sample-10BT...")
+        dataset = load_dataset(
+            dataset_name, 
+            name="sample-10BT", 
+            split="train", 
+            streaming=True,
+            cache_dir=hf_cache_dir
+        )
+        dataset = dataset.shuffle(seed=config.seed, buffer_size=10000)
+        
+        total_skip = offset_state["validation_docs"] + offset_state["training_docs"]
+        dataset_iter = iter(dataset)
+        
+        if total_skip > 0:
+            print(f"Resuming stream: fast-forwarding {total_skip} documents...")
+            import itertools
+            from collections import deque
+            chunk_size = 50_000
+            with tqdm(total=total_skip, unit="doc", desc="Skipping") as pbar:
+                for _ in range(total_skip // chunk_size):
+                    deque(itertools.islice(dataset_iter, chunk_size), maxlen=0)
+                    pbar.update(chunk_size)
+                remainder = total_skip % chunk_size
+                if remainder > 0:
+                    deque(itertools.islice(dataset_iter, remainder), maxlen=0)
+                    pbar.update(remainder)
 
-    dataset_iter = iter(dataset)
-    
-    if total_skip > 0:
-        print(f"Resuming stream: fast-forwarding {total_skip} previously consumed documents. This may take a few minutes...")
-        with tqdm(total=total_skip, unit="doc", desc="Skipping") as pbar:
-            for _ in range(total_skip):
-                next(dataset_iter)
-                pbar.update(1)
-        print("Fast-forward complete. Starting tokenization pipelines...")
+            print("Fast-forward complete. Starting tokenization pipelines...")
 
     # Global background worker for prefetching to overlap network I/O with tokenization
     batch_queue = queue.Queue(maxsize=3)
@@ -109,7 +185,7 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
                 if stop_event.is_set():
                     break
                 batch.append(example["text"])
-                if len(batch) >= 5000:
+                if len(batch) >= 500:
                     batch_queue.put(batch)
                     batch = []
             if batch and not stop_event.is_set():

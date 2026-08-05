@@ -30,8 +30,6 @@ class LanguageModelingExperimentConfig:
     )
 
     # Dataset / caching
-    dataset_name: str = "HuggingFaceFW/fineweb-edu"
-    dataset_config: str = "sample-10BT"
     max_tokens: int = 1_000_000_000  # how many tokens to download & cache
 
     # Training hyperparameters
