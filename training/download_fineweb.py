@@ -6,10 +6,9 @@ It conditionally alters its loading strategy based on target token count to prev
 network timeouts and memory OOM kills on massive datasets:
 
 - Target <= 10B tokens: Streams 'sample-10BT' via HuggingFace datasets with local shuffling.
-- Target > 10B tokens: Fetches raw parquets from 'sample-100BT' and streams via PyArrow.
-  This bypasses HF dataset memory leaks and natively skips documents instantly via metadata.
-  (Note: Raw parquets are already pre-shuffled by HuggingFace, so skipping a local buffer
-  shuffle at this scale does not impact training diversity).
+- Target > 10B tokens: Fetches raw parquets from the pre-shuffled 'fineweb_edu_100BT-shuffled' 
+  repo and streams via PyArrow. This bypasses HF dataset memory leaks, guarantees global 
+  randomness (since the dataset is pre-shuffled with seed=42), and natively skips documents instantly via metadata. This isnt used for <10BT because the 125M model pretraining and ablations were done without this, so we left that path.
 
 A single iterator is used sequentially for both validation and training to guarantee
 disjoint sets. Output files are safely truncated to the exact token count requested.
@@ -61,11 +60,32 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
     train_max_tokens = config.max_tokens
     total_requested_tokens = val_max_tokens + train_max_tokens
     
+    # Force seed to 42 for deterministic data shuffle order
+    config.seed = 42
+
+    current_source = "fineweb_edu_100BT-shuffled" if total_requested_tokens > 10_000_000_000 else "sample-10BT"
+
     # Load offset state
     if os.path.exists(offset_path):
         with open(offset_path, "r") as f:
             offset_state = json.load(f)
             
+        if offset_state.get("training_docs", 0) > 0 or offset_state.get("validation_docs", 0) > 0:
+            saved_source = offset_state.get("source")
+            if saved_source is None:
+                saved_source = current_source
+                print(f"Warning: Legacy offset file {offset_path} lacks 'source' field. Inferred source as '{saved_source}'.")
+
+            if saved_source != current_source:
+                raise RuntimeError(
+                    f"Source mismatch for {offset_path}: cache was built from "
+                    f"'{saved_source}' but current config resolves to "
+                    f"'{current_source}' (total_requested_tokens={total_requested_tokens}). "
+                    f"Resuming would skip documents in the wrong stream. Either restore the "
+                    f"original token target, or delete the cache files for this model_size "
+                    f"and start fresh."
+                )
+
         for split_path, split_key in [(val_cache_path, "validation"), (train_cache_path, "training")]:
             if offset_state.get(f"{split_key}_tokens", 0) > 0 and not os.path.exists(split_path):
                 raise RuntimeError(
@@ -85,6 +105,8 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
             "training_docs": 0, "training_tokens": 0
         }
 
+    offset_state["source"] = current_source
+
     # Safety truncate files to match offset state
     for split_path, split_key in [(val_cache_path, "validation"), (train_cache_path, "training")]:
         if os.path.exists(split_path):
@@ -103,18 +125,19 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
     
     # Conditional loading logic based on required size
     if total_requested_tokens > 10_000_000_000:
+        dataset_name_large = "HuggingFaceFW/fineweb_edu_100BT-shuffled"
         num_parquets = int(total_requested_tokens / 750_000_000) + 2
-        print(f"Target size ({total_requested_tokens} tokens) > 10B. Fetching file list from HF...")
+        print(f"Target size ({total_requested_tokens} tokens) > 10B. Fetching file list from HF ({dataset_name_large})...")
         
-        all_files = list_repo_files(dataset_name, repo_type="dataset")
-        valid_files = sorted([f for f in all_files if f.startswith("sample/100BT/") and f.endswith(".parquet")])
+        all_files = list_repo_files(dataset_name_large, repo_type="dataset")
+        valid_files = sorted([f for f in all_files if f.endswith(".parquet")])
         data_files = valid_files[:num_parquets]
         
-        print(f"Downloading {len(data_files)} raw parquets...")
+        print(f"Downloading {len(data_files)} raw pre-shuffled parquets...")
         local_files = []
         for hf_file in data_files:
             local_path = hf_hub_download(
-                repo_id=dataset_name, 
+                repo_id=dataset_name_large, 
                 filename=hf_file, 
                 repo_type="dataset"
             )
@@ -141,7 +164,7 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
                         yield {"text": text}
                         
         total_skip = offset_state["validation_docs"] + offset_state["training_docs"]
-        print(f"Instantly skipping {total_skip} documents and streaming via raw PyArrow...")
+        print(f"Instantly skipping {total_skip} documents and streaming pre-shuffled data via PyArrow...")
         dataset_iter = raw_parquet_iterator(local_files, total_skip)
         
     else:
@@ -150,8 +173,7 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
             dataset_name, 
             name="sample-10BT", 
             split="train", 
-            streaming=True,
-            cache_dir=hf_cache_dir
+            streaming=True
         )
         dataset = dataset.shuffle(seed=config.seed, buffer_size=10000)
         
