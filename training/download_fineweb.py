@@ -48,6 +48,14 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
     dataset_name = "HuggingFaceFW/fineweb-edu"
     model_size = config.model_name.split('_')[0]
 
+    # Validate tokenizer parameters early before downloading or processing data
+    enc = tiktoken.get_encoding(config.model_config.tokenizer_name)
+    assert enc.n_vocab <= 65536, (
+        f"Tokenizer '{config.model_config.tokenizer_name}' has vocab size {enc.n_vocab} > 65536! "
+        f"The binary cache and FastTokenLoader require uint16 format (vocab size <= 65536). "
+        f"Please use a tokenizer with vocab_size <= 65536 (such as 'gpt2')."
+    )
+
     base_dir = os.path.expanduser("data/datasets")
     os.makedirs(base_dir, exist_ok=True)
     
@@ -71,6 +79,18 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
             offset_state = json.load(f)
             
         if offset_state.get("training_docs", 0) > 0 or offset_state.get("validation_docs", 0) > 0:
+            saved_tokenizer = offset_state.get("tokenizer_name")
+            if saved_tokenizer is None:
+                saved_tokenizer = config.model_config.tokenizer_name
+                print(f"Warning: Legacy offset file {offset_path} lacks 'tokenizer_name' field. Inferred tokenizer as '{saved_tokenizer}'.")
+
+            if saved_tokenizer != config.model_config.tokenizer_name:
+                raise RuntimeError(
+                    f"Tokenizer mismatch for {offset_path}: cache was built with "
+                    f"'{saved_tokenizer}' but current config specifies '{config.model_config.tokenizer_name}'. "
+                    f"Please delete the cache files for {model_size} to start fresh with a different tokenizer."
+                )
+
             saved_source = offset_state.get("source")
             if saved_source is None:
                 saved_source = current_source
@@ -106,6 +126,7 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
         }
 
     offset_state["source"] = current_source
+    offset_state["tokenizer_name"] = config.model_config.tokenizer_name
 
     # Safety truncate files to match offset state
     for split_path, split_key in [(val_cache_path, "validation"), (train_cache_path, "training")]:
@@ -219,10 +240,8 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
     prefetch_thread = threading.Thread(target=prefetch_worker, daemon=True)
     prefetch_thread.start()
 
-    enc = tiktoken.get_encoding(config.model_config.tokenizer_name)
     eot_token = enc.eot_token
-    
-    assert enc.n_vocab <= 65536, "Vocab size > 65536, uint16 array will overflow!"
+    assert enc.n_vocab <= 65536, f"Vocab size ({enc.n_vocab}) > 65536, uint16 array will overflow!"
 
     FSYNC_EVERY_N_BATCHES = 20
 

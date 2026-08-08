@@ -102,7 +102,7 @@ training/
 ├── training_config.py                         # LanguageModelingExperimentConfig (model_name, dataset, hparams)
 ├── data_utils.py                              # FastTokenLoader (np.memmap + pinned memory for optimized data streaming)
 ├── train.py                                   # Language modeling training loop (FineWeb-Edu) with crash-safe checkpointing
-├── download_fineweb.py                        # FineWeb-Edu download & tokenization with atomic state flushing
+├── download_fineweb.py                        # FineWeb-Edu download & tokenization with atomic state flushing, source/tokenizer safety, & seed=42
 ├── inference.py                               # CLI interactive generation for trained models
 └── plot_training.py                           # Training metrics multi-model shared plotting
 
@@ -128,9 +128,14 @@ main.py                                         # CLI entry point (download-data
 
 ---
 
-## Training Stability
+## Training Stability & Dataset Safety
 
-The training loop includes crash-safe checkpointing. If an unexpected interrupt occurs (e.g., OOM or keyboard interrupt), the model intercepts the signal and saves its state to `checkpoint_emergency.pt` to avoid corrupting the primary checkpoint file.
+The codebase incorporates multiple safeguards to ensure reproducible training and robust caching:
+
+- **Deterministic Shuffling & Seed Guarantee**: Data downloads automatically force `config.seed = 42` to guarantee exact deterministic document shuffle ordering across all machines and experiments.
+- **Source Stream Integrity**: `offset_state_{model_size}.json` explicitly tracks the active dataset source (`sample-10BT` vs `fineweb_edu_100BT-shuffled`). If configuration changes cross dataset boundaries, the pipeline raises a runtime safety error before any skipping logic runs to prevent corrupted document indexing.
+- **Tokenizer Matching & Early Assertions**: Validates `tokenizer_name` and vocabulary bounds (`enc.n_vocab <= 65536` for 16-bit cache compatibility) at script startup, preventing silent cache corruption or parameter mismatches. Includes automatic fallback inference for legacy offset state files.
+- **Crash-Safe Checkpointing**: The training loop intercepts unexpected interrupts (OOM or SIGINT) to safely store emergency state (`checkpoint_emergency.pt`) without corrupting primary checkpoints.
 
 ---
 
@@ -157,7 +162,7 @@ Strict **O(N)** memory during training — no materialization of full attention 
 
 ```bash
 # 1. Download and cache the dataset
-# (Automatically handles 10B+ scale token sets with ultra-fast PyArrow metadata skipping)
+# (Automatically handles 10B+ scale token sets with ultra-fast PyArrow metadata skipping, source validation, and seed=42)
 python main.py download-data
 
 # 2. Validate custom Triton decoding against PyTorch JIT compiler

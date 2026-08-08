@@ -129,6 +129,21 @@ choice; 350M is scale-confirmation only, consistent with the paper's own scoping
 
 ---
 
+## Technical Debt & Infrastructure Roadmap
+
+### Universal Tokenizer & Multi-Dtype Token Caching
+- [ ] **Arbitrary Tokenizer Support (>65k Vocab)**:
+  - Extend `training/download_fineweb.py` to support dynamic 32-bit (`np.uint32` / 4 bytes per token) storage when `vocab_size > 65536` (e.g., GPT-4 `cl100k_base` or GPT-4o `o200k_base`).
+  - Update `FastTokenLoader` in `training/data_utils.py` and `compute_val_ppl_from_cache` in `training/modules/eval.py` to dynamically inspect token byte width (`token_bytes`) instead of hardcoding `// 2` bytes per token.
+  - Embed `token_bytes`, `vocab_size`, and `tokenizer_name` in `cache_metadata.json` / `offset_state.json` headers to auto-detect cache layout upon loading.
+
+### Data Pipeline & Scaling Extensions
+- [ ] **Multi-GPU Harness (DDP / FSDP)**: Add PyTorch `DistributedDataParallel` / `FullyShardedDataParallel` launcher support in `training/train.py` with per-rank stream offsets for multi-node / multi-GPU scaling.
+- [ ] **Dynamic Sequence Packing**: Implement padding-free token sequence packing in `FastTokenLoader` to avoid wasteful attention computation on padding tokens during long-context training.
+- [ ] **Cache Checksum Verification**: Add automated SHA-256 / metadata validation in `download_fineweb.py` to verify binary cache integrity against truncation or disk corruption before training starts.
+
+---
+
 ## Explicitly out of scope (do not do)
 
 - Distance-Segmented Perplexity — redundant with induction-head / block-copying
