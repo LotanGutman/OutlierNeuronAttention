@@ -194,9 +194,9 @@ python main.py infer --debug   # Enable detailed, dynamic gating statistics per-
 ```
 
 The experiment config lives in `training/training_config.py`. It includes presets for scaling models:
-- `make_30m_pure_gla()`, `make_30m_hofa()`
-- `make_125M_hofa()`, `make_125M_mha()`
-- `make_350M_hofa()`, `make_350M_mha()`
+- `make_70M_HOFA()`, `make_70M_MHA()`
+- `make_125M_HOFA()`, `make_125M_MHA()`
+- `make_350M_HOFA()`, `make_350M_MHA()`
 
 To scale to a larger model, simply change the active config in `main.py`. The pipeline is smart enough to share downloaded datasets (`cache.bin` and `val_cache.bin`) between MHA and HOFA variants of the same size to save disk space and preparation time. Checkpoints and plot directories automatically derive from the full `model_name`.
 

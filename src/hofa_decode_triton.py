@@ -41,7 +41,7 @@ def _fused_hofa_decode_kernel(
     Log_Gamma, Mix_G,
     Norm_W,
     Y, State_I_new,
-    R, seq_len, seq_len_bucket, sm_scale,
+    R, seq_len, seq_len_bucket, sm_scale, eps,
     stride_q_b, stride_q_h, stride_q_n, stride_q_d,
     stride_k_b, stride_k_h, stride_k_n, stride_k_d,
     stride_v_b, stride_v_h, stride_v_n, stride_v_d,
@@ -133,7 +133,7 @@ def _fused_hofa_decode_kernel(
     y_o = acc_O / l_i
 
     var = tl.sum(y_i * y_i, axis=0) / D_HEAD
-    rsqrt = tl.math.rsqrt(var + 1e-5)
+    rsqrt = tl.math.rsqrt(var + eps)
     norm_w = tl.load(Norm_W + head_idx * stride_nw_h + offs_d * stride_nw_d)
     y_i_norm = y_i * rsqrt * norm_w
 
@@ -155,6 +155,9 @@ def fused_hofa_decode(
 
     Y = torch.empty_like(q)
 
+    # Determine machine epsilon for execution dtype (fp32 opmath for float32/bfloat16/float16), to match pytorch RMSNorm
+    eps = torch.finfo(torch.float32).eps if q.dtype in (torch.bfloat16, torch.float16, torch.float32) else torch.finfo(q.dtype).eps
+
     BLOCK_HEADS = 1
     D_HEAD = triton.next_power_of_2(D)
     R_PAD = triton.next_power_of_2(R)
@@ -170,7 +173,7 @@ def fused_hofa_decode(
         log_gamma, mix_g,
         norm_w,
         Y, state_I_out,
-        R, seq_len, seq_len_bucket, sm_scale,
+        R, seq_len, seq_len_bucket, sm_scale, eps,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),

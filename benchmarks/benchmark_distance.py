@@ -5,7 +5,7 @@ import math
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from training.training_config import make_125M_hofa, make_125M_mha
+from training.training_config import make_125M_HOFA, make_125M_MHA
 from benchmarks.benchmarks_configs import DistanceExperimentConfig
 from training.data_utils import FastTokenLoader
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM

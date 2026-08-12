@@ -1,6 +1,7 @@
 from training.training_config import (
     make_70M_MHA, make_70M_HOFA, make_70M_HOFA_flat32, 
-    make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend, make_350M_hofa
+    make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend, 
+    make_125M_HOFA, make_125M_MHA, make_350M_HOFA
 )
 
 
@@ -8,19 +9,21 @@ import argparse
 
 
 def main():
-    config = make_350M_hofa()
+    config = make_350M_HOFA()
 
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     subparsers.add_parser("download-data", help="Download and cache the dataset")
     
-    parser_train = subparsers.add_parser("train", help="Run training, plotting, or evaluation")
+    parser_train = subparsers.add_parser("train", help="Run training or plotting")
     parser_train.add_argument("--plot", action="store_true", help="Plot training metrics")
     parser_train.add_argument("--shared", action="store_true", help="Plot shared training metrics for HOFA and MHA")
     parser_train.add_argument("--70m", dest="plot_70m", action="store_true", help="Plot shared training metrics for all 70M ablations")
-    parser_train.add_argument("--eval", action="store_true", help="Evaluate the model on zero-shot reasoning benchmarks")
-    parser_train.add_argument("--simple", action="store_true", help="Only run the HellaSwag benchmark instead of the full suite")
+
+    parser_eval = subparsers.add_parser("eval", help="Run zero-shot reasoning benchmark evaluations")
+    parser_eval.add_argument("--full", action="store_true", help="Evaluate pretrained baseline models from Hugging Face")
+    parser_eval.add_argument("--simple", action="store_true", help="Only run the HellaSwag benchmark instead of the full suite")
 
     parser_infer = subparsers.add_parser("infer", help="Run interactive generation or validation")
     parser_infer.add_argument("--debug", action="store_true", help="Print debug information (gate bias, etc.)")
@@ -62,17 +65,20 @@ def main():
                     make_70M_HOFA_depth_axis(), make_70M_HOFA_width_axis(), make_70M_HOFA_fixed_blend()
                 ], subdirectory="70M")
             elif args.shared:
-                from training.training_config import make_125M_hofa, make_125M_mha
-                plot_training_metrics([make_125M_hofa(), make_125M_mha()], subdirectory="125M")
+                plot_training_metrics([make_125M_HOFA(), make_125M_MHA()], subdirectory="125M")
             else:
                 plot_training_metrics(config)
-        elif args.eval:
-            from benchmarks.benchmark_zeroshot import evaluate_zeroshot
-            from benchmarks.benchmarks_configs import EvalExperimentConfig
-            evaluate_zeroshot(config, EvalExperimentConfig(), is_simple=args.simple)
         else:
             from training.train import train
             train(config)
+    elif args.command == "eval":
+        from benchmarks.benchmarks_configs import EvalExperimentConfig
+        if args.full:
+            from benchmarks.benchmark_zeroshot import evaluate_pretrained_zeroshot
+            evaluate_pretrained_zeroshot(EvalExperimentConfig(), is_simple=args.simple)
+        else:
+            from benchmarks.benchmark_zeroshot import evaluate_zeroshot
+            evaluate_zeroshot(config, EvalExperimentConfig(), is_simple=args.simple)
     elif args.command == "infer":
         from src.config import InferenceConfig
         import src.inference

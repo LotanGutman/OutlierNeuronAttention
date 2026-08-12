@@ -167,6 +167,9 @@ class InferenceEngine:
                     new_v[:, :, :seq, :] = v_cache
                     cache_O_list[i] = (new_k, new_v)
 
+            if self.inference_cfg.temperature < 1e-5:
+                print("[WARNING] Temperature is 0.0 (greedy search). High temperature (e.g. 0.7 or top_k sampling) is recommended for text generation.")
+
             # 2. Generation phase
             for step in range(self.inference_cfg.max_new_tokens):
                 # --- DEBUG: Check the integrity of the state and cache ---

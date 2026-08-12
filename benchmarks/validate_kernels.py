@@ -100,12 +100,15 @@ def validate_inference(config: LanguageModelingExperimentConfig, verbose: bool =
             Q_J = Q[..., hofa_train.r:]
             K_J = K[..., hofa_train.r:]
             
-            from fla.ops.gla import chunk_gla
+            try:
+                from fla.ops.gla import chunk_gla
+            except Exception:
+                from src.chunk_gla_inlier import chunk_gla_inlier_fwd as chunk_gla
             
-            q_gla_t = Q_J.transpose(1, 2).to(torch.bfloat16).contiguous()
-            k_gla_t = K_J.transpose(1, 2).to(torch.bfloat16).contiguous()
-            v_gla_t = V.transpose(1, 2).to(torch.bfloat16).contiguous()
-            g_gla_t = log_gamma.transpose(1, 2).expand(-1, -1, -1, K_J.shape[-1]).to(torch.bfloat16).contiguous()
+            q_gla_t = Q_J.to(torch.bfloat16).contiguous()
+            k_gla_t = K_J.to(torch.bfloat16).contiguous()
+            v_gla_t = V.to(torch.bfloat16).contiguous()
+            g_gla_t = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).to(torch.bfloat16).contiguous()
             
             Y_I_raw_ref_t, state_I_ref_final = chunk_gla(
                 q_gla_t,
@@ -122,7 +125,11 @@ def validate_inference(config: LanguageModelingExperimentConfig, verbose: bool =
             Y_out_inf, cache_O_inf, state_I_inf = hofa_infer(x, return_state=True)
             
             # Compare prefill states
-            print_metrics("BF16 Prefill State", state_I_ref_final, state_I_inf[0])
+            s_inf = state_I_inf
+            while isinstance(s_inf, (tuple, list)):
+                s_inf = s_inf[0]
+            s_ref = state_I_ref_final
+            print_metrics("BF16 Prefill State", s_ref, s_inf)
             
             # --- Decode Phase ---
             Q_O = Q[..., :hofa_train.r]
@@ -250,6 +257,84 @@ def validate_inference(config: LanguageModelingExperimentConfig, verbose: bool =
                 # Restore original hook
                 import src.HybridOutlierFactorizedAttention as _am
                 _am.fused_hofa_decode = _orig
+
+    validate_full_subword_lm(config)
+
+
+def validate_full_subword_lm(config: LanguageModelingExperimentConfig):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"\n{'='*70}\nVALIDATING FULL SUBWORDLM DECODING (ALL LAYERS & HETEROGENEOUS r)\n{'='*70}")
+    
+    from src.HybridOutlierFactorizedAttention import SubwordLM
+    import tiktoken
+    
+    tokenizer = tiktoken.get_encoding(config.model_config.tokenizer_name)
+    vocab_size = tokenizer.n_vocab
+    
+    torch.manual_seed(42)
+    model = SubwordLM(vocab_size, config.model_config).to(device)
+    import os
+    checkpoint_path = f"data/training/{config.model_name}/checkpoint_best_val.pt"
+    if os.path.exists(checkpoint_path):
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt.get('model_state_dict', ckpt))
+        print(f"Loaded trained checkpoint from {checkpoint_path}")
+    model.eval()
+    
+    prompt = "Hi! My name is"
+    ids = tokenizer.encode(prompt)
+    context = torch.tensor([ids], dtype=torch.long, device=device)
+    B, N = context.shape
+    
+    with torch.no_grad():
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            # 1. Full model forward (Prefill)
+            logits_prefill, cache_O_list, state_I_list = model(context, return_state=True)
+            
+            # Pre-allocate cache as in InferenceEngine
+            cache_seq_len = N
+            if cache_O_list is not None:
+                for i, cache in enumerate(cache_O_list):
+                    if cache is None:
+                        continue
+                    k_cache, v_cache = cache
+                    b, h, seq, d = k_cache.shape
+                    new_k = torch.zeros(b, h, seq + 20, d, device=k_cache.device, dtype=k_cache.dtype)
+                    new_v = torch.zeros(b, h, seq + 20, v_cache.shape[-1], device=v_cache.device, dtype=v_cache.dtype)
+                    new_k[:, :, :seq, :] = k_cache
+                    new_v[:, :, :seq, :] = v_cache
+                    cache_O_list[i] = (new_k, new_v)
+
+            curr_ids = ids.copy()
+            next_token = torch.argmax(logits_prefill[0, -1]).item()
+            
+            for step in range(30):
+                # Full forward reference (ground truth)
+                full_ids = curr_ids + [next_token]
+                x_full = torch.tensor([full_ids], dtype=torch.long, device=device)
+                logits_ref, _ = model(x_full)
+                ref_logit = logits_ref[0, -1]
+                
+                # Single step forward_step
+                x_step = torch.tensor([[next_token]], dtype=torch.long, device=device)
+                logits_step, cache_O_list, state_I_list = model.forward_step(
+                    x_step, cache_O_list, state_I_list, cache_seq_len=cache_seq_len
+                )
+                step_logit = logits_step[0, -1]
+                
+                cos = F.cosine_similarity(ref_logit.float().unsqueeze(0), step_logit.float().unsqueeze(0)).item()
+                md = (ref_logit.float() - step_logit.float()).abs().max().item()
+                
+                ref_top = torch.argmax(ref_logit).item()
+                step_top = torch.argmax(step_logit).item()
+                
+                tag = "✓" if cos > 0.99 else "✗"
+                print(f"  {tag} Decode Step {step+1}: CosSim={cos:.6f} | MaxDiff={md:.4e} | Ref top: {ref_top} ('{tokenizer.decode([ref_top])}') | Step top: {step_top} ('{tokenizer.decode([step_top])}')")
+                
+                curr_ids.append(next_token)
+                next_token = step_top
+                cache_seq_len += 1
+
 
 if __name__ == "__main__":
     config = LanguageModelingExperimentConfig()

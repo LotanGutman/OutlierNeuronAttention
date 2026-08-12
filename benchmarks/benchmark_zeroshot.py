@@ -2,11 +2,11 @@
 Evaluate pretrained models on Zero-Shot Common-Sense Reasoning benchmarks.
 
 Usage:
-    from training.training_config import make_125M_hofa
+    from training.training_config import make_125M_HOFA
     from benchmarks.benchmarks_configs import EvalExperimentConfig
     from benchmarks.benchmark_zeroshot import evaluate_zeroshot
     
-    config = make_125M_hofa()
+    config = make_125M_HOFA()
     eval_config = EvalExperimentConfig(limit=1000)
     evaluate_zeroshot(config, eval_config)
 """
@@ -69,6 +69,58 @@ AutoModelForCausalLM.register(HOFAConfig, HOFAModel)
 # ------------------------------------------------------------------
 # 2. Main evaluation function
 # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Helper: Print formatted comparison table
+# ------------------------------------------------------------------
+def print_zeroshot_table(all_results: dict, print_tasks: tuple, title: str = "Zero-Shot Reasoning Benchmark Results"):
+    if not all_results:
+        print("No results to display.")
+        return
+
+    model_col_width = max(25, max(len(str(m)) for m in all_results.keys()))
+    total_width = model_col_width + 5 + 15 * len(print_tasks)
+
+    print("\n" + "=" * total_width)
+    print(title)
+    print("=" * total_width)
+
+    # Header
+    header = f"| {'Model':<{model_col_width}} |"
+    for task in print_tasks:
+        header += f" {task:<12} |"
+    print(header)
+    
+    # Separator
+    separator = f"|{'-'*(model_col_width+2)}|"
+    for task in print_tasks:
+        separator += f"{'-'*14}|"
+    print(separator)
+
+    # Data Rows
+    for model_name, metrics in all_results.items():
+        if not isinstance(metrics, dict):
+            continue
+        row = f"| {model_name:<{model_col_width}} |"
+        for task in print_tasks:
+            task_metrics = metrics.get(task, {})
+            val = task_metrics.get("acc_norm,none")
+            if val is None:
+                val = task_metrics.get("acc,none")
+            
+            if val is not None:
+                val_str = f"{val*100:.2f}%"
+            else:
+                val_str = "-"
+            
+            row += f" {val_str:<12} |"
+        print(row)
+    
+    print("=" * total_width + "\n")
+
+
+# ------------------------------------------------------------------
+# 2. Main evaluation function for trained local checkpoints
+# ------------------------------------------------------------------
 def evaluate_zeroshot(
     configs: Union[LanguageModelingExperimentConfig, List[LanguageModelingExperimentConfig]],
     eval_config: EvalExperimentConfig,
@@ -80,9 +132,7 @@ def evaluate_zeroshot(
         configs = [configs]
 
     # If simple mode, override tasks to only run HellaSwag
-    requested_tasks = eval_config.tasks
-    if is_simple:
-        requested_tasks = ("hellaswag",)
+    requested_tasks = ("hellaswag",) if is_simple else eval_config.tasks
         
     os.makedirs(CACHE_PATH, exist_ok=True)
     all_results = {}
@@ -115,7 +165,6 @@ def evaluate_zeroshot(
                 cached_data = torch.load(cache_path, weights_only=False)
                 if cached_data.get("_mtime") == current_mtime:
                     model_metrics = cached_data
-                    # Remove the metadata key for logging tasks
                     tasks_in_cache = [k for k in model_metrics.keys() if k != "_mtime"]
                     print(f"Loaded valid cache from {cache_path} with tasks: {tasks_in_cache}")
                 else:
@@ -182,48 +231,69 @@ def evaluate_zeroshot(
         # Clean up the temporary huggingface directory
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # ------------------------------------------------------------------
-    # 3. Print combined comparison table
-    # ------------------------------------------------------------------
-    if not all_results:
-        print("No results to display.")
-        return
+    print_zeroshot_table(all_results, requested_tasks, title="Zero-Shot Reasoning Benchmark Results")
 
-    print("\n" + "=" * 90)
-    print("Zero-Shot Reasoning Benchmark Results")
-    print("=" * 90)
 
-    # Use the full originally requested tasks array for printing
-    print_tasks = requested_tasks
+# ------------------------------------------------------------------
+# 3. Pretrained internet models zero-shot evaluation function
+# ------------------------------------------------------------------
+def evaluate_pretrained_zeroshot(
+    eval_config: EvalExperimentConfig,
+    is_simple: bool = False,
+    models: List[str] = None
+):
+    if models is None:
+        models = [
+            "gpt2",
+            "EleutherAI/pythia-160m",
+            "HuggingFaceTB/SmolLM-135M",
+        ]
 
-    # Header
-    header = f"| {'Model':<20} |"
-    for task in print_tasks:
-        header += f" {task:<12} |"
-    print(header)
-    
-    # Separator
-    separator = f"|{'-'*22}|"
-    for task in print_tasks:
-        separator += f"{'-'*14}|"
-    print(separator)
+    requested_tasks = ("hellaswag",) if is_simple else eval_config.tasks
+    os.makedirs(CACHE_PATH, exist_ok=True)
+    cache_path = os.path.join(CACHE_PATH, "pretrained_models_zeroshot_cache.pt")
 
-    # Data Rows
-    for model_name, metrics in all_results.items():
-        row = f"| {model_name:<20} |"
-        for task in print_tasks:
-            task_metrics = metrics.get(task, {})
-            # Prefer normalised accuracy if available, else exact match
-            val = task_metrics.get("acc_norm,none")
-            if val is None:
-                val = task_metrics.get("acc,none")
-            
-            if val is not None:
-                val_str = f"{val*100:.2f}%"
-            else:
-                val_str = "-"
-            
-            row += f" {val_str:<12} |"
-        print(row)
-    
-    print("=" * 90 + "\n")
+    all_cached_results = {}
+    if eval_config.use_cache and not eval_config.force_rerun and os.path.exists(cache_path):
+        try:
+            all_cached_results = torch.load(cache_path, weights_only=False)
+            print(f"Loaded pretrained models cache from {cache_path}")
+        except Exception as e:
+            print(f"Failed to load pretrained cache: {e}. Starting fresh.")
+
+    for model_name in models:
+        print(f"\nProcessing zero-shot evaluation for pretrained model '{model_name}'...")
+        model_metrics = all_cached_results.get(model_name, {})
+
+        tasks_to_run = [t for t in requested_tasks if t not in model_metrics]
+
+        if len(tasks_to_run) == 0:
+            print(f"All requested tasks are already cached for {model_name}. Skipping lm-eval.")
+            continue
+
+        print(f"Running lm-eval on pretrained '{model_name}' for MISSING tasks: {tasks_to_run}")
+        print(f"(limit={eval_config.limit}, seed={eval_config.seed}, batch_size={eval_config.batch_size})")
+
+        try:
+            results = simple_evaluate(
+                model="hf",
+                model_args=f"pretrained={model_name}",
+                tasks=tasks_to_run,
+                limit=eval_config.limit,
+                device=eval_config.device,
+                batch_size=eval_config.batch_size,
+                numpy_random_seed=eval_config.seed,
+                torch_random_seed=eval_config.seed,
+                fewshot_random_seed=eval_config.seed,
+            )
+            new_metrics = results.get("results", {})
+            for t, m in new_metrics.items():
+                model_metrics[t] = m
+
+            all_cached_results[model_name] = model_metrics
+            torch.save(all_cached_results, cache_path)
+            print(f"Saved merged results for {model_name} to cache: {cache_path}")
+        except Exception as e:
+            print(f"❌ Error evaluating pretrained model {model_name}: {e}")
+
+    print_zeroshot_table(all_cached_results, requested_tasks, title="Pretrained Baseline Models Zero-Shot Results")

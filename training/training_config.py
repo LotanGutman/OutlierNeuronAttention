@@ -63,7 +63,7 @@ def _compute_steps(tokens: int, batch_size: int, seq_len: int) -> int:
     return (steps // 100) * 100
 
 # 13M models (For quick debugging)
-def make_13M_hofa() -> LanguageModelingExperimentConfig:
+def make_13M_HOFA() -> LanguageModelingExperimentConfig:
     """13M HOFA for rapid testing. d_head=64."""
     return LanguageModelingExperimentConfig(
         model_name="13M_HOFA",
@@ -81,7 +81,7 @@ def make_13M_hofa() -> LanguageModelingExperimentConfig:
     )
 
 
-def make_13M_mha() -> LanguageModelingExperimentConfig:
+def make_13M_MHA() -> LanguageModelingExperimentConfig:
     """13M pure MHA baseline. r=d_head=64."""
     return LanguageModelingExperimentConfig(
         model_name="13M_MHA",
@@ -157,7 +157,7 @@ def make_70M_HOFA_fixed_blend() -> LanguageModelingExperimentConfig:
 
 
 # 125M models (Main)
-def make_125M_hofa() -> LanguageModelingExperimentConfig:
+def make_125M_HOFA() -> LanguageModelingExperimentConfig:
     """125M HOFA. d_head=128 (768/6)."""
     return LanguageModelingExperimentConfig(
         model_name="125M_HOFA",
@@ -175,7 +175,7 @@ def make_125M_hofa() -> LanguageModelingExperimentConfig:
     )
 
 
-def make_125M_mha() -> LanguageModelingExperimentConfig:
+def make_125M_MHA() -> LanguageModelingExperimentConfig:
     """125M pure MHA baseline. r=d_head=128."""
     return LanguageModelingExperimentConfig(
         model_name="125M_MHA",
@@ -192,7 +192,7 @@ def make_125M_mha() -> LanguageModelingExperimentConfig:
     )
 
 # 350M models (Main)
-def make_350M_hofa() -> LanguageModelingExperimentConfig:
+def make_350M_HOFA() -> LanguageModelingExperimentConfig:
     """350M HOFA. d_head=128 (1024/8)."""
     return LanguageModelingExperimentConfig(
         model_name="350M_HOFA",
@@ -210,7 +210,7 @@ def make_350M_hofa() -> LanguageModelingExperimentConfig:
     )
 
 
-def make_350M_mha() -> LanguageModelingExperimentConfig:
+def make_350M_MHA() -> LanguageModelingExperimentConfig:
     """350M pure MHA baseline. r=d_head=128."""
     return LanguageModelingExperimentConfig(
         model_name="350M_MHA",
