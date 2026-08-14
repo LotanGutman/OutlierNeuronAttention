@@ -180,9 +180,9 @@ class DistanceExperimentConfig:
 
 @dataclass
 class EvalExperimentConfig:
-    """Configuration for zero-shot evaluations (HellaSwag, LAMBADA, etc.)."""
-    tasks: tuple[str, ...] = ("hellaswag", "arc_easy", "arc_challenge", "piqa", "winogrande", "openbookqa")
-    limit: int | None = 1000
+    """Configuration for zero-shot evaluations (HellaSwag, ARC, PIQA, WinoGrande, OpenBookQA)."""
+    tasks: tuple[str, ...] = ("arc_easy", "arc_challenge", "piqa", "winogrande", "openbookqa", "hellaswag")
+    limit: int | None = None
     seed: int = 42
     batch_size: int = 1  # Force to 1 to prevent padding corruption in unmasked HOFA
     device: str = "cuda" if torch.cuda.is_available() else "cpu"

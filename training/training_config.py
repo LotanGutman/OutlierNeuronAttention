@@ -222,7 +222,7 @@ def make_350M_MHA() -> LanguageModelingExperimentConfig:
         max_tokens=14_000_000_000,
         train_steps=_compute_steps(14_000_000_000, 32, 1024),
         learning_rate=3e-4, warmup_steps=2000, print_every=500, save_every=1000,
-        micro_batch_size=16,
-        gradient_accumulation_steps=2,
+        micro_batch_size=8,
+        gradient_accumulation_steps=4,
     )
 

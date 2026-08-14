@@ -163,7 +163,7 @@ Strict **O(N)** memory during training — no materialization of full attention 
 ```bash
 # 1. Download and cache the dataset
 # (Automatically handles 10B+ scale token sets with ultra-fast PyArrow metadata skipping, source validation, and seed=42)
-python main.py download-data
+python main.py train --download-data
 
 # 2. Validate custom Triton decoding against PyTorch JIT compiler
 python main.py infer --validate
@@ -175,11 +175,17 @@ python main.py train
 python main.py profile --prefill
 python main.py profile --decode
 
-# 5. Plot training metrics
 python main.py train --plot
 python main.py train --plot --shared   # Generates comparative academic plots (Tokens & FLOPs) between HOFA and MHA
+python main.py train --eval            # Run zero-shot reasoning evaluation on the active trained model checkpoint
+python main.py train --eval --shared   # Run zero-shot evaluation on both trained HOFA and MHA checkpoints
 
-# 7. Synthetic Benchmarks
+# 7. Zero-Shot Reasoning Evaluation
+python main.py eval --shared --scale 125M   # Run 125M HOFA vs 125M MHA zero-shot reasoning benchmarks (Table 1)
+python main.py eval --full --scale 125M     # Run zero-shot benchmarks on 125M pretrained baseline models (GPT-2, Pythia, SmolLM, Mamba)
+python main.py eval --full --scale 350M     # Run zero-shot benchmarks on 350M pretrained baseline models (OPT, Pythia, SmolLM, Mamba)
+
+# 8. Synthetic Benchmarks
 python main.py benchmark --induction              # Run Induction Head sequence length scaling
 python main.py benchmark --induction --plot       # Generate unified trendline and feature norm disparity plots
 python main.py benchmark --induction-degradation  # Run extended context length degradation sweep (N=640..920, r=8)

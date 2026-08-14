@@ -237,17 +237,29 @@ def evaluate_zeroshot(
 # ------------------------------------------------------------------
 # 3. Pretrained internet models zero-shot evaluation function
 # ------------------------------------------------------------------
+PRETRAINED_BASELINE_MODELS = {
+    "125M": [
+        "gpt2",
+        "EleutherAI/pythia-160m",
+        "HuggingFaceTB/SmolLM-135M",
+        "state-spaces/mamba-130m",
+    ],
+    "350M": [
+        "facebook/opt-350m",
+        "EleutherAI/pythia-410m",
+        "HuggingFaceTB/SmolLM-360M",
+        "state-spaces/mamba-370m",
+    ],
+}
+
 def evaluate_pretrained_zeroshot(
     eval_config: EvalExperimentConfig,
     is_simple: bool = False,
-    models: List[str] = None
+    models: List[str] = None,
+    scale: str = "125M"
 ):
     if models is None:
-        models = [
-            "gpt2",
-            "EleutherAI/pythia-160m",
-            "HuggingFaceTB/SmolLM-135M",
-        ]
+        models = PRETRAINED_BASELINE_MODELS.get(scale, PRETRAINED_BASELINE_MODELS["125M"])
 
     requested_tasks = ("hellaswag",) if is_simple else eval_config.tasks
     os.makedirs(CACHE_PATH, exist_ok=True)
@@ -274,9 +286,13 @@ def evaluate_pretrained_zeroshot(
         print(f"Running lm-eval on pretrained '{model_name}' for MISSING tasks: {tasks_to_run}")
         print(f"(limit={eval_config.limit}, seed={eval_config.seed}, batch_size={eval_config.batch_size})")
 
+        # Determine if model requires native mamba_ssm backend
+        is_mamba = "mamba" in model_name.lower() and not model_name.endswith("-hf")
+        eval_model_type = "mamba_ssm" if is_mamba else "hf"
+
         try:
             results = simple_evaluate(
-                model="hf",
+                model=eval_model_type,
                 model_args=f"pretrained={model_name}",
                 tasks=tasks_to_run,
                 limit=eval_config.limit,

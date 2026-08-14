@@ -14,17 +14,21 @@ def main():
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    subparsers.add_parser("download-data", help="Download and cache the dataset")
-    
-    parser_train = subparsers.add_parser("train", help="Run training or plotting")
+    parser_train = subparsers.add_parser("train", help="Run training, plotting, dataset downloading, or zero-shot evaluation")
+    parser_train.add_argument("--download-data", action="store_true", help="Download and cache the dataset for training")
     parser_train.add_argument("--plot", action="store_true", help="Plot training metrics")
     parser_train.add_argument("--shared", action="store_true", help="Plot shared training metrics for HOFA and MHA")
     parser_train.add_argument("--70m", dest="plot_70m", action="store_true", help="Plot shared training metrics for all 70M ablations")
+    parser_train.add_argument("--eval", action="store_true", help="Run zero-shot reasoning evaluation on the active trained model checkpoint")
 
     parser_eval = subparsers.add_parser("eval", help="Run zero-shot reasoning benchmark evaluations")
     parser_eval.add_argument("--full", action="store_true", help="Evaluate pretrained baseline models from Hugging Face")
+    parser_eval.add_argument("--shared", action="store_true", help="Evaluate both HOFA and MHA variants together (e.g. 125M_HOFA & 125M_MHA)")
+    parser_eval.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="125M", help="Model scale to evaluate (default: 125M)")
     parser_eval.add_argument("--simple", action="store_true", help="Only run the HellaSwag benchmark instead of the full suite")
-
+    parser_eval.add_argument("--limit", type=int, default=None, help="Sample evaluation limit per task (default: None for full evaluation, specify e.g. 1000 for quick testing)")
+    parser_eval.add_argument("--force", action="store_true", help="Force rerun evaluation skipping cache")
+    
     parser_infer = subparsers.add_parser("infer", help="Run interactive generation or validation")
     parser_infer.add_argument("--debug", action="store_true", help="Print debug information (gate bias, etc.)")
     parser_infer.add_argument("--train", action="store_true", help="Run inference using the training class instead of the inference class")
@@ -50,14 +54,23 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "download-data":
-        from training.download_fineweb import download_and_tokenize
-        download_and_tokenize(config)
-        import os
-        print("\n[INFO] Data download completed successfully! Exiting immediately to prevent HuggingFace teardown bugs.")
-        os._exit(0)
-    elif args.command == "train":
-        if args.plot:
+    if args.command == "train":
+        if args.download_data:
+            from training.download_fineweb import download_and_tokenize
+            download_and_tokenize(config)
+            import os
+            print("\n[INFO] Data download completed successfully! Exiting immediately to prevent HuggingFace teardown bugs.")
+            os._exit(0)
+        elif args.eval:
+            from benchmarks.benchmarks_configs import EvalExperimentConfig
+            from benchmarks.benchmark_zeroshot import evaluate_zeroshot
+            eval_cfg = EvalExperimentConfig()
+            if args.shared:
+                eval_configs = [make_125M_HOFA(), make_125M_MHA()]
+                evaluate_zeroshot(eval_configs, eval_cfg)
+            else:
+                evaluate_zeroshot(config, eval_cfg, True)
+        elif args.plot:
             from training.plot_training import plot_training_metrics
             if args.plot_70m:
                 plot_training_metrics([
@@ -73,12 +86,31 @@ def main():
             train(config)
     elif args.command == "eval":
         from benchmarks.benchmarks_configs import EvalExperimentConfig
+        sample_limit = None if args.limit is None or args.limit <= 0 else args.limit
+        eval_cfg = EvalExperimentConfig(limit=sample_limit, force_rerun=args.force)
+
         if args.full:
             from benchmarks.benchmark_zeroshot import evaluate_pretrained_zeroshot
-            evaluate_pretrained_zeroshot(EvalExperimentConfig(), is_simple=args.simple)
+            evaluate_pretrained_zeroshot(eval_cfg, is_simple=args.simple, scale=args.scale)
+        elif args.shared:
+            from benchmarks.benchmark_zeroshot import evaluate_zeroshot
+            if args.scale == "70M":
+                eval_configs = [make_70M_HOFA(), make_70M_MHA()]
+            elif args.scale == "350M":
+                eval_configs = [make_350M_HOFA(), make_350M_MHA()]
+            else:
+                eval_configs = [make_125M_HOFA(), make_125M_MHA()]
+            evaluate_zeroshot(eval_configs, eval_cfg, is_simple=args.simple)
         else:
             from benchmarks.benchmark_zeroshot import evaluate_zeroshot
-            evaluate_zeroshot(config, EvalExperimentConfig(), is_simple=args.simple)
+            eval_config = config
+            if args.scale == "70M":
+                eval_config = make_70M_HOFA()
+            elif args.scale == "125M":
+                eval_config = make_125M_HOFA()
+            elif args.scale == "350M":
+                eval_config = make_350M_HOFA()
+            evaluate_zeroshot(eval_config, eval_cfg, is_simple=args.simple)
     elif args.command == "infer":
         from src.config import InferenceConfig
         import src.inference
