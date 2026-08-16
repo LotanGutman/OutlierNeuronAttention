@@ -6,6 +6,8 @@ python -m pip install --upgrade pip setuptools wheel ninja packaging
 
 echo "[INFO] Installing PyTorch 2.6.0 + CUDA 12.4..."
 python -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+# note: in some systems, we may need to install one version higher and than downgrade for some reason. Uncomment the following line and comment the one above, and after full instalation, rerun the torch 2.6.0 instalation.
+# python -m pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
 
 echo "[INFO] Removing any stray/mismatched causal-conv1d or mamba-ssm..."
 python -m pip uninstall -y causal-conv1d mamba-ssm || true

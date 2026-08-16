@@ -1,7 +1,7 @@
 from training.training_config import (
     make_70M_MHA, make_70M_HOFA, make_70M_HOFA_flat32, 
     make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend, 
-    make_125M_HOFA, make_125M_MHA, make_350M_HOFA
+    make_125M_HOFA, make_125M_MHA, make_350M_HOFA, make_350M_MHA
 )
 
 

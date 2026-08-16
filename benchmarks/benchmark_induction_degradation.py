@@ -106,16 +106,16 @@ def fit_theory(N_vals, acc_vals, r=8, N_range=None, measured_shift=None):
     acc_fit = acc_arr[mask]
     
     if len(N_fit) < 2:
-        print("Not enough valid data points (acc >= 5%) to fit theoretical curve.")
+        print("Not enough valid data points (acc >= 0%) to fit theoretical curve.")
         return None, None, None, None, None, None
         
     def phi(x):
         return 0.5 * (1.0 + erf(x / np.sqrt(2.0)))
 
-    # Pure Section 3.11 theoretical model: P = 100 * Phi((mu - b_n) / sigma)
+    # Pure Section 2.3 theoretical model: P = 100 * Phi((mu - b_n) / sigma)
     def model_fn(N, gamma, sigma):
         c = 1.0 / 32.0  # Fixed theoretical capacity bound c = 1/d_h
-        n = np.maximum(np.e, c * N - 1.0)
+        n = np.maximum(np.e, c * N - r)
         log_n = np.log(n)
         b_n = np.sqrt(2.0 * log_n) - (np.log(log_n) + np.log(4.0 * np.pi)) / (2.0 * np.sqrt(2.0 * log_n))
         mu = np.sqrt(gamma * r / (N - r))
