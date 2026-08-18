@@ -51,23 +51,36 @@ def plot_unified_trendline():
             results[name].append(final_acc)
 
     os.makedirs("data/plots/induction", exist_ok=True)
-    plt.figure(figsize=(10, 6))
+    
+    # Set publication rcParams matching LaTeX scaling
+    plt.rcParams.update({
+        'font.family': 'serif',
+        'font.size': 13,
+        'axes.titlesize': 14,
+        'axes.titleweight': 'bold',
+        'axes.labelsize': 13,
+        'xtick.labelsize': 11,
+        'ytick.labelsize': 11,
+        'legend.fontsize': 9.5,
+        'figure.autolayout': True
+    })
+    
+    fig, ax = plt.subplots(figsize=(5.5, 4.2))
     
     for name, accuracies in results.items():
-        # Plotting correctly left to right (64 to 1024)
-        plt.plot(seq_lengths[::-1], accuracies[::-1], label=name, marker='o', markersize=6, linewidth=2)
+        ax.plot(seq_lengths[::-1], accuracies[::-1], label=name, marker='o', markersize=5, linewidth=2)
     
-    plt.title("Sequence Length Scaling Trendline (Induction Head)")
-    plt.xlabel("Sequence Length")
-    plt.ylabel("Final Max Accuracy (%)")
+    ax.set_title("Sequence Length Scaling Trendline", pad=10)
+    ax.set_xlabel("Sequence Length")
+    ax.set_ylabel("Final Max Accuracy (%)")
     
-    # Format x-axis nicely
-    plt.xscale('log', base=2)
-    plt.xticks(seq_lengths[::-1], seq_lengths[::-1])
+    ax.set_xscale('log', base=2)
+    ax.set_xticks(seq_lengths[::-1])
+    ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     
-    plt.ylim(-5, 105)
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.grid(True, alpha=0.3)
+    ax.set_ylim(-5, 105)
+    ax.legend(loc='lower left', frameon=True, framealpha=0.9, prop={'size': 8.5})
+    ax.grid(True, alpha=0.3)
     
     plot_path = "data/plots/induction/unified_seqlen_trendline.pdf"
     plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)
@@ -96,16 +109,28 @@ def plot_feature_norm_disparity():
     hofa16_imp = get_feature_importance(hofa16_path)
 
     # 2. Plotting
-    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=True)
+    plt.rcParams.update({
+        'font.family': 'serif',
+        'font.size': 13,
+        'axes.titlesize': 14,
+        'axes.titleweight': 'bold',
+        'axes.labelsize': 13,
+        'xtick.labelsize': 11,
+        'ytick.labelsize': 11,
+        'legend.fontsize': 10
+    })
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2), sharey=True)
     dims = np.arange(32)
     
     def plot_step(ax, data, color, title, r_val=None):
         ax.fill_between(dims, data, step="mid", color=color, alpha=0.3)
         ax.plot(dims, data, drawstyle="steps-mid", color=color, linewidth=2.5)
-        ax.set_title(title, fontweight='bold', pad=10)
-        ax.set_xlabel("Feature Dimension Index", fontsize=11)
+        ax.set_title(title, pad=10)
+        ax.set_xlabel("Feature Dimension Index")
         ax.set_xlim(0, 31)
+        ax.set_ylim(bottom=0.0)
+        ax.grid(True, alpha=0.3)
         if r_val:
             ax.axvline(x=r_val - 0.5, color='red', linestyle='--', linewidth=2, label=f'Hardware Bound (r={r_val})')
             ax.legend(loc='upper right', frameon=True)
@@ -114,7 +139,7 @@ def plot_feature_norm_disparity():
     plot_step(axes[1], hofa8_imp, '#dd8452', "HOFA (r=8)", r_val=8)
     plot_step(axes[2], hofa16_imp, '#55a868', "HOFA (r=16)", r_val=16)
     
-    axes[0].set_ylabel("Product Norm ($||W_Q||_2 \\times ||W_K||_2$)", fontsize=11)
+    axes[0].set_ylabel("Product Norm ($||W_Q||_2 \\times ||W_K||_2$)")
     
     os.makedirs("data/plots/routing", exist_ok=True)
     plt.tight_layout()

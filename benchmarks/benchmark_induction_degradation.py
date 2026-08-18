@@ -201,8 +201,20 @@ def plot_induction_degradation(config=None):
     # Save to data/plots/induction/
     output_dir = "data/plots/induction"
     os.makedirs(output_dir, exist_ok=True)
-    plt.rcParams.update({'font.size': 12, 'font.family': 'serif'})
-    plt.figure(figsize=(10, 6))
+    
+    plt.rcParams.update({
+        'font.family': 'serif',
+        'font.size': 13,
+        'axes.titlesize': 14,
+        'axes.titleweight': 'bold',
+        'axes.labelsize': 13,
+        'xtick.labelsize': 11,
+        'ytick.labelsize': 11,
+        'legend.fontsize': 10,
+        'figure.autolayout': True
+    })
+    
+    fig, ax = plt.subplots(figsize=(5.5, 4.2))
     
     has_data = False
     in_frame_ticks = set()
@@ -220,7 +232,7 @@ def plot_induction_degradation(config=None):
                 in_frame_ticks.add(int(s))
             
             # Plot empirical data
-            plt.scatter(N_vals, acc_vals, s=70, facecolor='tab:blue', edgecolor='white', linewidth=1.2, zorder=3, label=f"Empirical {name}")
+            ax.scatter(N_vals, acc_vals, s=70, facecolor='tab:blue', edgecolor='white', linewidth=1.2, zorder=3, label=f"Empirical {name}")
             has_data = True
             
             # Fit theory curve over full sequence length range (filtering acc < 5% inside fit_theory)
@@ -228,21 +240,21 @@ def plot_induction_degradation(config=None):
             x_range = (min(N_vals), max(N_vals))
             gamma_fit, c_fit, r2, mae, N_dense, acc_dense = fit_theory(N_vals, acc_vals, r=r_target, N_range=x_range, measured_shift=measured_shift)
             if mae is not None:
-                plt.plot(N_dense, acc_dense, '--', color='tab:red', linewidth=2, zorder=2, label=r"Theory ($c=1/d_h$)")
+                ax.plot(N_dense, acc_dense, '--', color='tab:red', linewidth=2, zorder=2, label="Theory")
             
     if not has_data:
         print("No degradation checkpoints found to plot.")
         plt.close()
         return
 
-    plt.title("Context Length Degradation (HOFA r=8)", fontsize=13, pad=12)
-    plt.xlabel("Sequence Length (N)", fontsize=11)
-    plt.ylabel("Accuracy (%)", fontsize=11)
+    ax.set_title("Context Length Degradation (HOFA r=8)", pad=10)
+    ax.set_xlabel("Sequence Length (N)")
+    ax.set_ylabel("Accuracy (%)")
     
-    plt.xlim(left=768)
+    ax.set_xlim(left=768)
 
-    plt.legend(loc='best', frameon=True)
-    plt.grid(True, alpha=0.3)
+    ax.legend(loc='best', frameon=True)
+    ax.grid(True, alpha=0.3)
     
     plot_path = os.path.join(output_dir, "r8_context_degradation.pdf")
     plt.savefig(plot_path, bbox_inches='tight', format='pdf', dpi=300)

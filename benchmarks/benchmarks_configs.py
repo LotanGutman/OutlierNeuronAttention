@@ -80,7 +80,16 @@ class InductionDegradationExperimentConfig(InductionExperimentConfig):
     batch_size: int = 32
     vocab_size: int = 8192
     seq_lengths: list = field(
-        default_factory=lambda: [920, 910, 896, 892, 880, 864, 832, 768, 640]
+        default_factory=lambda: [
+            # Trail past cliff (P~0)
+            940, 930, 920, 
+            
+            # Transition zone
+            912, 904, 896, 892, 888, 884, 880, 872, 864, 856, 
+            
+            # Plateau pre cliff (P=1)
+            848, 840, 832, 800, 768
+        ]
     )
     models_to_test: list = field(
         default_factory=lambda: [
