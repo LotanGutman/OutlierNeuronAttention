@@ -5,14 +5,13 @@ import math
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from training.training_config import make_125M_HOFA, make_125M_MHA
+from training.training_config import make_125M_HOFA, make_125M_MHA, make_350M_HOFA, make_350M_MHA
 from benchmarks.benchmarks_configs import DistanceExperimentConfig
 from training.data_utils import FastTokenLoader
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
 from src.modules.checkpointing import load_checkpoint
 import src.HybridOutlierFactorizedAttentionTrain as HOFA_Train
-# pyrefly: ignore [missing-import]
-from benchmarks.plottin.plot_distance import run_plot_distance
+from benchmarks.plotting.plot_distance import run_plot_distance
 
 # Global storage for hooked variables
 captured_vars = {}
@@ -77,9 +76,13 @@ def hooked_hofa_forward(self, x):
 def compute_distances(model_name: str, config: DistanceExperimentConfig):
     # Determine the model config factory
     if model_name == "125M_MHA":
-        model_config_wrap = make_125M_mha()
+        model_config_wrap = make_125M_MHA()
     elif model_name == "125M_HOFA":
-        model_config_wrap = make_125M_hofa()
+        model_config_wrap = make_125M_HOFA()
+    elif model_name == "350M_MHA":
+        model_config_wrap = make_350M_MHA()
+    elif model_name == "350M_HOFA":
+        model_config_wrap = make_350M_HOFA()
     else:
         raise ValueError(f"Unknown model: {model_name}")
         

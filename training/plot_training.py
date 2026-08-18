@@ -210,10 +210,22 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
     # ------------------------------------------------------------------
     # SHARED PLOT FOR PAPER (If multiple models provided)
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # SHARED PLOT FOR PAPER (If multiple models provided)
+    # ------------------------------------------------------------------
     if len(all_data) > 1:
         print("\nGenerating shared multi-model plot...")
-        # Use academic paper theme matching profiling scripts
-        plt.rcParams.update({'font.size': 12, 'font.family': 'serif'})
+        # Use academic paper theme matching publication rcParams
+        plt.rcParams.update({
+            'font.family': 'serif',
+            'font.size': 13,
+            'axes.titlesize': 14,
+            'axes.titleweight': 'bold',
+            'axes.labelsize': 13,
+            'xtick.labelsize': 11,
+            'ytick.labelsize': 11,
+            'legend.fontsize': 11
+        })
         
         colors = sns.color_palette("tab10", n_colors=len(all_data))
         
@@ -252,18 +264,16 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
                     min_ppl = min(min_ppl, min(d["val_ppl"]))
 
         def _plot_shared(metric, x_axis, is_log, is_zoomed=False):
-            figsize = (12.5, 5) if is_zoomed else (8, 6)
+            figsize = (12.5, 5.0)
             plt.figure(figsize=figsize)
             
             for i, (name, data) in enumerate(all_data.items()):
                 color = colors[i]
                 
                 if metric == "loss":
-                    x_data_train = data["tokens"] if x_axis == "tokens" else data["flops_x"]
-                    plt.plot(x_data_train, data["losses"], color=color, alpha=0.2, linewidth=0.8)
                     if data["has_val"]:
                         x_data_val = data["val_tokens"] if x_axis == "tokens" else data["val_flops_x"]
-                        plt.plot(x_data_val, data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=2.5)
+                        plt.plot(x_data_val, data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=3.0)
                 elif metric == "ppl":
                     if data["has_val"]:
                         x_data_val = data["val_tokens"] if x_axis == "tokens" else data["val_flops_x"]
@@ -271,21 +281,21 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
                             window = min(5, len(data["val_ppl"]))
                             smoothed_ppl = moving_average(data["val_ppl"], window=window)
                             if smoothed_ppl is not None:
-                                plt.plot(x_data_val[window-1:], smoothed_ppl, color=color, label=name, linewidth=2.5)
+                                plt.plot(x_data_val[window-1:], smoothed_ppl, color=color, label=name, linewidth=3.0)
                             else:
-                                plt.plot(x_data_val, data["val_ppl"], color=color, label=name, linewidth=2.5)
+                                plt.plot(x_data_val, data["val_ppl"], color=color, label=name, linewidth=3.0)
                         else:
-                            plt.plot(x_data_val, data["val_ppl"], color=color, label=name, marker='o', markersize=4, linewidth=1.5)
+                            plt.plot(x_data_val, data["val_ppl"], color=color, label=name, marker='o', markersize=4, linewidth=3.0)
 
             title_metric = "Validation & Train Loss" if metric == "loss" else "Validation Perplexity"
             title_x = "Tokens" if x_axis == "tokens" else "FLOPs"
-            plt.title(f"{title_metric} vs. {title_x}", pad=10)
+            plt.title(f"{title_metric} vs. {title_x}", pad=10, fontsize=15, fontweight='bold')
             
-            plt.xlabel("Processed Tokens" if x_axis == "tokens" else "Total FLOPs", fontsize=11)
-            plt.ylabel("Cross Entropy Loss" if metric == "loss" else "Perplexity", fontsize=11)
-            plt.grid(True, linestyle=':', alpha=0.6)
+            plt.xlabel("Processed Tokens" if x_axis == "tokens" else "Total FLOPs")
+            plt.ylabel("Cross Entropy Loss" if metric == "loss" else "Perplexity")
+            plt.grid(True, linestyle=':', alpha=0.4)
             
-            plt.legend(fontsize=12)
+            plt.legend(frameon=True, framealpha=0.9, fontsize=12)
             
             if is_log:
                 plt.xscale('log')
@@ -350,33 +360,29 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
                         _plot_shared(metric, x_axis, is_log, is_zoomed=True)
 
         # Generate an extra 1x2 grid specifically for Loss vs FLOPs (Linear | Log)
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5.0), sharey=True)
         for i, (name, data) in enumerate(all_data.items()):
             color = colors[i]
-            # Left side (Linear)
-            axes[0].plot(data["flops_x"], data["losses"], color=color, alpha=0.2, linewidth=0.8)
             if data["has_val"]:
+                # Left side (Linear)
                 axes[0].plot(data["val_flops_x"], data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=2.5)
-            
-            # Right side (Log)
-            axes[1].plot(data["flops_x"], data["losses"], color=color, alpha=0.2, linewidth=0.8)
-            if data["has_val"]:
+                # Right side (Log)
                 axes[1].plot(data["val_flops_x"], data["val_loss"], color=color, label=name, marker='o', markersize=4, linewidth=2.5)
 
         for ax, is_log in zip(axes, [False, True]):
             title_suffix = "(Log Scale)" if is_log else "(Linear Scale)"
             ax.set_title(f"Validation & Train Loss vs. FLOPs\n{title_suffix}", pad=10)
-            ax.set_xlabel("Total FLOPs", fontsize=11)
+            ax.set_xlabel("Total FLOPs")
             if not is_log:
-                ax.set_ylabel("Cross Entropy Loss", fontsize=11)
-            ax.grid(True, linestyle=':', alpha=0.6)
+                ax.set_ylabel("Cross Entropy Loss")
+            ax.grid(True, linestyle=':', alpha=0.4)
             if is_log:
                 ax.set_xscale('log')
                 ax.set_xlim(left=min_flop_visible)
             ax.set_ylim(top=8.0)
             
         handles, labels = axes[1].get_legend_handles_labels()
-        fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=len(all_data), frameon=False, fontsize=12)
+        fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=len(all_data), frameon=False)
         plt.tight_layout()
         combined_pdf_path = os.path.join(shared_dir, f"{combined_name}_loss_vs_flops_combined.pdf")
         plt.savefig(combined_pdf_path, bbox_inches='tight', format='pdf')

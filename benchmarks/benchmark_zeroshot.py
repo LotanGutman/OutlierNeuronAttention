@@ -241,13 +241,11 @@ PRETRAINED_BASELINE_MODELS = {
     "125M": [
         "gpt2",
         "EleutherAI/pythia-160m",
-        "HuggingFaceTB/SmolLM-135M",
         "state-spaces/mamba-130m",
     ],
     "350M": [
         "facebook/opt-350m",
         "EleutherAI/pythia-410m",
-        "HuggingFaceTB/SmolLM-360M",
         "state-spaces/mamba-370m",
     ],
 }

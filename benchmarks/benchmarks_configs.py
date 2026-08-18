@@ -81,14 +81,17 @@ class InductionDegradationExperimentConfig(InductionExperimentConfig):
     vocab_size: int = 8192
     seq_lengths: list = field(
         default_factory=lambda: [
+            # possibly more?
+            1024, 980, 
+
             # Trail past cliff (P~0)
-            940, 930, 920, 
+            924, 920, 
             
             # Transition zone
             912, 904, 896, 892, 888, 884, 880, 872, 864, 856, 
             
             # Plateau pre cliff (P=1)
-            848, 840, 832, 800, 768
+            848, 840, 832, 800, 768, 640
         ]
     )
     models_to_test: list = field(
@@ -178,8 +181,8 @@ class DistanceExperimentConfig:
     seq_len: int = 1024
     batch_size: int = 8
     models_to_test: tuple[str, ...] = (
-        "125M_MHA",
-        "125M_HOFA"
+        "350M_MHA",
+        "350M_HOFA"
     )
     dataset_name: str = "HuggingFaceFW/fineweb-edu"
     dataset_config: str = "sample-10BT"

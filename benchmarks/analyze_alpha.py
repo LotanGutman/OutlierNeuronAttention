@@ -74,25 +74,43 @@ def run_alpha_analysis(config: LanguageModelingExperimentConfig):
     plot_data = [np.concatenate(gates) for gates in layer_gates]
     
     # Plot
-    plt.figure(figsize=(12, 6))
+    plt.rcParams.update({
+        'font.family': 'serif',
+        'font.size': 13,
+        'axes.titlesize': 14,
+        'axes.titleweight': 'bold',
+        'axes.labelsize': 13,
+        'xtick.labelsize': 10,
+        'ytick.labelsize': 11
+    })
+
+    fig_width = max(8.5, min(14.0, num_layers * 0.45))
+    plt.figure(figsize=(fig_width, 4.5))
     parts = plt.violinplot(plot_data, positions=range(num_layers), showmeans=True, showextrema=True)
     
     for pc in parts['bodies']:
-        pc.set_facecolor('skyblue')
-        pc.set_edgecolor('black')
-        pc.set_alpha(0.7)
+        pc.set_facecolor('#4c72b0')
+        pc.set_edgecolor('#1f4e79')
+        pc.set_alpha(0.65)
         
-    parts['cmeans'].set_color('red')
+    parts['cmeans'].set_color('#d62728')
+    parts['cmeans'].set_linewidth(1.8)
+    parts['cmins'].set_color('#1f4e79')
+    parts['cmaxes'].set_color('#1f4e79')
+    parts['cbars'].set_color('#1f4e79')
     
-    plt.title(f"Mixing Gate $\\alpha_h$ Distribution per Layer ({config.plot_name})")
-    plt.xlabel("Layer")
-    plt.ylabel("Gate Value ($\sigma$)")
-    plt.xticks(range(num_layers), [f"L{i}" for i in range(num_layers)])
-    plt.grid(axis='y', alpha=0.75)
+    plt.title(f"Mixing Gate $\\alpha_h$ Distribution per Layer ({config.plot_name})", pad=10)
+    plt.xlabel("Layer Index")
+    plt.ylabel("Mixing Gate Value ($\\alpha$)")
+    plt.xticks(range(num_layers), [f"L{i}" for i in range(num_layers)], rotation=0 if num_layers <= 12 else 45)
+    plt.ylim(-0.05, 1.05)
+    plt.grid(axis='y', linestyle=':', alpha=0.5)
     
     out_dir = "data/plots/alpha_analysis"
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"{config.model_name}_alpha_violin.pdf")
     
-    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=300, bbox_inches='tight', format='pdf')
+    plt.close()
     print(f"\nViolin plot saved successfully to {out_path}")

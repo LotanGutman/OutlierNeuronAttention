@@ -182,13 +182,13 @@ python main.py train --eval --shared   # Run zero-shot evaluation on both traine
 
 # 7. Zero-Shot Reasoning Evaluation
 python main.py eval --shared --scale 125M   # Run 125M HOFA vs 125M MHA zero-shot reasoning benchmarks (Table 1)
-python main.py eval --full --scale 125M     # Run zero-shot benchmarks on 125M pretrained baseline models (GPT-2, Pythia, SmolLM, Mamba)
-python main.py eval --full --scale 350M     # Run zero-shot benchmarks on 350M pretrained baseline models (OPT, Pythia, SmolLM, Mamba)
+python main.py eval --full --scale 125M     # Run zero-shot benchmarks on 125M pretrained baseline models (GPT-2, Pythia, Mamba)
+python main.py eval --full --scale 350M     # Run zero-shot benchmarks on 350M pretrained baseline models (OPT, Pythia, Mamba)
 
 # 8. Synthetic Benchmarks
 python main.py benchmark --induction              # Run Induction Head sequence length scaling
 python main.py benchmark --induction --plot       # Generate unified trendline and feature norm disparity plots
-python main.py benchmark --induction-degradation  # Run extended context length degradation sweep (N=640..920, r=8)
+python main.py benchmark --induction-degradation  # Run extended context length degradation sweep (N=640..1024, r=8)
 python main.py benchmark --copy                   # Run sequential copying benchmark
 python main.py benchmark --keff                   # Run Probability Mass Decomposition (K_eff) scaling benchmark on HuggingFace LLMs
 python main.py benchmark --keff --plot            # Generate the 2x4 Attention Mass Heatmaps

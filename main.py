@@ -78,7 +78,7 @@ def main():
                     make_70M_HOFA_depth_axis(), make_70M_HOFA_width_axis(), make_70M_HOFA_fixed_blend()
                 ], subdirectory="70M")
             elif args.shared:
-                plot_training_metrics([make_125M_HOFA(), make_125M_MHA()], subdirectory="125M")
+                plot_training_metrics([make_350M_HOFA(), make_350M_MHA()], subdirectory="350M")
             else:
                 plot_training_metrics(config)
         else:
