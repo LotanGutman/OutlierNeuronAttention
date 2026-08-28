@@ -22,8 +22,9 @@ def run_induction_degradation_experiment(config=None):
     models_to_test = config.models_to_test
     seq_lengths = config.seq_lengths
     
+    target_r = models_to_test[0][2] if models_to_test and models_to_test[0][2] is not None else config.model_config.r
     print(f"\n========================================")
-    print(f" Starting r={config.model_config.r} Context Length Degradation Experiment")
+    print(f" Starting r={target_r} Context Length Degradation Experiment")
     print(f"========================================")
     
     for seq_len in seq_lengths:
@@ -158,8 +159,8 @@ def fit_theory(N_vals, acc_vals, r=8, N_range=None, measured_shift=None):
             print(f" Measured Outlier Signal Shift (μ_weights) per sequence length:")
             for s_len, s_val in sorted(measured_shift.items()):
                 print(f"   - N={s_len:<5d}: μ_weights = {s_val:.4f}")
-        elif measured_shift is not None:
-            print(f" Measured Outlier Signal Shift (μ_weights): {measured_shift:.4f}")
+        elif measured_shift is not None and isinstance(measured_shift, (int, float)):
+            print(f" Measured Outlier Signal Shift (μ_weights): {float(measured_shift):.4f}")
         print(f" Theoretical Distractor Ratio (c): {c_fit:.6f} (Fixed = 1/d_h)")
         print(f" Fitted Phase Transition Sharpness (σ): {sigma_fit:.6f}")
         print(f" Mean Absolute Error (MAE): {mae:.3f}%")

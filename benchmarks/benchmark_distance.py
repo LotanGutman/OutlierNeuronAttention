@@ -152,6 +152,7 @@ def compute_distances(model_name: str, config: DistanceExperimentConfig):
             mask_le = (j_idx <= i_idx)
             dist_mat = dist_mat * mask_le
             
+            is_hofa = "HOFA" in model_name
             for layer_idx in range(num_layers):
                 # exact/outlier distance calculation
                 p_ij = captured_vars['attn_weights'][layer_idx] # (B, H, N, N)
@@ -168,8 +169,11 @@ def compute_distances(model_name: str, config: DistanceExperimentConfig):
                 avg_dist_outlier = dist_outlier.mean(dim=(0, 2))
                 total_outlier_dist[layer_idx] += avg_dist_outlier
                 
+                # Free outlier weights immediately
+                captured_vars['attn_weights'][layer_idx] = None
+                
                 # GLA inlier calculation (if it's a HOFA model with GLA)
-                if model_name == "125M_HOFA" and model_cfg.r[layer_idx] < model_cfg.d_head:
+                if is_hofa and model_cfg.r[layer_idx] < model_cfg.d_head:
                     Q = captured_vars['Q'][layer_idx] # (B, H, N, d_head)
                     K = captured_vars['K'][layer_idx]
                     gate_logits = captured_vars['gate_logits'][layer_idx].squeeze(-1) # (B, H, N)
@@ -216,16 +220,22 @@ def compute_distances(model_name: str, config: DistanceExperimentConfig):
                     avg_dist_inlier = dist_inlier.mean(dim=(0, 2))
                     total_inlier_dist[layer_idx] += avg_dist_inlier
                     
+                    # Free hooked layer tensors immediately
+                    captured_vars['Q'][layer_idx] = None
+                    captured_vars['K'][layer_idx] = None
+                    captured_vars['gate_logits'][layer_idx] = None
+                    
+            captured_vars.clear()
             batches_processed += 1
             
     # Average over all batches
     total_outlier_dist /= batches_processed
-    if model_name == "125M_HOFA":
+    if is_hofa:
         total_inlier_dist /= batches_processed
         
     return {
         "outlier": total_outlier_dist.cpu(), # (num_layers, num_heads)
-        "inlier": total_inlier_dist.cpu() if model_name == "125M_HOFA" else None
+        "inlier": total_inlier_dist.cpu() if is_hofa else None
     }
 
 def run_distance_experiment():
@@ -246,8 +256,11 @@ def run_distance_experiment():
             
     for m in config.models_to_test:
         if m in results:
-            print(f"Skipping {m} (already cached)")
-            continue
+            if "HOFA" in m and results[m].get("inlier") is None:
+                print(f"Re-evaluating {m} because cached inlier distance is None...")
+            else:
+                print(f"Skipping {m} (already cached)")
+                continue
             
         distances = compute_distances(m, config)
         if distances is not None:

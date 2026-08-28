@@ -32,6 +32,10 @@ def run_plot_distance():
         mha_key, hofa_key = mha_keys[0], hofa_keys[0]
         scale_name = mha_key.split('_')[0]
         
+    if results[hofa_key].get("inlier") is None:
+        print(f"Error: Cache for {hofa_key} is missing inlier distance data. Please re-run the benchmark.")
+        return
+
     mha_dist = results[mha_key]["outlier"].numpy() # (num_layers, num_heads)
     hofa_outlier_dist = results[hofa_key]["outlier"].numpy()
     hofa_inlier_dist = results[hofa_key]["inlier"].numpy()
@@ -109,11 +113,9 @@ def run_plot_distance():
     out_dir = "data/plots"
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"{scale_name}_effective_attention_distance.pdf")
-    fallback_path = os.path.join(out_dir, "effective_attention_distance.pdf")
     
     fig.savefig(out_path, format='pdf', dpi=300, bbox_inches='tight')
-    fig.savefig(fallback_path, format='pdf', dpi=300, bbox_inches='tight')
-    print(f"Saved plot to {out_path} and {fallback_path}")
+    print(f"Saved plot to {out_path}")
     plt.close(fig)
 
 if __name__ == "__main__":

@@ -20,29 +20,27 @@ from interrupt_util.interrupts import GracefulInterruptHandler
 
 def generate_induction_seqs(batch_size, seq_len, vocab_size, device):
     """
-    Generates a sequence for the Induction Head task.
-    A random pattern is placed at the start of the sequence, and then repeated 
-    at a random position in the second half. The model must predict the 
-    subsequent tokens of the pattern upon seeing its prefix in the second half.
+    Generates sequences for the Induction Head task: [A, B, ..., A, B]
+    A pattern of random tokens is placed at index 0 and repeated later in the sequence.
     """
     x = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
     y = torch.full((batch_size, seq_len), -100, dtype=torch.long, device=device)
     
+    max_len = min(128, max(2, seq_len // 4))
+    min_len = min(32, max_len)
+    
     for b in range(batch_size):
-        max_len = min(128, max(2, seq_len // 4))
-        pattern_len = torch.randint(min(32, max_len), max_len + 1, (1,)).item()
+        pattern_len = torch.randint(min_len, max_len + 1, (1,)).item() if max_len > min_len else max_len
         pattern = torch.randint(0, vocab_size, (pattern_len,), device=device)
         
-        # Place pattern at the start
+        # Place pattern at start
         x[b, :pattern_len] = pattern
         
-        # Place pattern at a random location in the second half
-        start_idx = torch.randint(seq_len // 2, seq_len - pattern_len, (1,)).item()
+        # Place repeat in second half
+        start_idx = torch.randint(seq_len // 2, seq_len - pattern_len + 1, (1,)).item()
         x[b, start_idx:start_idx+pattern_len] = pattern
         
-        # The targets are the next tokens of the pattern.
-        # e.g., if pattern is [A, B, C], and it starts at index i,
-        # predicting at i gives B, predicting at i+1 gives C.
+        # Set targets for the copied pattern
         y[b, start_idx:start_idx+pattern_len-1] = pattern[1:]
         
     return x, y
@@ -53,18 +51,16 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
     no_decay_params = []
     for name, param in model.named_parameters():
         if not param.requires_grad: continue
-        # The exact pathway Q/K projections remain unregularized (wd=0.0) 
-        # to allow infinite gamma scaling per theoretical requirement.
         if config.disable_weight_decay_for_attention and ('W_q' in name or 'W_k' in name):
             no_decay_params.append(param)
         else:
             decay_params.append(param)
             
     optim_groups = [
-        {'params': decay_params, 'weight_decay': config.weight_decay},  # Backbone gets regularized for stability
+        {'params': decay_params, 'weight_decay': config.weight_decay},
     ]
     if len(no_decay_params) > 0:
-        optim_groups.append({'params': no_decay_params, 'weight_decay': 0.0}) # Exact pathway stays pure
+        optim_groups.append({'params': no_decay_params, 'weight_decay': 0.0})
 
     optimizer = torch.optim.AdamW(optim_groups, lr=config.learning_rate, fused=True)
     device = config.device
@@ -109,11 +105,10 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
             model.eval()
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast):
-                    logits_valid, _ = model(x, targets=y, return_loss=False)
+                    logits_valid, _ = model(x, targets=y)
                 preds = logits_valid.argmax(dim=-1)
-                valid_mask = y[y != -100] # y is targets, valid_mask is the valid targets themselves
-                # Wait, the valid targets are returned, so we compare preds to valid targets
-                acc = (preds == valid_mask).float().mean().item() * 100
+                targets_valid = y[y != -100]
+                acc = (preds == targets_valid).float().mean().item() * 100.0
             model.train()
             
             bias_str = ""

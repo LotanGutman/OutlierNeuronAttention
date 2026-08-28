@@ -42,11 +42,14 @@ class InductionExperimentConfig:
             use_rope=True,
             mix_gate_bias_init=2.5,
             initializer_range=0.05,
-            scale_residual_proj=False
+            scale_residual_proj=False,
+            block_size=2048
         )
     )
     batch_size: int = 32
     seq_len: int = 1024
+    pattern_len: int = 8
+    positional_jitter: int = 64
     vocab_size: int = 8192
     train_steps: int = 25000
     learning_rate: float = 1e-3
@@ -82,7 +85,7 @@ class InductionDegradationExperimentConfig(InductionExperimentConfig):
     seq_lengths: list = field(
         default_factory=lambda: [
             # possibly more?
-            1024, 980, 
+            1200, 1000, 
 
             # Trail past cliff (P~0)
             924, 920, 
@@ -104,7 +107,7 @@ class InductionDegradationExperimentConfig(InductionExperimentConfig):
             d_model=128,
             num_heads=4, 
             num_layers=4, 
-            r=16,
+            r=8,
             use_rope=True,
             mix_gate_bias_init=2.5,
             initializer_range=0.05,
@@ -179,7 +182,7 @@ class KEffExperimentConfig:
 class DistanceExperimentConfig:
     num_sequences: int = 1000
     seq_len: int = 1024
-    batch_size: int = 8
+    batch_size: int = 1
     models_to_test: tuple[str, ...] = (
         "350M_MHA",
         "350M_HOFA"
