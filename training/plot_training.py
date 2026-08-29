@@ -293,9 +293,9 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
             
             plt.xlabel("Processed Tokens" if x_axis == "tokens" else "Total FLOPs")
             plt.ylabel("Cross Entropy Loss" if metric == "loss" else "Perplexity")
-            plt.grid(True, linestyle=':', alpha=0.4)
+            plt.grid(True, linestyle=':', alpha=0.3, color='#e0e0e0')
             
-            plt.legend(frameon=True, framealpha=0.9, fontsize=12)
+            plt.legend(frameon=True, framealpha=0.9, edgecolor='#d0d0d0', fontsize=11)
             
             if is_log:
                 plt.xscale('log')

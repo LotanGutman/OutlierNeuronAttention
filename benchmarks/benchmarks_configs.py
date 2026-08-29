@@ -84,10 +84,10 @@ class InductionDegradationExperimentConfig(InductionExperimentConfig):
     vocab_size: int = 8192
     seq_lengths: list = field(
         default_factory=lambda: [
-            # possibly more?
-            1200, 1000, 
+            # Trail past cliff
+            1200, 1000, 992, 984, 976, 968, 
 
-            # Trail past cliff (P~0)
+            # End of cliff
             924, 920, 
             
             # Transition zone

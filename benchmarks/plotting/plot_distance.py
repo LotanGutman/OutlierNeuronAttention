@@ -71,13 +71,13 @@ def run_plot_distance():
     label_out = f'HOFA Outlier (Mean: {hofa_outlier_mean_val:.1f} tok)'
     label_in = f'HOFA GLA Inlier (Mean: {hofa_inlier_mean_val:.1f} tok)'
     
-    ax.plot(layers, mha_avg, marker='o', linewidth=2.5, color='#1f77b4', label=label_mha)
-    ax.plot(layers, hofa_outlier_avg, marker='s', linewidth=2.5, color='#d62728', label=label_out)
-    ax.plot(layers, hofa_inlier_avg, marker='^', linewidth=2.5, linestyle='--', color='#2ca02c', label=label_in)
+    ax.plot(layers, mha_avg, marker='o', linewidth=2.0, color='#d62728', label=label_mha)
+    ax.plot(layers, hofa_outlier_avg, marker='s', linewidth=2.0, color='#1f77b4', label=label_out)
+    ax.plot(layers, hofa_inlier_avg, marker='^', linewidth=2.0, linestyle='--', color='#2ca02c', label=label_in)
     
     # Add inset axes for zooming in on the GLA line (0-10 range)
     axins = ax.inset_axes([0.22, 0.16, 0.56, 0.38])
-    axins.plot(layers, hofa_inlier_avg, marker='^', linewidth=2.5, linestyle='--', color='#2ca02c')
+    axins.plot(layers, hofa_inlier_avg, marker='^', linewidth=2.0, linestyle='--', color='#2ca02c')
     
     axins.set_xlim(layers.min(), layers.max())
     axins.set_ylim(-1, max(10, hofa_inlier_avg.max() * 1.2))
@@ -87,7 +87,7 @@ def run_plot_distance():
     axins.set_xticklabels([])
     axins.tick_params(axis='y', which='major', labelsize=10)
     axins.tick_params(axis='x', bottom=False)
-    axins.grid(True, linestyle=':', alpha=0.5)
+    axins.grid(True, linestyle=':', alpha=0.3, color='#e0e0e0')
     
     # Add gray lines showing where the zoom is coming from
     con1 = ConnectionPatch(xyA=(layers.min(), -1), xyB=(layers.min(), hofa_inlier_avg[0]), 

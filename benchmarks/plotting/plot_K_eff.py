@@ -19,6 +19,12 @@ MODEL_METADATA = {
 def plot_heatmap(results, max_r=128, normalize_y=False):
     fig, axes = plt.subplots(2, 4, figsize=(24, 10), sharey=not normalize_y)
     sns.set_theme(style="whitegrid")
+    plt.rcParams.update({
+        'font.family': 'serif',
+        'font.size': 11,
+        'axes.titlesize': 12,
+        'axes.labelsize': 11
+    })
     
     models = list(MODEL_METADATA.keys())
     
@@ -83,12 +89,12 @@ def plot_heatmap(results, max_r=128, normalize_y=False):
             else:
                 ax.set_ylabel("Routing Dimension Ratio ($r / d_{model}$)")
 
+    plt.tight_layout(rect=[0, 0, 0.90, 1])
     fig.subplots_adjust(right=0.90, hspace=0.2, wspace=0.2)
+    
     cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     cbar = fig.colorbar(mesh, cax=cbar_ax)
     cbar.set_label("Cumulative Attention Mass Fraction")
-
-    plt.tight_layout(rect=[0, 0, 0.90, 1])
     
     suffix = "normalized" if normalize_y else "absolute"
     out_path = f"data/plots/K_eff/heatmap_cumsum_{suffix}.pdf"

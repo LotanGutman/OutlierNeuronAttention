@@ -37,10 +37,10 @@ def plot_shared_profiling():
     d_cache_hyb_mb = [d_cache_hyb_mb[i] for i in filtered_idx]
 
     plt.rcParams.update({
-        'font.size': 12, 
+        'font.size': 11, 
         'font.family': 'serif',
-        'axes.titlesize': 14,
-        'axes.labelsize': 12
+        'axes.titlesize': 13,
+        'axes.labelsize': 11
     })
 
     def format_ticks_x(x, pos):
@@ -59,8 +59,8 @@ def plot_shared_profiling():
 
     fig, axs = plt.subplots(2, 3, figsize=(18, 11))
     
-    style_mha = {'marker': 'o', 'color': '#D55E00', 'linewidth': 2.5, 'markersize': 7}
-    style_hyb = {'marker': 's', 'color': '#0072B2', 'linewidth': 2.5, 'markersize': 7}
+    style_mha = {'marker': 'o', 'color': '#d62728', 'linewidth': 2.0, 'markersize': 6}
+    style_hyb = {'marker': 's', 'color': '#1f77b4', 'linewidth': 2.0, 'markersize': 6}
     
     # ==========================================
     # TOP ROW: DECODE (Throughput, KV Cache, Speedup)
@@ -82,16 +82,16 @@ def plot_shared_profiling():
     ax_dec_thru.yaxis.set_major_formatter(formatter_y)
     tick_lens = [l for l in d_valid_lens if l != 196608]
     ax_dec_thru.set_xticks(tick_lens)
-    ax_dec_thru.set_ylabel('Tokens Per Second')
+    ax_dec_thru.set_ylabel('Tokens / sec')
     ax_dec_thru.set_title('Decoding Throughput')
-    ax_dec_thru.grid(True, linestyle=':', alpha=0.6)
+    ax_dec_thru.grid(True, linestyle=':', alpha=0.3, color='#e0e0e0')
 
-    # Inset zoom for Decoding Throughput
-    ax_dec_thru_ins = ax_dec_thru.inset_axes([0.42, 0.48, 0.45, 0.45])
+    # Non-overlapping inset zoom for Decoding Throughput
+    ax_dec_thru_ins = ax_dec_thru.inset_axes([0.12, 0.45, 0.38, 0.38])
     ax_dec_thru_ins.patch.set_facecolor('white')
     ax_dec_thru_ins.patch.set_alpha(0.95)
     for spine in ax_dec_thru_ins.spines.values():
-        spine.set_linewidth(1.5)
+        spine.set_linewidth(1.2)
         
     ax_dec_thru_ins.plot(valid_mha_lens, valid_mha_times, **style_mha)
     ax_dec_thru_ins.plot(valid_hyb_lens, valid_hyb_times, **style_hyb)
@@ -148,7 +148,7 @@ def plot_shared_profiling():
     ax_dec_mem.set_xticks(tick_lens)
     ax_dec_mem.set_ylabel('KV Cache Size (GB)')
     ax_dec_mem.set_title('KV Cache Footprint')
-    ax_dec_mem.grid(True, linestyle=':', alpha=0.6)
+    ax_dec_mem.grid(True, linestyle=':', alpha=0.3, color='#e0e0e0')
 
     max_len = max(d_valid_lens)
     idx_max = d_valid_lens.index(max_len)
@@ -197,7 +197,7 @@ def plot_shared_profiling():
     ax_dec_spd.set_xticks(tick_speed_lens)
     ax_dec_spd.set_ylabel(rf'Speedup ($\times$ over MHA)')
     ax_dec_spd.set_title('Decoding Speedup over MHA')
-    ax_dec_spd.grid(True, linestyle=':', alpha=0.6)
+    ax_dec_spd.grid(True, linestyle=':', alpha=0.3, color='#e0e0e0')
 
     # ==========================================
     # BOTTOM ROW: PREFILL (Latency, FLOPs, Speedup)
@@ -222,7 +222,7 @@ def plot_shared_profiling():
     ax_pre_lat.set_xlabel('Context Length ($N$)')
     ax_pre_lat.set_ylabel('Forward Pass Latency [s]')
     ax_pre_lat.set_title('Prefill Latency')
-    ax_pre_lat.grid(True, which="both", linestyle=':', alpha=0.6)
+    ax_pre_lat.grid(True, which="both", linestyle=':', alpha=0.3, color='#e0e0e0')
 
     # Inset zoom
     ax_pre_lat_ins = ax_pre_lat.inset_axes([0.18, 0.48, 0.42, 0.42]) 
