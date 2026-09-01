@@ -85,7 +85,7 @@ class InductionDegradationExperimentConfig(InductionExperimentConfig):
     seq_lengths: list = field(
         default_factory=lambda: [
             # Trail past cliff
-            1200, 1000, 992, 984, 976, 968, 
+            1200, 1160, 1120, 1080, 1040, 1000, 992, 984, 976, 968, 
 
             # End of cliff
             924, 920, 

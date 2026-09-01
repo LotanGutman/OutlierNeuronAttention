@@ -87,7 +87,7 @@ def _fwd_kernel(
     q = tl.load(q_ptrs, mask=mask_q, other=0.0)
 
     if SPLIT_K == 1:
-        # Unmasked Phase
+        # Unmasked blocks below diagonal
         for start_n in range(0, start_m * BLOCK_M, BLOCK_N):
             start_n = tl.multiple_of(start_n, BLOCK_N)
             offs_n_curr = start_n + offs_n
@@ -116,7 +116,7 @@ def _fwd_kernel(
             acc += tl.dot(p, v, allow_tf32=True)
             m_i = m_ij
             
-        # Masked Phase (Diagonal Block)
+        # Masked diagonal block
         for start_n in range(start_m * BLOCK_M, (start_m + 1) * BLOCK_M, BLOCK_N):
             start_n = tl.multiple_of(start_n, BLOCK_N)
             offs_n_curr = start_n + offs_n
