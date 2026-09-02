@@ -180,24 +180,62 @@ def plot_induction_degradation(config=None):
     models_to_test = config.models_to_test
     seq_lengths = sorted(config.seq_lengths)
     
+    from src.modules.benchmark_utils import GenericBenchmarkLM
+    from benchmarks.benchmark_induction import evaluate_induction_accuracy
+
     results = {name: [] for name, _, _ in models_to_test}
     valid_seq_lens = {name: [] for name, _, _ in models_to_test}
+    
+    device = config.device
+    eval_samples = 500
+    eval_batch_size = 32
+    pattern_len = 32
+    
+    print("\nRunning held-out inference probe for plot generation...")
     
     for seq_len in seq_lengths:
         for name, attn_type, r_val in models_to_test:
             dir_name = f"induction_{name.replace(' ', '_').replace('(', '').replace(')', '').replace('=', '')}"
-            ckpt_path = f"data/induction_degradation_models/seqlen_{seq_len}/{dir_name}/checkpoint.pt"
+            ckpt_dir = f"data/induction_degradation_models/seqlen_{seq_len}/{dir_name}"
             
-            if os.path.exists(ckpt_path):
-                ckpt = torch.load(ckpt_path, map_location='cpu')
-                history = ckpt.get('metadata', {}).get('history', {})
-                accs = history.get('acc', [])
-                final_acc = max(accs) if len(accs) > 0 else 0.0
-            else:
-                final_acc = 0.0
+            final_model_path = f"{ckpt_dir}/final_model.pt"
+            ckpt_path = f"{ckpt_dir}/checkpoint.pt"
+            target_path = final_model_path if os.path.exists(final_model_path) else ckpt_path
+            
+            if not os.path.exists(target_path):
+                results[name].append(0.0)
+                valid_seq_lens[name].append(seq_len)
+                continue
                 
-            results[name].append(final_acc)
+            # Load model weights
+            ckpt = torch.load(target_path, map_location=device, weights_only=False)
+            sd = ckpt.get('model_state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
+
+            r_target = r_val if r_val is not None else config.model_config.r
+            config.model_config.r = r_target
+            
+            model = GenericBenchmarkLM(
+                vocab_size=config.vocab_size,
+                d_model=config.model_config.d_model,
+                attn_type=attn_type,
+                num_heads=config.model_config.num_heads,
+                num_layers=config.model_config.num_layers,
+                model_cfg=config.model_config
+            ).to(device)
+
+            model.load_state_dict(sd)
+            model.eval()
+
+            metrics = evaluate_induction_accuracy(
+                model, config, seq_len=seq_len, eval_samples=eval_samples,
+                eval_batch_size=eval_batch_size, device=device,
+                pattern_len=pattern_len, pin_to_end=True, seed=config.seed + 777
+            )
+            results[name].append(metrics['avg_token_acc'])
             valid_seq_lens[name].append(seq_len)
+
+            del model
+            torch.cuda.empty_cache()
 
     # Save to data/plots/induction/
     output_dir = "data/plots/induction"
@@ -252,7 +290,7 @@ def plot_induction_degradation(config=None):
     ax.set_xlabel("Sequence Length (N)")
     ax.set_ylabel("Accuracy (%)")
     
-    ax.set_xlim(left=768)
+    ax.set_xlim(left=620, right=1230)
 
     ax.legend(loc='best', frameon=True)
     ax.grid(True, alpha=0.3)

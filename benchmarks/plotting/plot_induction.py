@@ -7,48 +7,79 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 def plot_unified_trendline():
+    from benchmarks.benchmarks_configs import InductionExperimentConfig
+    from src.modules.benchmark_utils import GenericBenchmarkLM
+    from benchmarks.benchmark_induction import evaluate_induction_accuracy
+
+    config = InductionExperimentConfig()
+    device = config.device
     seq_lengths = [1024, 512, 256, 128, 64]
     
-    models_to_test = [
-        "MHA",
-        "HOFA (r=8)",
-        "HOFA (r=10)",
-        "HOFA (r=16)",
-        "Gated DeltaNet",
-        "GLA",
-        "Mamba"
-    ]
+    models_to_test = config.models_to_test
     
-    # name matching with directory mapping
-    dir_mapping = {
-        "MHA": "induction_MHA",
-        "HOFA (r=8)": "induction_HOFA_r8",
-        "HOFA (r=10)": "induction_HOFA_r10",
-        "HOFA (r=16)": "induction_HOFA_r16",
-        "Gated DeltaNet": "induction_Gated_DeltaNet",
-        "GLA": "induction_GLA",
-        "Mamba": "induction_Mamba"
-    }
-
-    results = {name: [] for name in models_to_test}
-
-    for seq_len in seq_lengths:
-        for name in models_to_test:
-            dir_name = dir_mapping[name]
-            ckpt_path = f"data/induction_models/seqlen_{seq_len}/{dir_name}/checkpoint.pt"
+    cache_dir = "data/experiments_cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, "regular_induction_trendline_cache.pt")
+    
+    cached_results = {}
+    if os.path.exists(cache_path):
+        try:
+            cached_results = torch.load(cache_path, weights_only=False)
+        except Exception:
+            cached_results = {}
             
-            if os.path.exists(ckpt_path):
-                ckpt = torch.load(ckpt_path, map_location='cpu')
-                history = ckpt.get('metadata', {}).get('history', {})
-                accs = history.get('acc', [])
-                if len(accs) > 0:
-                    final_acc = max(accs)
-                else:
-                    final_acc = 0.0
+    results = {name: [] for name, _, _ in models_to_test}
+    updated_cache = False
+    
+    print("\nEvaluating held-out inference accuracy for regular induction scaling trendline...")
+    
+    for seq_len in seq_lengths:
+        for name, attn_type, r_val in models_to_test:
+            cache_key = f"{seq_len}_{name}"
+            if cache_key in cached_results:
+                results[name].append(cached_results[cache_key])
+                continue
+                
+            dir_name = f"induction_{name.replace(' ', '_').replace('(', '').replace(')', '').replace('=', '')}"
+            ckpt_dir = f"data/induction_models/seqlen_{seq_len}/{dir_name}"
+            final_model_path = f"{ckpt_dir}/final_model.pt"
+            ckpt_path = f"{ckpt_dir}/checkpoint.pt"
+            target_path = final_model_path if os.path.exists(final_model_path) else ckpt_path
+            
+            if os.path.exists(target_path):
+                ckpt = torch.load(target_path, map_location=device, weights_only=False)
+                sd = ckpt.get('model_state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
+                
+                config.model_config.r = r_val if r_val is not None else 8
+                model = GenericBenchmarkLM(
+                    vocab_size=config.vocab_size,
+                    d_model=config.model_config.d_model,
+                    attn_type=attn_type,
+                    num_heads=config.model_config.num_heads,
+                    num_layers=config.model_config.num_layers,
+                    model_cfg=config.model_config
+                ).to(device)
+                
+                model.load_state_dict(sd)
+                model.eval()
+                
+                metrics = evaluate_induction_accuracy(
+                    model, config, seq_len=seq_len, eval_samples=500, eval_batch_size=32,
+                    device=device, pattern_len=None, pin_to_end=False, seed=config.seed + 777
+                )
+                final_acc = metrics['avg_token_acc']
+                del model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             else:
                 final_acc = 0.0
                 
             results[name].append(final_acc)
+            cached_results[cache_key] = final_acc
+            updated_cache = True
+            
+    if updated_cache:
+        torch.save(cached_results, cache_path)
 
     os.makedirs("data/plots/induction", exist_ok=True)
     
@@ -72,7 +103,7 @@ def plot_unified_trendline():
     
     ax.set_title("Sequence Length Scaling Trendline", pad=10)
     ax.set_xlabel("Sequence Length")
-    ax.set_ylabel("Final Max Accuracy (%)")
+    ax.set_ylabel("Accuracy (%)")
     
     ax.set_xscale('log', base=2)
     ax.set_xticks(seq_lengths[::-1])

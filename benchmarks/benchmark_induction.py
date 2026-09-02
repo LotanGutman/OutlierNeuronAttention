@@ -18,7 +18,7 @@ from benchmarks.benchmarks_configs import InductionExperimentConfig
 from src.modules.checkpointing import save_checkpoint, load_checkpoint
 from interrupt_util.interrupts import GracefulInterruptHandler
 
-def generate_induction_seqs(batch_size, seq_len, vocab_size, device):
+def generate_induction_seqs(batch_size, seq_len, vocab_size, device, pattern_len=None, pin_to_end=False):
     """
     Generates sequences for the Induction Head task: [A, B, ..., A, B]
     A pattern of random tokens is placed at index 0 and repeated later in the sequence.
@@ -26,24 +26,122 @@ def generate_induction_seqs(batch_size, seq_len, vocab_size, device):
     x = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
     y = torch.full((batch_size, seq_len), -100, dtype=torch.long, device=device)
     
-    max_len = min(128, max(2, seq_len // 4))
-    min_len = min(32, max_len)
+    if pattern_len is None:
+        max_len = min(128, max(2, seq_len // 4))
+        min_len = min(32, max_len)
+    else:
+        min_len = pattern_len
+        max_len = pattern_len
     
     for b in range(batch_size):
-        pattern_len = torch.randint(min_len, max_len + 1, (1,)).item() if max_len > min_len else max_len
-        pattern = torch.randint(0, vocab_size, (pattern_len,), device=device)
+        p_len = torch.randint(min_len, max_len + 1, (1,)).item() if max_len > min_len else max_len
+        pattern = torch.randint(0, vocab_size, (p_len,), device=device)
         
         # Place pattern at start
-        x[b, :pattern_len] = pattern
+        x[b, :p_len] = pattern
         
-        # Place repeat in second half
-        start_idx = torch.randint(seq_len // 2, seq_len - pattern_len + 1, (1,)).item()
-        x[b, start_idx:start_idx+pattern_len] = pattern
+        # Place repeat in second half or pinned to end
+        if pin_to_end:
+            start_idx = seq_len - p_len
+        else:
+            low_idx = seq_len // 2
+            high_idx = seq_len - p_len
+            start_idx = torch.randint(low_idx, high_idx + 1, (1,)).item() if high_idx >= low_idx else high_idx
+            
+        x[b, start_idx:start_idx+p_len] = pattern
         
         # Set targets for the copied pattern
-        y[b, start_idx:start_idx+pattern_len-1] = pattern[1:]
+        y[b, start_idx:start_idx+p_len-1] = pattern[1:]
         
     return x, y
+
+def evaluate_induction_accuracy(
+    model, 
+    config, 
+    seq_len=None, 
+    eval_samples=500, 
+    eval_batch_size=32, 
+    device=None,
+    pattern_len=32,
+    pin_to_end=True,
+    seed=None
+):
+    """
+    Evaluates model accuracy on held-out induction sequences.
+    Returns:
+        dict with:
+            'avg_token_acc': float,   # Average per-token accuracy across all target tokens (%)
+            'first_token_acc': float, # Accuracy on the first target token (%)
+            'full_match_acc': float   # Exact match accuracy across the full target block (%)
+    """
+    if seq_len is None:
+        seq_len = config.seq_len
+    if device is None:
+        device = getattr(config, 'device', 'cuda' if torch.cuda.is_available() else 'cpu')
+        
+    use_autocast = getattr(config, 'use_mixed_precision', True) and device == "cuda"
+    
+    # Store and set RNG if seed specified
+    rng_state = torch.get_rng_state()
+    cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() and device == "cuda" else None
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        
+    was_training = model.training
+    model.eval()
+    
+    total_tokens = 0
+    correct_tokens = 0
+    first_token_correct = 0
+    full_match_correct = 0
+    total_seqs = 0
+    
+    with torch.no_grad():
+        for b_start in range(0, eval_samples, eval_batch_size):
+            sub_size = min(eval_batch_size, eval_samples - b_start)
+            x_sub, y_sub = generate_induction_seqs(
+                sub_size, seq_len, config.vocab_size, device,
+                pattern_len=pattern_len, pin_to_end=pin_to_end
+            )
+            
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast):
+                logits_sub, _ = model(x_sub)
+                
+            preds = logits_sub.argmax(dim=-1)
+            
+            for b in range(sub_size):
+                mask_b = (y_sub[b] != -100)
+                if mask_b.any():
+                    target_tokens = y_sub[b][mask_b]
+                    pred_tokens = preds[b][mask_b]
+                    
+                    is_correct = (pred_tokens == target_tokens)
+                    correct_tokens += is_correct.sum().item()
+                    total_tokens += len(target_tokens)
+                    
+                    first_token_correct += is_correct[0].item()
+                    if is_correct.all().item():
+                        full_match_correct += 1
+                total_seqs += 1
+                
+    if was_training:
+        model.train()
+        
+    if seed is not None:
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state)
+            
+    avg_token_acc = (correct_tokens / total_tokens * 100.0) if total_tokens > 0 else 0.0
+    first_token_acc = (first_token_correct / total_seqs * 100.0) if total_seqs > 0 else 0.0
+    full_match_acc = (full_match_correct / total_seqs * 100.0) if total_seqs > 0 else 0.0
+    
+    return {
+        'avg_token_acc': avg_token_acc,
+        'first_token_acc': first_token_acc,
+        'full_match_acc': full_match_acc
+    }
 
 def train_induction(model, config, model_name, checkpoint_dir=None):
     print(f"\n--- Training {model_name} on Induction Head ---")
@@ -70,7 +168,6 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
 
     model.train()
     history = {'loss': [], 'acc': [], 'mix_bias': []}
-    consecutive_perfect_acc = 0
     start_step = 0
     
     if checkpoint_dir is not None:
@@ -79,9 +176,8 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
             print(f"\n      Resuming {model_name} from step {metadata['step']}")
             start_step = metadata['step']
             history = metadata.get('history', {'loss': [], 'acc': [], 'mix_bias': []})
-            consecutive_perfect_acc = metadata.get('consecutive_perfect_acc', 0)
             
-            if start_step >= config.train_steps or consecutive_perfect_acc >= 2:
+            if start_step >= config.train_steps:
                 print(f"      {model_name} already completed or was skipped previously. Skipping.")
                 return history
 
@@ -102,14 +198,12 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
         optimizer.step()
 
         if (i + 1) % config.print_every == 0 or i == 0 or (i + 1) == config.train_steps:
-            model.eval()
-            with torch.no_grad():
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast):
-                    logits_valid, _ = model(x, targets=y)
-                preds = logits_valid.argmax(dim=-1)
-                targets_valid = y[y != -100]
-                acc = (preds == targets_valid).float().mean().item() * 100.0
-            model.train()
+            val_metrics = evaluate_induction_accuracy(
+                model, config, seq_len=config.seq_len, eval_samples=config.batch_size,
+                eval_batch_size=config.batch_size, device=device,
+                pattern_len=None, pin_to_end=False, seed=config.seed + 10000 + i
+            )
+            acc = val_metrics['avg_token_acc']
             
             bias_str = ""
             norm_str = ""
@@ -142,22 +236,12 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
                 if layer_biases:
                     history.setdefault('mix_bias', []).append(layer_biases)
 
-            if acc >= 99.5:
-                consecutive_perfect_acc += 1
-            else:
-                consecutive_perfect_acc = 0
-                
-            if consecutive_perfect_acc >= 2:
-                print("\n      Early stopping: achieved >99.5% accuracy for 2 consecutive evaluations.")
-                break
-                
             if checkpoint_dir is not None:
                 metadata = {
                     'model_name': model_name,
                     'density': -1,
                     'step': i + 1,
                     'history': history,
-                    'consecutive_perfect_acc': consecutive_perfect_acc
                 }
                 save_checkpoint(model, optimizer, metadata, checkpoint_dir)
                 
@@ -172,13 +256,11 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
     print()
     
     if checkpoint_dir is not None:
-        # Save a final checkpoint indicating it's done or was intentionally skipped
         final_metadata = {
             'model_name': model_name,
             'density': -1,
             'step': i + 1 if 'i' in locals() else 0,
             'history': history,
-            'consecutive_perfect_acc': consecutive_perfect_acc,
             'stopped_early': early_stopper.stop_requested
         }
         save_checkpoint(model, optimizer, final_metadata, checkpoint_dir)

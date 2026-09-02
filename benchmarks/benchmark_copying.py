@@ -83,7 +83,6 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
 
     model.train()
     history = {'loss': [], 'exact_seq_acc': [], 'per_token_acc': [], 'step': [], 'mix_bias': []}
-    consecutive_perfect_acc = 0
     start_step = 0
     
     if checkpoint_dir is not None:
@@ -92,10 +91,8 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
             print(f"\n      Resuming {model_name} from step {metadata['step']}")
             start_step = metadata['step']
             history = metadata.get('history', {'loss': [], 'exact_seq_acc': [], 'per_token_acc': [], 'step': [], 'mix_bias': []})
-            consecutive_perfect_acc = metadata.get('consecutive_perfect_acc', 0)
             
-            # If we achieved near perfect seq accuracy early, we stopped
-            if start_step >= config.train_steps or consecutive_perfect_acc >= 2 or metadata.get('stopped_early', False):
+            if start_step >= config.train_steps:
                 print(f"      {model_name} already completed or was skipped previously. Skipping.")
                 return history
 
@@ -162,22 +159,12 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
                 if layer_biases:
                     history.setdefault('mix_bias', []).append(layer_biases)
             
-            if exact_acc >= 99.5 and pt_acc >= 99.5 and (i > warmup_steps):
-                consecutive_perfect_acc += 1
-            else:
-                consecutive_perfect_acc = 0
-                
-            if consecutive_perfect_acc >= 2:
-                print("\n      Early stopping: achieved >99.5% exact sequence accuracy for 2 consecutive evaluations.")
-                break
-                
             if checkpoint_dir is not None:
                 metadata = {
                     'model_name': model_name,
                     'density': -1,
                     'step': i + 1,
                     'history': history,
-                    'consecutive_perfect_acc': consecutive_perfect_acc
                 }
                 save_checkpoint(model, optimizer, metadata, checkpoint_dir)
                 
@@ -197,7 +184,6 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
             'density': -1,
             'step': i + 1 if 'i' in locals() else 0,
             'history': history,
-            'consecutive_perfect_acc': consecutive_perfect_acc,
             'stopped_early': early_stopper.stop_requested
         }
         save_checkpoint(model, optimizer, final_metadata, checkpoint_dir)

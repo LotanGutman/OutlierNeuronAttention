@@ -87,14 +87,11 @@ class InductionDegradationExperimentConfig(InductionExperimentConfig):
             # Trail past cliff
             1200, 1160, 1120, 1080, 1040, 1000, 992, 984, 976, 968, 
 
-            # End of cliff
-            924, 920, 
-            
             # Transition zone
-            912, 904, 896, 892, 888, 884, 880, 872, 864, 856, 
+            924, 920, 912, 904, 896, 892, 888, 884, 880, 872, 864, 856, 
             
             # Plateau pre cliff (P=1)
-            848, 840, 832, 800, 768, 640
+            848, 840, 832, 800, 768, 728, 688, 640
         ]
     )
     models_to_test: list = field(

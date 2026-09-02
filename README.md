@@ -18,7 +18,7 @@ HOFA factorizes each attention head feature dimension into two complementary pat
 - **Outlier Pathway** (first $r$ dimensions): Softmax FlashAttention with Rotary Position Embeddings (RoPE), acting as "IDs" for exact associative recall.
 - **Inlier Pathway** (remaining $j = d_{\text{head}} - r$ dimensions): Gated Linear Attention (GLA), linearly processing the token content while decoupled from the recall pathway.
 
-A learned token-level mixing gate $\alpha_h$ dynamically fuses the two pathways (was shows to improve language modeling preformance via ablation studies).
+A learned token-level mixing gate $\alpha_h$ dynamically fuses the two pathways, providing context-aware allocation between exact recall and linear recurrence.
 
 <p align="center">
   <img src="docs/architecture.png" alt="HOFA Architecture Overview" width="550"/>
@@ -31,8 +31,8 @@ A learned token-level mixing gate $\alpha_h$ dynamically fuses the two pathways 
 ### Installation
 
 ```bash
-git clone https://github.com/LotanGutman/OutlierNeuronAttention.git
-cd OutlierNeuronAttention
+git clone https://github.com/anonymous/HOFA.git
+cd HOFA
 
 # Install core dependencies & build native C++ extensions
 bash install.sh
@@ -44,15 +44,15 @@ bash install.sh
 ## Reproduction Commands
 
 ```bash
-# profiling scripts
+# Profiling scripts
 python main.py profile --prefill --no-use-cache
 python main.py profile --decode --no-use-cache
 
-# pretrain HOFA & baseline models, and evaluate on zero shot reasoning tasks
-# 1. manualy edit main.py to choose the relavent model config from benchmarks_configs.py
-python main.py train --download-data # download & tokenize fineweb edu data
-python main.py train # train
-python main.py train --eval
+# Pretrain HOFA & baseline models, and evaluate on zero-shot reasoning tasks
+# 1. Select the desired model config in benchmarks/benchmarks_configs.py
+python main.py train --download-data # Download & tokenize FineWeb-Edu data
+python main.py train                 # Run distributed pretraining
+python main.py train --eval          # Evaluate trained checkpoint
 
 # Synthetic retrieval & capacity degradation benchmarks
 python main.py benchmark --induction
@@ -91,7 +91,7 @@ python main.py infer --validate
 
 ## Contributing
 
-Contributions are welcome! Please submit a Pull Request. If you introduce a new feature or modify core kernals:
+Contributions are welcome! Please submit a Pull Request. If you introduce a new feature or modify core kernels:
 1. **Inference Validation**: Run `python main.py infer --validate` to verify numerical equivalence between PyTorch and Triton kernels.
 2. **Profiling & Benchmarks**: Run relevant benchmarks (`python main.py profile --prefill` / `--decode` or synthetic benchmarks) demonstrating performance and stability.
 
@@ -102,7 +102,12 @@ Contributions are welcome! Please submit a Pull Request. If you introduce a new 
 If you find HOFA useful in your research, please cite our paper:
 
 ```bibtex
-% Paper citation placeholder (to be updated upon publication)
+@article{anonymous2026hofa,
+  title   = {HOFA: Channel-Wise Hybrid Attention via Outlier Factorization},
+  author  = {Anonymous Authors},
+  journal = {Under review as a conference paper at ICLR 2027},
+  year    = {2026}
+}
 ```
 
 ---
