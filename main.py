@@ -9,12 +9,11 @@ import argparse
 
 
 def main():
-    config = make_350M_HOFA()
-
     parser = argparse.ArgumentParser(description="HOFA Project Main Entry Point")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     parser_train = subparsers.add_parser("train", help="Run training, plotting, dataset downloading, or zero-shot evaluation")
+    parser_train.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="350M", help="Model scale to train or evaluate (default: 350M)")
     parser_train.add_argument("--download-data", action="store_true", help="Download and cache the dataset for training")
     parser_train.add_argument("--plot", action="store_true", help="Plot training metrics")
     parser_train.add_argument("--shared", action="store_true", help="Plot shared training metrics for HOFA and MHA")
@@ -30,6 +29,7 @@ def main():
     parser_eval.add_argument("--force", action="store_true", help="Force rerun evaluation skipping cache")
     
     parser_infer = subparsers.add_parser("infer", help="Run interactive generation or validation")
+    parser_infer.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="350M", help="Model scale for inference or validation (default: 350M)")
     parser_infer.add_argument("--debug", action="store_true", help="Print debug information (gate bias, etc.)")
     parser_infer.add_argument("--train", action="store_true", help="Run inference using the training class instead of the inference class")
     parser_infer.add_argument("--latest_ckp", action="store_true", help="Load the latest checkpoint instead of the best validation one")
@@ -53,6 +53,10 @@ def main():
     parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
 
     args = parser.parse_args()
+    config = {
+        "70M": make_70M_HOFA,
+        "125M": make_125M_HOFA,
+        "350M": make_350M_HOFA}.get(getattr(args, 'scale', '350M'), make_350M_HOFA)()
 
     if args.command == "train":
         if args.download_data:

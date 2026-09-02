@@ -291,10 +291,6 @@ class HybridOutlierFactorizedAttention(nn.Module):
             K_s = K.squeeze(2)
             V_s = V.squeeze(2)
             
-            # --- Causal Fix: compute output with old state, then update state ---
-            # Y_I = torch.einsum('bhj,bhjd->bhd', Q.squeeze(2), state_I).unsqueeze(2)
-            # state_I_new = gamma * state_I + torch.einsum('bhj,bhd->bhjd', K_s, V_s)
-            
             q_bmm = Q.squeeze(2).reshape(B * self.num_heads, 1, self.j)
             k_bmm = K_s.reshape(B * self.num_heads, self.j, 1)
             v_bmm = V_s.reshape(B * self.num_heads, 1, self.d_head)
@@ -383,8 +379,6 @@ class HybridOutlierFactorizedAttention(nn.Module):
             )
         
         state_in, state_out = state_I
-        
-        # Strict assertions to prove state integrity
         assert state_in.dtype == torch.float32, f"Expected state_in to be float32, got {state_in.dtype}"
         assert state_in.is_contiguous(), "Expected state_in to be contiguous"
 

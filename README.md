@@ -49,10 +49,9 @@ python main.py profile --prefill --no-use-cache
 python main.py profile --decode --no-use-cache
 
 # Pretrain HOFA & baseline models, and evaluate on zero-shot reasoning tasks
-# 1. Select the desired model config in benchmarks/benchmarks_configs.py
-python main.py train --download-data # Download & tokenize FineWeb-Edu data
-python main.py train                 # Run distributed pretraining
-python main.py train --eval          # Evaluate trained checkpoint
+python main.py train --scale 350M --download-data  # Download & tokenize FineWeb-Edu data for target scale
+python main.py train --scale 350M                  # Run distributed pretraining (70M, 125M, or 350M)
+python main.py train --scale 350M --eval           # Evaluate trained checkpoint
 
 # Synthetic retrieval & capacity degradation benchmarks
 python main.py benchmark --induction

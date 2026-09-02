@@ -10,7 +10,6 @@ class ModelConfig:
     r: Union[int, List[int], Tuple[int, ...]] = 8
     block_size: int = 1024
     tokenizer_name: str = "gpt2"
-    refresh_steps: int = 100
     seed: int = 42
     chunk_size: int = 32
     device: str = "cuda" if torch.cuda.is_available() else "cpu"

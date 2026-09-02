@@ -70,10 +70,10 @@ def train_copying(model, config, model_name, pattern_len, gap_len, checkpoint_di
             decay_params.append(param)
             
     optim_groups = [
-        {'params': decay_params, 'weight_decay': config.weight_decay},  # Backbone gets regularized for stability
+        {'params': decay_params, 'weight_decay': config.weight_decay},
     ]
     if len(no_decay_params) > 0:
-        optim_groups.append({'params': no_decay_params, 'weight_decay': 0.0}) # Exact pathway stays pure
+        optim_groups.append({'params': no_decay_params, 'weight_decay': 0.0})
 
     optimizer = torch.optim.AdamW(optim_groups, lr=config.learning_rate, fused=True)
     device = config.device

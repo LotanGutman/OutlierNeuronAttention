@@ -17,14 +17,11 @@ class FastTokenLoader:
         self.current_idx = start_idx
         
     def get_batch(self):
-        """Returns x, y (pinned CPU tensors), and the next start_idx"""
+        """Returns batch inputs x (B, N), targets y (B, N), and next index."""
         if self.current_idx + self.tokens_per_batch > self.total_tokens:
-            self.current_idx = 0  # Wrap around
+            self.current_idx = 0
             
-        # Slice from the memmap (lazy loaded by OS)
         chunk = self.mmap[self.current_idx : self.current_idx + self.tokens_per_batch]
-        
-        # Cast to int64, convert to tensor, and pin memory for fast async H2D transfer
         data = torch.from_numpy(chunk.astype(np.int64)).pin_memory()
         data = data.view(self.global_batch_size, self.seq_len + 1)
         

@@ -49,8 +49,6 @@ def generate_induction_seqs(batch_size, seq_len, vocab_size, device, pattern_len
             start_idx = torch.randint(low_idx, high_idx + 1, (1,)).item() if high_idx >= low_idx else high_idx
             
         x[b, start_idx:start_idx+p_len] = pattern
-        
-        # Set targets for the copied pattern
         y[b, start_idx:start_idx+p_len-1] = pattern[1:]
         
     return x, y
@@ -223,7 +221,7 @@ def train_induction(model, config, model_name, checkpoint_dir=None):
                 if hasattr(attn, 'mix_proj') and hasattr(attn.mix_proj, 'bias') and attn.mix_proj.bias is not None:
                     bias_str = f" | Mix Bias: {attn.mix_proj.bias.mean().item():.4f}"
             
-            print(f"\r      Step {i + 1:5d}/{config.train_steps} | Train Loss: {loss.item():.4f} | Train Acc: {acc:.1f}%{bias_str}{norm_str}")
+            print(f"\r      Step {i + 1:5d}/{config.train_steps} | Loss: {loss.item():.4f} | Val Acc: {acc:.1f}%{bias_str}{norm_str}")
             history['loss'].append(loss.item())
             history['acc'].append(acc)
             
