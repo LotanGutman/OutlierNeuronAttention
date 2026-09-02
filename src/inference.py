@@ -58,7 +58,7 @@ class InferenceEngine:
         if os.path.exists(path):
             return path
         
-        # Fallback for WSL: convert C:\Users\... to /mnt/c/Users/...
+        # Cross-platform fallback for POSIX/WSL mount paths
         if os.name == 'posix' and len(path) > 2 and path[1] == ':':
             drive = path[0].lower()
             relative_path = path[3:].replace('\\', '/')
