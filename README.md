@@ -2,7 +2,7 @@
 
 # Hybrid Outlier-Factorized Attention (HOFA)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![PyTorch 2.6.0](https://img.shields.io/badge/PyTorch-2.6.0-ee4c2c.svg?logo=pytorch)](https://pytorch.org)
 [![Paper](https://img.shields.io/badge/Paper-PDF-red.svg)](#citation)
 
@@ -104,7 +104,7 @@ If you find HOFA useful in your research, please cite our paper:
 @article{anonymous2026hofa,
   title   = {HOFA: Channel-Wise Hybrid Attention via Outlier Factorization},
   author  = {Anonymous Authors},
-  journal = {Under review as a conference paper at ICLR 2027},
+  journal = {Under review},
   year    = {2026}
 }
 ```
@@ -113,4 +113,4 @@ If you find HOFA useful in your research, please cite our paper:
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache 2.0 License — see the [LICENSE](LICENSE) file for details.
