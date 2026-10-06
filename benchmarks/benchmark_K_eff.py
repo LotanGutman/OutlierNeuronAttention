@@ -14,8 +14,6 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 
-os.environ["HF_TOKEN"] = "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"
-
 from benchmarks.benchmarks_configs import KEffExperimentConfig, CACHE_PATH
 
 def get_eval_sequences(tokenizer, config: KEffExperimentConfig):
@@ -42,12 +40,13 @@ def measure_k_eff(model_name, config: KEffExperimentConfig):
     print(f"\n{'='*50}\nEvaluating: {model_name}\n{'='*50}")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    hf_token = os.environ.get("HF_TOKEN", None)
     
     print("Loading tokenizer and model...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name, token=os.environ["HF_TOKEN"])
+    tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
     
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, output_attentions=True, token=os.environ["HF_TOKEN"], device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, output_attentions=True, token=hf_token, device_map="auto")
     model.eval()
     
     print("Collecting validation sequences from FineWeb-Edu...")

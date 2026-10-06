@@ -1,14 +1,14 @@
-# Implementation Details & Kernel Specifications
+# Implementation Details
 
-This document provides technical specifications for the PyTorch training modules, fused Triton decode kernels, and hardware utilization analysis of **Hybrid Outlier-Factorized Attention (HOFA)**.
+This document provides a more technical overview for the codebase.
 
 For the main repository overview, see [README.md](../README.md).
 
 ---
 
-## 1. Dual-Pathway Execution & Kernel Architecture
+## Kernel Architecture
 
-HOFA uses two execution pipelines optimized for different workloads:
+This codebase uses two execution pipelines optimized for different workloads:
 
 ### Training Pipeline (`src/HybridOutlierFactorizedAttentionTrain.py`)
 - **Outlier Pathway ($r$ dimensions):** Evaluated using PyTorch `scaled_dot_product_attention` (SDPA), which automatically dispatches to **FlashAttention-2** with Rotary Position Embeddings (RoPE).
@@ -21,14 +21,3 @@ HOFA uses two execution pipelines optimized for different workloads:
   2. Sequential state update for the GLA recurrent matrix $S_t = \alpha S_{t-1} + K^\top V$.
   3. Inlier RMSNorm and LayerScale normalization.
   4. Token-level mixing gate blending ($\alpha_h \odot Y_{\text{outlier}} + (1 - \alpha_h) \odot Y_{\text{inlier}}$).
-
----
-
-## 2. Recurrent State Memory Management
-
-During auto-regressive generation, HOFA maintains a recurrent state tensor $S_t \in \mathbb{R}^{B \times H \times d_{\text{inlier}} \times d_v}$ alongside the KV cache.
-
-* **Ping-Pong Buffer Allocation:** To avoid memory allocations during generation steps, HOFA pre-allocates two ping-pong buffers for $S_t$ at generation start and swaps pointers on each step.
-* **Autotuning:** Uses `@triton.autotune` to dynamically select optimal GPU block sizes (`BLOCK_SEQ`) based on active batch size and sequence length.
-
----

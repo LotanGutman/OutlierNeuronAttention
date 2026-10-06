@@ -201,3 +201,13 @@ class EvalExperimentConfig:
     force_rerun: bool = False
     use_cache: bool = True
     cache_file_name: str = "zeroshot_eval_results.pt"
+
+@dataclass
+class LongContextExtrapolationConfig:
+    scale: str = "350M"
+    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384)
+    total_tokens_target: int = 500000
+    rope_base: float = 10000.0
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_file_name: str = "long_context_extrapolation_results.json"
+

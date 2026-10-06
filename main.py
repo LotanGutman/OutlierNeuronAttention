@@ -50,6 +50,8 @@ def main():
     parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (gate) distribution analysis")
     parser_bench.add_argument("--keff", action="store_true", help="Run the K_eff Probability Mass benchmark")
     parser_bench.add_argument("--distance", action="store_true", help="Run the Effective Attention Distance benchmark")
+    parser_bench.add_argument("--extrapolation", "--long-context", dest="extrapolation", action="store_true", help="Run the context length extrapolation benchmark")
+    parser_bench.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="350M", help="Model scale for benchmark evaluation (default: 350M)")
     parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
 
     args = parser.parse_args()
@@ -193,8 +195,16 @@ def main():
             else:
                 from benchmarks.benchmark_distance import run_distance_experiment
                 run_distance_experiment()
+        elif args.extrapolation:
+            from benchmarks.benchmark_long_context import run_long_context_experiment, plot_long_context_extrapolation
+            from benchmarks.benchmarks_configs import LongContextExtrapolationConfig
+            extrap_cfg = LongContextExtrapolationConfig(scale=getattr(args, 'scale', '350M'))
+            if args.plot:
+                plot_long_context_extrapolation(extrap_cfg)
+            else:
+                run_long_context_experiment(extrap_cfg)
         else:
-            print("Please specify either --induction, --copy, --alpha, --keff, or --distance to run a benchmark.")
+            print("Please specify a valid benchmark flag (e.g. --induction, --copy, --alpha, --keff, --distance, or --extrapolation).")
     else:
         parser.print_help()
 

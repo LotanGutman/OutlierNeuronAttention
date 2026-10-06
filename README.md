@@ -4,21 +4,15 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![PyTorch 2.6.0](https://img.shields.io/badge/PyTorch-2.6.0-ee4c2c.svg?logo=pytorch)](https://pytorch.org)
-[![Paper](https://img.shields.io/badge/Paper-PDF-red.svg)](#citation)
+[![Paper](https://img.shields.io/badge/Paper-PDF-red.svg)](docs/preprint.pdf)
 
-**Official PyTorch and Triton implementation of HOFA**
+**Decoupling associative recall from linear recurrence via channel-wise outlier factorization.**
 
 </div>
 
 ---
 
-This repository contains the official codebase and hardware-optimized Triton decode kernels for **Hybrid Outlier-Factorized Attention (HOFA)**.
-
-HOFA factorizes each attention head feature dimension into two complementary pathways:
-- **Outlier Pathway** (first $r$ dimensions): Softmax FlashAttention with Rotary Position Embeddings (RoPE), acting as "IDs" for exact associative recall.
-- **Inlier Pathway** (remaining $j = d_{\text{head}} - r$ dimensions): Gated Linear Attention (GLA), linearly processing the token content while decoupled from the recall pathway.
-
-A learned token-level mixing gate $\alpha_h$ dynamically fuses the two pathways, providing context-aware allocation between exact recall and linear recurrence.
+**HOFA** factorizes each attention head's feature dimension into an exact Softmax outlier pathway ($r$ dimensions) for associative recall and a recurrent Gated Linear Attention inlier pathway ($d_h - r$ dimensions) for sub-quadratic sequence processing. A learned token-level mixing gate dynamically blends both streams, preserving full recall capacity while drastically compressing key-value cache footprints.
 
 <p align="center">
   <img src="docs/architecture.png" alt="HOFA Architecture Overview" width="550"/>
@@ -28,85 +22,53 @@ A learned token-level mixing gate $\alpha_h$ dynamically fuses the two pathways,
 
 ## Quickstart
 
-### Installation
-
 ```bash
-git clone https://github.com/anonymous/HOFA.git
-cd HOFA
-
-# Install core dependencies & build native C++ extensions
-bash install.sh
+git clone https://github.com/LotanGutman/OutlierNeuronAttention.git
+cd OutlierNeuronAttention
+bash install.sh  # or bash install_no_mamba.sh (for environments without C++ mamba-ssm)
 ```
-*(For environments without mamba-ssm C++ dependencies, use `bash install_no_mamba.sh`)*
 
 ---
 
 ## Reproduction Commands
 
-```bash
-# Profiling scripts
-python main.py profile --prefill --no-use-cache
-python main.py profile --decode --no-use-cache
-
-# Pretrain HOFA & baseline models, and evaluate on zero-shot reasoning tasks
-python main.py train --scale 350M --download-data  # Download & tokenize FineWeb-Edu data for target scale
-python main.py train --scale 350M                  # Run distributed pretraining (70M, 125M, or 350M)
-python main.py train --scale 350M --eval           # Evaluate trained checkpoint
-
-# Synthetic retrieval & capacity degradation benchmarks
-python main.py benchmark --induction
-python main.py benchmark --induction --plot
-python main.py benchmark --induction-degradation
-python main.py benchmark --induction-degradation --plot
-
-# Additional synthetic & mechanistic benchmarks
-python main.py benchmark --copy                 # Sequential copying capability
-python main.py benchmark --copy --plot
-python main.py benchmark --keff                 # K_eff probability mass distribution
-python main.py benchmark --keff --plot
-python main.py benchmark --distance             # Effective attention distance benchmark
-python main.py benchmark --distance --plot
-python main.py benchmark --alpha                # Gate distribution analysis
-
-# Standalone zero-shot reasoning evaluation on trained checkpoints
-python main.py eval --shared --scale 125M       # Evaluate 125M HOFA vs MHA
-python main.py eval --shared --scale 350M       # Evaluate 350M HOFA vs MHA
-python main.py eval --full --scale 350M         # Evaluate pretrained HF baselines
-
-# Validate custom Triton decode kernel against PyTorch reference
-python main.py infer --validate
-```
+| Workflow | Command | Description |
+| :--- | :--- | :--- |
+| **Data Preparation** | `python main.py train --scale 350M --download-data` | Download and tokenize FineWeb-Edu for target scale |
+| **Pretraining** | `python main.py train --scale 350M` | Run distributed pretraining (`70M`, `125M`, or `350M`) |
+| **Checkpoints Eval** | `python main.py train --scale 350M --eval` | Evaluate perplexity on validation splits |
+| **Long Context** | `python main.py benchmark --extrapolation` | Length extrapolation perplexity ($1\text{k} \to 16\text{k}$ tokens) |
+| **Induction Retrieval** | `python main.py benchmark --induction [--plot]` | Associative recall on synthetic induction heads |
+| **Capacity Cliff** | `python main.py benchmark --induction-degradation [--plot]` | Phase transition and critical capacity cliff |
+| **Associative Copying** | `python main.py benchmark --copy [--plot]` | Sequence copying capability benchmark |
+| **Mass Decomposition** | `python main.py benchmark --keff [--plot]` | $K_{\text{eff}}$ outlier probability mass distribution |
+| **Effective Distance** | `python main.py benchmark --distance [--plot]` | Effective attention context distance benchmark |
+| **Gate Blending** | `python main.py benchmark --alpha` | Learned mixing gate distribution analysis |
+| **Zero-Shot Reasoning** | `python main.py eval --shared --scale 350M` | Zero-shot reasoning benchmarks (ARC, HellaSwag, PIQA) |
+| **Kernel Verification** | `python main.py infer --validate` | Verify numerical parity between PyTorch and Triton decode |
+| **Decode Profiling** | `python main.py profile --decode --no-use-cache` | Benchmark prefill and decode latency / memory |
 
 ---
 
 ## Repository Structure
 
-* `src/`: Core PyTorch modules and fused Triton decode kernels (`fused_hofa_decode_kernel`).
-* `training/`: FineWeb-Edu data loaders, distributed training loop, and plotting scripts.
-* `benchmarks/`: Synthetic induction/copying tasks, $K_{\text{eff}}$ mass decomposition, and zero-shot reasoning benchmarks.
-* `docs/`: Supplementary technical documentation and hardware optimization notes ([docs/DETAILS.md](docs/DETAILS.md)).
-
----
-
-## Contributing
-
-Contributions are welcome! Please submit a Pull Request. If you introduce a new feature or modify core kernels:
-1. **Inference Validation**: Run `python main.py infer --validate` to verify numerical equivalence between PyTorch and Triton kernels.
-2. **Profiling & Benchmarks**: Run relevant benchmarks (`python main.py profile --prefill` / `--decode` or synthetic benchmarks) demonstrating performance and stability.
-
----
-
-## Citation
-
-If you find HOFA useful in your research, please cite our paper:
-
-```bibtex
-@article{anonymous2026hofa,
-  title   = {HOFA: Channel-Wise Hybrid Attention via Outlier Factorization},
-  author  = {Anonymous Authors},
-  journal = {Under review},
-  year    = {2026}
-}
+```text
+OutlierNeuronAttention/
+├── src/                          # Core model layers and fused Triton decode kernels
+│   ├── HybridOutlierFactorizedAttention.py       # Inference & fused decode kernel
+│   ├── HybridOutlierFactorizedAttentionTrain.py  # Training pipeline (SDPA + GLA)
+│   └── fused_decode.py                           # Triton kernel implementations
+├── benchmarks/                   # Synthetic, mechanistic, and extrapolation tasks
+│   ├── benchmark_long_context.py                 # Length extrapolation evaluation
+│   ├── benchmark_induction.py                    # Induction retrieval tests
+│   └── benchmarks_configs.py                     # Benchmark experiment configurations
+├── training/                     # Distributed pretraining, dataloaders, and optimizers
+│   ├── pretrain.py                               # Pretraining loop
+│   └── data_utils.py                             # FineWeb-Edu dataset handling
+├── docs/                         # Technical documentation and paper preprint
+│   ├── preprint.pdf                              # Research preprint
+│   └── DETAILS.md                                # Architecture & kernel implementation details
+└── main.py                       # Unified CLI entrypoint
 ```
 
 ---
