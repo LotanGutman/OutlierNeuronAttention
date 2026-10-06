@@ -6,13 +6,13 @@
 [![PyTorch 2.6.0](https://img.shields.io/badge/PyTorch-2.6.0-ee4c2c.svg?logo=pytorch)](https://pytorch.org)
 [![Paper](https://img.shields.io/badge/Paper-PDF-red.svg)](docs/preprint.pdf)
 
-**Decoupling associative recall from linear recurrence via channel-wise outlier factorization.**
+**Decoupling associative recall from linear recurrence via channel-wise outlier factorization**
 
 </div>
 
 ---
 
-**HOFA** factorizes each attention head's feature dimension into an exact Softmax outlier pathway ($r$ dimensions) for associative recall and a recurrent Gated Linear Attention inlier pathway ($d_h - r$ dimensions) for sub-quadratic sequence processing. A learned token-level mixing gate dynamically blends both streams, preserving full recall capacity while drastically compressing key-value cache footprints.
+**HOFA** factorizes each attention head's feature dimension into an exact Softmax outlier pathway ($r$ dimensions) for associative recall and a recurrent Gated Linear Attention inlier pathway ($d_h - r$ dimensions) for sub-quadratic sequence processing. A learned token-level mixing gate dynamically blends both streams, preserving full recall capacity while compressing key-value cache footprints.
 
 <p align="center">
   <img src="docs/architecture.png" alt="HOFA Architecture Overview" width="550"/>
@@ -25,7 +25,7 @@
 ```bash
 git clone https://github.com/LotanGutman/OutlierNeuronAttention.git
 cd OutlierNeuronAttention
-bash install.sh  # or bash install_no_mamba.sh (for environments without C++ mamba-ssm)
+bash install.sh  # or bash install_no_mamba.sh (for environment without mamba-ssm)
 ```
 
 ---
@@ -54,25 +54,38 @@ bash install.sh  # or bash install_no_mamba.sh (for environments without C++ mam
 
 ```text
 OutlierNeuronAttention/
-├── src/                          # Core model layers and fused Triton decode kernels
-│   ├── HybridOutlierFactorizedAttention.py       # Inference & fused decode kernel
-│   ├── HybridOutlierFactorizedAttentionTrain.py  # Training pipeline (SDPA + GLA)
-│   └── fused_decode.py                           # Triton kernel implementations
+├── src/                          # Core model layers and Triton kernels
+│   ├── HybridOutlierFactorizedAttention.py       # Inference module
+│   ├── HybridOutlierFactorizedAttentionTrain.py  # Training model
+│   ├── config.py
+│   ├── chunk_gla_inlier.py, exact_attention.py, hofa_decode_triton.py, inference.py  # Fused Triton decode & reference kernels
+│   └── modules/                                  # Triton helpers, benchmarking & checkpointing utilities
 ├── benchmarks/                   # Synthetic, mechanistic, and extrapolation tasks
-│   ├── benchmark_long_context.py                 # Length extrapolation evaluation
-│   ├── benchmark_induction.py                    # Induction retrieval tests
-│   └── benchmarks_configs.py                     # Benchmark experiment configurations
-├── training/                     # Distributed pretraining, dataloaders, and optimizers
-│   ├── pretrain.py                               # Pretraining loop
-│   └── data_utils.py                             # FineWeb-Edu dataset handling
-├── docs/                         # Technical documentation and paper preprint
-│   ├── preprint.pdf                              # Research preprint
-│   └── DETAILS.md                                # Architecture & kernel implementation details
-└── main.py                       # Unified CLI entrypoint
+│   ├── analyze_alpha.py
+│   ├── benchmark_K_eff.py
+│   ├── benchmark_copying.py
+│   ├── benchmark_distance.py
+│   ├── benchmark_induction.py
+│   ├── benchmark_induction_degradation.py
+│   ├── benchmark_long_context.py
+│   ├── benchmark_zeroshot.py
+│   ├── benchmarks_configs.py
+│   ├── profile_decode.py
+│   ├── profile_prefill.py
+│   ├── validate_kernels.py
+│   └── plotting/                                 # Plotting utilities
+├── training/                     # Language modeling training pipeline
+│   ├── train.py                                  # Distributed pretraining loop
+│   ├── download_fineweb.py, data_utils.py, training_config.py  # Dataset pipeline & configs
+│   └── plot_training.py, inference.py, modules/  # Loss curves & evaluation utilities
+├── docs/                         # Technical documentation, preprint PDF, and architecture figures
+├── install.sh, install_no_mamba.sh               # Environment setup scripts
+├── main.py                       # Unified CLI entrypoint
+└── LICENSE
 ```
 
 ---
 
 ## License
 
-This project is licensed under the Apache 2.0 License — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
