@@ -38,6 +38,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # Architectural Ablations
         self.forced_mha_heads = getattr(model_cfg, 'mha_heads_for_width_split', 0)
         self.fixed_blend_weight = getattr(model_cfg, 'fixed_blend_weight', False)
+        self.attention_scale = getattr(model_cfg, 'attention_scale', 1.0)
 
         # Dynamic mixing gate between exact and linear pathways
         if not self.fixed_blend_weight and self.forced_mha_heads == 0:
@@ -50,7 +51,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # RoPE dedicated strictly to the exact-match routing dimension
         if (self.r > 0 or self.forced_mha_heads > 0) and model_cfg.use_rope:
-            self.rotary_emb = RotaryEmbedding(dim=self.r if self.r > 0 else self.d_head)
+            self.rotary_emb = RotaryEmbedding(
+                dim=self.r if self.r > 0 else self.d_head,
+                base=model_cfg.rope_base
+            )
 
         # Inlier normalization and learned LayerScale for the GLA pathway
         self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)
@@ -110,7 +114,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
                 cos, sin = self.rotary_emb(N)
                 Q_mha, K_mha = apply_rotary_pos_emb(Q_mha, K_mha, cos, sin)
 
-            Y_mha = F.scaled_dot_product_attention(Q_mha, K_mha, V_mha, is_causal=True, scale=1.0)
+            Y_mha = F.scaled_dot_product_attention(Q_mha, K_mha, V_mha, is_causal=True, scale=self.attention_scale)
             
             W_g = self.gate_proj.weight
             W_g_q, W_g_k = W_g.chunk(2, dim=-1)
@@ -171,7 +175,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             if getattr(self, 'rotary_emb', None) is not None:
                 cos, sin = self.rotary_emb(N)
                 Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
-            Y = F.scaled_dot_product_attention(Q, K, V, is_causal=True, scale=1.0)
+            Y = F.scaled_dot_product_attention(Q, K, V, is_causal=True, scale=self.attention_scale)
             Y = Y.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y)
 
@@ -190,7 +194,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             cos, sin = self.rotary_emb(N)
             Q_O, K_O = apply_rotary_pos_emb(Q_O, K_O, cos, sin)
 
-        sm_scale = (self.d_head / self.r) ** 0.5
+        sm_scale = ((self.d_head / self.r) ** 0.5) * self.attention_scale
         
         # MemEfficient attention requires head dim to be a multiple of 8
         pad_len = (8 - (self.r % 8)) % 8
@@ -365,6 +369,7 @@ class TransformerBlock(nn.Module):
 class SubwordLM(nn.Module):
     def __init__(self, vocab_size: int, model_cfg: ModelConfig):
         super().__init__()
+        self.config = model_cfg
         self.token_emb = nn.Embedding(vocab_size, model_cfg.d_model)
         
         r_list = model_cfg.r if isinstance(model_cfg.r, (list, tuple)) else [model_cfg.r] * model_cfg.num_layers

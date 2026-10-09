@@ -48,7 +48,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # RoPE dedicated strictly to the exact-match routing dimension
         if (self.r > 0 or self.forced_mha_heads > 0) and getattr(model_cfg, 'use_rope', True):
-            self.rotary_emb = RotaryEmbedding(dim=self.r if self.r > 0 else self.d_head)
+            self.rotary_emb = RotaryEmbedding(
+                dim=self.r if self.r > 0 else self.d_head,
+                base=model_cfg.rope_base
+            )
 
         # Inlier normalization and learned LayerScale for the GLA pathway
         self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)

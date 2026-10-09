@@ -1,11 +1,14 @@
+import os
+import json
+import argparse
+
 from training.training_config import (
+    YaRNConfig,
     make_70M_MHA, make_70M_HOFA, make_70M_HOFA_flat32, 
     make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend, 
     make_125M_HOFA, make_125M_MHA, make_350M_HOFA, make_350M_MHA
 )
 
-
-import argparse
 
 
 def main():
@@ -50,8 +53,11 @@ def main():
     parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (gate) distribution analysis")
     parser_bench.add_argument("--keff", action="store_true", help="Run the K_eff Probability Mass benchmark")
     parser_bench.add_argument("--distance", action="store_true", help="Run the Effective Attention Distance benchmark")
-    parser_bench.add_argument("--extrapolation", "--long-context", dest="extrapolation", action="store_true", help="Run the context length extrapolation benchmark")
+    parser_bench.add_argument("--extrapolation", dest="extrapolation", action="store_true", help="Run the context length extrapolation benchmark")
+    parser_bench.add_argument("--model", type=str, choices=["both", "hofa", "mha"], default="both", help="Model variant to evaluate (default: both)")
     parser_bench.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="350M", help="Model scale for benchmark evaluation (default: 350M)")
+    parser_bench.add_argument("--length", "--seq-len", dest="length", type=int, nargs="*", default=None, help="Sequence length(s) to evaluate (default: None, auto-inherits model native length)")
+    parser_bench.add_argument("--batch-size", type=int, default=None, help="Batch size for evaluation (default: None, auto-adapts)")
     parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
 
     args = parser.parse_args()
@@ -196,11 +202,33 @@ def main():
                 from benchmarks.benchmark_distance import run_distance_experiment
                 run_distance_experiment()
         elif args.extrapolation:
-            from benchmarks.benchmark_long_context import run_long_context_experiment, plot_long_context_extrapolation
+            from benchmarks.benchmark_long_context import run_long_context_experiment, plot_long_context
             from benchmarks.benchmarks_configs import LongContextExtrapolationConfig
-            extrap_cfg = LongContextExtrapolationConfig(scale=getattr(args, 'scale', '350M'))
+            scale = getattr(args, 'scale', '350M')
+            model_flag = getattr(args, 'model', 'both').lower()
+            if scale == "70M":
+                h_cfg, m_cfg = make_70M_HOFA(), make_70M_MHA()
+            elif scale == "125M":
+                h_cfg, m_cfg = make_125M_HOFA(), make_125M_MHA()
+            else:
+                h_cfg, m_cfg = make_350M_HOFA(), make_350M_MHA()
+
+            if model_flag == "hofa":
+                eval_models = [YaRNConfig(model=h_cfg)]
+            elif model_flag == "mha":
+                eval_models = [YaRNConfig(model=m_cfg)]
+            else:
+                eval_models = [YaRNConfig(model=h_cfg), YaRNConfig(model=m_cfg)]
+
+            length_arg = getattr(args, 'length', None)
+            seq_lengths = tuple(length_arg) if length_arg is not None else (1024, 2048, 4096, 8192)
+
+            extrap_cfg = LongContextExtrapolationConfig(
+                models=eval_models,
+                seq_lengths=seq_lengths,
+            )
             if args.plot:
-                plot_long_context_extrapolation(extrap_cfg)
+                plot_long_context(extrap_cfg)
             else:
                 run_long_context_experiment(extrap_cfg)
         else:

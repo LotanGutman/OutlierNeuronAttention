@@ -21,7 +21,9 @@ class ModelConfig:
     # Ablation flags
     mha_heads_for_width_split: int = 0 # For Hymba
     fixed_blend_weight: bool = False # No gating ablation
-    
+    attention_scale: float = 1.0 # Base attention scaling factor, overridden by YaRN
+    rope_base: float = 10000.0
+
     @property
     def d_head(self) -> int:
         return self.d_model // self.num_heads

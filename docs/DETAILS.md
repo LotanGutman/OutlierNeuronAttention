@@ -21,3 +21,9 @@ This codebase uses two execution pipelines optimized for different workloads:
   2. Sequential state update for the GLA recurrent matrix $S_t = \alpha S_{t-1} + K^\top V$.
   3. Inlier RMSNorm and LayerScale normalization.
   4. Token-level mixing gate blending ($\alpha_h \odot Y_{\text{outlier}} + (1 - \alpha_h) \odot Y_{\text{inlier}}$).
+
+---
+
+## Training-Free Extension Diagnostics (YaRN)
+
+Training-free context extension diagnostics use YaRN implemented in `src/yarn.py` with canonical LLaMA defaults ($\alpha=1.0, \beta=32.0$).

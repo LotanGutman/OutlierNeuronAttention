@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Union, List, Tuple
+from typing import Union, List, Tuple, Optional
 import torch
 from src.config import ModelConfig
 
@@ -9,7 +9,6 @@ the saved dataset cache file will be named accordingly to the model_name before 
 Therefore it should be set to "30M_{name}" or "...M_{name}" to avoid overwriting the cache file
 when training different models architectures of the same size (require same data)
 """
-
 
 @dataclass
 class LanguageModelingExperimentConfig:
@@ -51,6 +50,16 @@ class LanguageModelingExperimentConfig:
 
     val_every: int = 500
     val_num_batches: int = 50
+
+@dataclass
+class YaRNConfig:
+    model: LanguageModelingExperimentConfig
+    beta_fast: float = 32.0
+    beta_slow: float = 1.0
+    mscale: float = 1.0
+    mscale_all_dim: float = 0.0
+    base: float = 10000.0
+    original_max_seq_len: Optional[int] = None
 
 
 # ──────────────────────────────────────────────

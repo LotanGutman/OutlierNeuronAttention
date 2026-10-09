@@ -84,7 +84,7 @@ def plot_training_metrics(configs: Union[LanguageModelingExperimentConfig, List[
         model = SubwordLM(config.vocab_size, config.model_config)
         P = get_active_non_embedding_parameters(model)
         H = config.model_config.num_heads
-        d_h = config.model_config.d_model // H
+        d_h = config.model_config.d_head
         N_seq = config.seq_len
         r_list = config.model_config.r
         if not isinstance(r_list, (list, tuple)):

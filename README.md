@@ -37,7 +37,7 @@ bash install.sh  # or bash install_no_mamba.sh (for environment without mamba-ss
 | **Data Preparation** | `python main.py train --scale 350M --download-data` | Download and tokenize FineWeb-Edu for target scale |
 | **Pretraining** | `python main.py train --scale 350M` | Run distributed pretraining (`70M`, `125M`, or `350M`) |
 | **Checkpoints Eval** | `python main.py train --scale 350M --eval` | Evaluate perplexity on validation splits |
-| **Long Context** | `python main.py benchmark --extrapolation` | Length extrapolation perplexity ($1\text{k} \to 16\text{k}$ tokens) |
+| **Context Extension** | `python main.py benchmark --extrapolation` | Training-free extension diagnostics ($1\text{k} \to 16\text{k}$ tokens) |
 | **Induction Retrieval** | `python main.py benchmark --induction [--plot]` | Associative recall on synthetic induction heads |
 | **Capacity Cliff** | `python main.py benchmark --induction-degradation [--plot]` | Phase transition and critical capacity cliff |
 | **Associative Copying** | `python main.py benchmark --copy [--plot]` | Sequence copying capability benchmark |
@@ -57,6 +57,7 @@ OutlierNeuronAttention/
 ├── src/                          # Core model layers and Triton kernels
 │   ├── HybridOutlierFactorizedAttention.py       # Inference module
 │   ├── HybridOutlierFactorizedAttentionTrain.py  # Training model
+│   ├── yarn.py                                   # YaRN extrapolation module
 │   ├── config.py
 │   ├── chunk_gla_inlier.py, exact_attention.py, hofa_decode_triton.py, inference.py  # Fused Triton decode & reference kernels
 │   └── modules/                                  # Triton helpers, benchmarking & checkpointing utilities

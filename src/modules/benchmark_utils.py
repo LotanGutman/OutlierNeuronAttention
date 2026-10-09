@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from enum import Enum
+from typing import Optional, Union
 import numpy as np
 
 from src.HybridOutlierFactorizedAttentionTrain import HybridOutlierFactorizedAttention
@@ -169,3 +170,72 @@ def patch_attention_for_debugging(attn_layer):
         return gate_logits, mix_g
         
     attn_layer._compute_gates_optimized = hooked_compute_gates
+
+
+def calculate_max_batch_size(
+    model: torch.nn.Module,
+    seq_len: int,
+    device: Union[str, torch.device] = "cuda",
+    margin: float = 0.85,
+    max_limit: Optional[int] = None,
+    min_batch_size: int = 1
+) -> int:
+    """
+    Empirically calculates the maximum batch size that fits in available physical VRAM 
+    for a given model and sequence length without triggering OOM or spilling into 
+    system shared RAM.
+    
+    Args:
+        model: Evaluated PyTorch model.
+        seq_len: Sequence length in tokens.
+        device: CUDA device.
+        margin: Fraction of currently free physical VRAM to safely utilize (e.g., 0.85).
+        max_limit: Optional upper bound on batch size (e.g. dataset length).
+        min_batch_size: Minimum returned batch size (default 1).
+    """
+    if isinstance(device, str):
+        device = torch.device(device)
+        
+    if device.type != "cuda" or not torch.cuda.is_available():
+        res = 4
+        if max_limit is not None:
+            res = min(res, max_limit)
+        return max(min_batch_size, res)
+        
+    torch.cuda.empty_cache()
+    free_bytes, _ = torch.cuda.mem_get_info(device)
+    usable_bytes = int(free_bytes * margin)
+    
+    # 1. Measure base activation peak with B=1
+    torch.cuda.reset_peak_memory_stats(device)
+    x1 = torch.zeros((1, seq_len), dtype=torch.long, device=device)
+    with torch.no_grad():
+        _ = model(x1)
+    torch.cuda.synchronize(device)
+    mem_b1 = torch.cuda.max_memory_allocated(device)
+    del x1
+    
+    # 2. Measure activation peak with B=2
+    torch.cuda.reset_peak_memory_stats(device)
+    x2 = torch.zeros((2, seq_len), dtype=torch.long, device=device)
+    with torch.no_grad():
+        _ = model(x2)
+    torch.cuda.synchronize(device)
+    mem_b2 = torch.cuda.max_memory_allocated(device)
+    del x2
+    
+    torch.cuda.empty_cache()
+    
+    delta = mem_b2 - mem_b1
+    if delta <= 0:
+        delta = max(1, mem_b1 // 2)
+        
+    # Extra samples beyond B=1 that fit in the remaining usable free VRAM
+    est_additional_samples = max(0, usable_bytes - delta) // delta
+    max_batch_size = 1 + est_additional_samples
+    
+    batch_size = max(min_batch_size, int(max_batch_size))
+    if max_limit is not None:
+        batch_size = min(batch_size, max_limit)
+        
+    return batch_size

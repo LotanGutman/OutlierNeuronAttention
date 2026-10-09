@@ -4,9 +4,11 @@ src/config.py is reserved purely for model and training configs.
 """
 
 from dataclasses import dataclass, field
+from typing import Union, List, Tuple, Optional
 import torch
 from src.config import ModelConfig
 from src.modules.benchmark_utils import AttentionType
+from training.training_config import LanguageModelingExperimentConfig, YaRNConfig, make_350M_HOFA, make_350M_MHA
 
 CACHE_PATH = "data/experiments_cache"
 
@@ -204,10 +206,10 @@ class EvalExperimentConfig:
 
 @dataclass
 class LongContextExtrapolationConfig:
-    scale: str = "350M"
-    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384)
-    total_tokens_target: int = 500000
-    rope_base: float = 10000.0
+    models: Union[YaRNConfig, List[YaRNConfig]] = field(
+        default_factory=lambda: [YaRNConfig(model=make_350M_HOFA()), YaRNConfig(model=make_350M_MHA())]
+    )
+    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192)
+    total_tokens_target: int = 50000
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     cache_file_name: str = "long_context_extrapolation_results.json"
-
