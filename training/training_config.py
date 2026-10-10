@@ -60,6 +60,14 @@ class YaRNConfig:
     mscale_all_dim: float = 0.0
     base: float = 10000.0
     original_max_seq_len: Optional[int] = None
+    base_checkpoint_path: Optional[str] = None
+    reset_optimizer: bool = True
+
+    def __post_init__(self):
+        if self.original_max_seq_len is None:
+            self.original_max_seq_len = self.model.model_config.block_size
+        if self.base_checkpoint_path is None:
+            self.base_checkpoint_path = f"data/training/{self.model.model_name}/checkpoint_best_val.pt"
 
 
 # ──────────────────────────────────────────────

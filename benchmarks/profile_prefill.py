@@ -8,7 +8,6 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
 import numpy as np
-from torch.utils.flop_counter import FlopCounterMode
 from src.HybridOutlierFactorizedAttention import HybridOutlierFactorizedAttention
 from src.config import ModelConfig
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
@@ -19,6 +18,7 @@ class StandardMHAWrapper(nn.Module):
     def __init__(self, attn_module):
         super().__init__()
         self.d_head = attn_module.d_head
+        self.num_heads = attn_module.num_heads
     
     def forward(self, x):
         B, N, D = x.shape
@@ -30,9 +30,29 @@ class StandardMHAWrapper(nn.Module):
         return Y.transpose(1, 2).reshape(B, N, D)
 
 def count_flops_fwd(model, x):
-    with FlopCounterMode(display=False) as flop_counter:
-        _ = model(x)
-    return flop_counter.get_total_flops()
+    """
+    Computes analytical forward FLOPs for the attention core.
+
+    PyTorch's FlopCounterMode relies on ATen operator dispatch, which records 0 FLOPs
+    for custom Triton JIT kernels (chunk_gla_inlier_fwd and exact_attention_triton).
+    Therefore, FlopCounterMode severely under-counts HOFA FLOPs and cannot be used.
+    We compute the theoretical FLOPs analytically for both HOFA and MHA.
+    """
+    B, N, D = x.shape
+    if isinstance(model, HybridOutlierFactorizedAttention):
+        H = model.num_heads
+        d_h = model.d_head
+        r = model.r if isinstance(model.r, int) else model.r[0]
+        # Outlier exact attention: Q_O @ K_O^T (2*B*H*N^2*r) + P_O @ V (2*B*H*N^2*d_h)
+        quad_flops = 2 * B * H * (N ** 2) * (r + d_h)
+        # Inlier GLA linear attention: K_I^T @ V (2*B*H*N*(d_h-r)*d_h) + Q_I @ S (2*B*H*N*(d_h-r)*d_h) + gates (4*B*H*N*d_h)
+        linear_flops = 4 * B * H * N * (d_h - r) * d_h + 4 * B * H * N * d_h
+        return int(quad_flops + linear_flops)
+    else:
+        # Standard MHA: Q @ K^T (2*B*H*N^2*d_h) + P @ V (2*B*H*N^2*d_h) = 4*B*H*N^2*d_h
+        d_h = model.d_head
+        H = getattr(model, "num_heads", D // d_h)
+        return int(4 * B * H * (N ** 2) * d_h)
 
 def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperimentConfig(), warmup_steps=3, active_steps=10, force_rerun=True, save_results=True):
     model_cfg = config.model_config
@@ -46,6 +66,7 @@ def run_profiling_experiment(config: PrefillExperimentConfig = PrefillExperiment
     hybrid_attn.W_q = nn.Identity()
     hybrid_attn.W_k = nn.Identity()
     hybrid_attn.W_v = nn.Identity()
+    hybrid_attn.out_proj = nn.Identity()
             
     mha = StandardMHAWrapper(hybrid_attn).to(device).eval()
     
