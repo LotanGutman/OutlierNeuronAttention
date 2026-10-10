@@ -290,6 +290,29 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
     ax2.set_title('Prefill Compute (FLOPs)')
     ax2.grid(True, which="both", linestyle=':', alpha=0.6)
     
+    if len(flops_mha_g) > 0 and len(flops_hyb_g) > 0:
+        max_idx = min(len(flops_mha_g), len(flops_hyb_g)) - 1
+        max_len = valid_lens[max_idx]
+        val_mha = flops_mha_g[max_idx]
+        val_hyb = flops_hyb_g[max_idx]
+        reduction = (val_mha - val_hyb) / val_mha * 100.0
+
+        tail_factor = 1.45
+        top_tail = val_mha * tail_factor
+        bottom_tail = val_hyb / tail_factor
+
+        # Connecting line between the two markers
+        ax2.plot([max_len, max_len], [val_hyb, val_mha], color='black', lw=1.5)
+        # Inward-pointing arrows (->--<-)
+        ax2.annotate('', xy=(max_len, val_mha), xytext=(max_len, top_tail),
+                     arrowprops=dict(arrowstyle='->', color='black', lw=1.5))
+        ax2.annotate('', xy=(max_len, val_hyb), xytext=(max_len, bottom_tail),
+                     arrowprops=dict(arrowstyle='->', color='black', lw=1.5))
+
+        ax2.text(max_len * 1.15, (val_mha * val_hyb) ** 0.5, f'-{reduction:.1f}%', 
+                 color='black', va='center', ha='left', fontsize=12, fontweight='bold', clip_on=False)
+        ax2.set_ylim(top=top_tail * 1.3)
+    
     min_len = min(len(times_mha), len(times_hyb))
     speedups = [times_mha[i] / times_hyb[i] for i in range(min_len)]
     vl_speed = valid_lens[:min_len]

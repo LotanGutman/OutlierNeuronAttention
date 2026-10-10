@@ -1,7 +1,13 @@
 from dataclasses import dataclass, field
 from typing import Union, List, Tuple, Optional
+from enum import Enum
 import torch
 from src.config import ModelConfig
+
+class DatasetType(str, Enum):
+    FINEWEB = "fineweb"
+    PG19 = "pg19"
+
 
 """
 important - 
@@ -29,7 +35,10 @@ class LanguageModelingExperimentConfig:
     )
 
     # Dataset / caching
+    dataset_name: DatasetType = DatasetType.FINEWEB
     max_tokens: int = 1_000_000_000  # how many tokens to download & cache
+    train_cache_path: Optional[str] = None
+    val_cache_path: Optional[str] = None
 
     # Training hyperparameters
     batch_size: int = 32
@@ -242,4 +251,71 @@ def make_350M_MHA() -> LanguageModelingExperimentConfig:
         micro_batch_size=8,
         gradient_accumulation_steps=4,
     )
+
+
+
+
+
+
+
+"""
+Bellow are the configs for the continual pretraining experiments
+"""
+
+def make_350M_HOFA_cpt() -> LanguageModelingExperimentConfig:
+    """350M HOFA Continual Pretraining (CPT) on PG19 at 16k context."""
+    cfg = make_350M_HOFA()
+    cfg.model_name = "350M_HOFA_cpt"
+    cfg.plot_name = "350M HOFA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 2
+    cfg.gradient_accumulation_steps = 8
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)  # ~381 steps
+    cfg.learning_rate = 1e-5
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 30
+    cfg.val_every = 50
+    cfg.val_num_batches = 16  # 16 * 16 * 16385 ~ 4.19M tokens
+    cfg.save_every = 50
+    cfg.print_every = 10
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return cfg
+
+
+def make_350M_MHA_cpt() -> LanguageModelingExperimentConfig:
+    """350M MHA Continual Pretraining (CPT) on PG19 at 16k context."""
+    cfg = make_350M_MHA()
+    cfg.model_name = "350M_MHA_cpt"
+    cfg.plot_name = "350M MHA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 2
+    cfg.gradient_accumulation_steps = 8
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)  # ~381 steps
+    cfg.learning_rate = 1e-5
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 30
+    cfg.val_every = 50
+    cfg.val_num_batches = 16  # 16 * 16 * 16385 ~ 4.19M tokens
+    cfg.save_every = 50
+    cfg.print_every = 10
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return cfg
+
+
+
+
+
+
+
+
 

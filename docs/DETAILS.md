@@ -27,3 +27,15 @@ This codebase uses two execution pipelines optimized for different workloads:
 ## Training-Free Extension Diagnostics (YaRN)
 
 Training-free context extension diagnostics use YaRN implemented in `src/yarn.py` with canonical LLaMA defaults ($\alpha=1.0, \beta=32.0$).
+
+---
+
+## Dataset Pipelines
+
+The project maintains two distinct data preparation pipelines targeting `FastTokenLoader`:
+
+1. `training/download_fineweb.py` - Pretraining on FineWeb-Edu
+
+2. `training/download_pg19.py` - Continual Pretraining on PG19
+- no cross-book boundary contamination.
+- Saves whole validation and test books (`pg19_val_books.bin`, `pg19_test_books.bin`) with index metadata for zero-shot $64\text{k}$ Passkey retrieval and sliding-window perplexity ($S=256$).

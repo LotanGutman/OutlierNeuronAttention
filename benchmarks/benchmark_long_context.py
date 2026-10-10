@@ -1,18 +1,14 @@
 """
-Context Length Extrapolation with Canonical YaRN
+Context length extrapolation benchmark with canonical YaRN.
 """
 
 import os
 import sys
-
-# Ensure repository root is in sys.path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import gc
 import json
 import math
 import time
-from typing import List, Dict, Optional, Union, Tuple
+from typing import List, Dict, Optional, Tuple
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -26,8 +22,9 @@ from training.training_config import YaRNConfig
 from training.data_utils import FastTokenLoader
 from benchmarks.benchmarks_configs import LongContextExtrapolationConfig, CACHE_PATH
 
+
 def bootstrap_ci(losses: List[float], num_resamples: int = 1000, alpha: float = 0.05) -> Tuple[float, float, float]:
-    """Computes mean and 95% bootstrap confidence intervals over sequences."""
+    """Computes mean and 95% bootstrap confidence interval."""
     if not losses:
         return float('nan'), float('nan'), float('nan')
     if len(losses) == 1:
@@ -48,8 +45,7 @@ def bootstrap_ci(losses: List[float], num_resamples: int = 1000, alpha: float = 
 
 
 def compute_chunked_loss(logits: torch.Tensor, targets: torch.Tensor, chunk_size: int = 2048) -> float:
-    """Computes mean cross-entropy loss in sequence slices to prevent PyTorch's
-    internal float32 upcast from allocating a ton of VRAM at extended lengths."""
+    """Computes cross-entropy loss in sequence chunks to avoid VRAM spikes."""
     B, N, V = logits.shape
     total_loss_sum = 0.0
     y_flat = targets.view(B, N)
@@ -69,9 +65,6 @@ def evaluate_long_context_metrics(
     total_tokens_target: int = 500000,
     device: str = 'cuda'
 ) -> Dict:
-    """
-    Evaluates pooled validation perplexity with bootstrap CI.
-    """
     batch_size = 1
     num_batches = max(1, total_tokens_target // seq_len)
     loader = FastTokenLoader(val_cache_path, batch_size, seq_len, start_idx=0)
@@ -122,10 +115,10 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
     models: List[YaRNConfig] = [config.models] if isinstance(config.models, YaRNConfig) else list(config.models)
     seq_lengths = list(config.seq_lengths)
 
-    print("YaRN Context Length Extrapolation Benchmark (Training-Free Extension Diagnostics)")
+    print("YaRN Context Length Extrapolation Benchmark")
     print(f"Device: {device}")
     print(f"Models: {[m.model.model_name for m in models]}")
-    print(f"Target Sequence Lengths: {seq_lengths}\n")
+    print(f"Sequence lengths: {seq_lengths}\n")
 
     os.makedirs(CACHE_PATH, exist_ok=True)
     cache_file = os.path.join(CACHE_PATH, config.cache_file_name)
@@ -150,24 +143,20 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
             print(f"[WARNING] Validation cache not found: {val_cache_path}. Skipping {model_name}.")
             continue
 
-        print(f"\n{'#' * 80}")
-        print(f"Evaluating {plot_name} ({model_name})")
-        print(f"{'#' * 80}")
+        print(f"\nEvaluating {plot_name} ({model_name})...")
 
         for N in seq_lengths:
             if str(N) in results.get(model_name, {}) and 'ppl_mean' in results[model_name][str(N)]:
                 ppl = results[model_name][str(N)]['ppl_mean']
                 ci = results[model_name][str(N)]['ppl_ci_95']
-                print(f"[{model_name}] N={N:5d} | Cached result found (PPL: {ppl:6.2f} [{ci[0]:5.2f}, {ci[1]:5.2f}]). Skipping.")
+                print(f"[{model_name}] N={N:5d} | Cached result: PPL={ppl:6.2f} [{ci[0]:5.2f}, {ci[1]:5.2f}]")
                 continue
 
-            print(f"\n--- Initializing fresh {model_name} instance for N={N} (zero state leakage guarantee) ---")
             t0 = time.time()
-            # Fresh model instantiation per length to guarantee zero state leakage
             yarn_model = YaRNModel(yarn_cfg, device=device, dtype=torch.bfloat16)
             n_patched = yarn_model.set_context_length(N)
             s = N / yarn_model.original_max_seq_len
-            print(f"Fresh model ready in {time.time() - t0:.1f}s (s={s:.1f}x | {n_patched} layers patched).")
+            print(f"[{model_name}] Initialized for N={N} (s={s:.1f}x, {n_patched} layers patched, {time.time() - t0:.1f}s)")
 
             try:
                 metrics = evaluate_long_context_metrics(
@@ -189,7 +178,6 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
                 with open(cache_file, "w") as f:
                     json.dump(results, f, indent=2)
 
-
             except torch.cuda.OutOfMemoryError:
                 print(f"[{model_name}] N={N:5d} | CUDA OOM encountered.")
                 torch.cuda.empty_cache()
@@ -203,9 +191,8 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
     cache_file = os.path.join(CACHE_PATH, config.cache_file_name)
     with open(cache_file, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\n[INFO] Comprehensive results cached to {cache_file}\n")
+    print(f"\nResults cached to {cache_file}\n")
 
-    # Summary table
     headers = [f"{m.model.plot_name:<24}" for m in models]
     print(f"{'Context Length (N)':<20} | " + " | ".join(headers))
     for N in seq_lengths:
@@ -243,7 +230,6 @@ def plot_long_context(config: Optional[LongContextExtrapolationConfig] = None, r
     plot_dir = "data/plots/length_extrapolation"
     os.makedirs(plot_dir, exist_ok=True)
 
-    # 1. PPL Extrapolation Plot
     fig, ax = plt.subplots(figsize=(8.0, 5.0), dpi=300)
     palette = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e"]
     markers = ["o-", "s--", "^-.", "d:"]
@@ -293,7 +279,7 @@ def plot_long_context(config: Optional[LongContextExtrapolationConfig] = None, r
     plot_pdf = os.path.join(plot_dir, "yarn_length_extrapolation.pdf")
     fig.savefig(plot_pdf, bbox_inches="tight")
     plt.close(fig)
-    print(f"[INFO] PPL extrapolation plot saved to {plot_pdf}")
+    print(f"Plot saved to {plot_pdf}")
 
 
 if __name__ == "__main__":

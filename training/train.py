@@ -17,8 +17,8 @@ from training.data_utils import FastTokenLoader
 
 def train(config: LanguageModelingExperimentConfig):
     model_size = config.model_name.split('_')[0]
-    cache_path: str = f"data/datasets/data_{model_size}_cache.bin"
-    val_cache_path: str = f"data/datasets/data_{model_size}_val_cache.bin"
+    cache_path: str = config.train_cache_path or f"data/datasets/data_{model_size}_cache.bin"
+    val_cache_path: str = config.val_cache_path or f"data/datasets/data_{model_size}_val_cache.bin"
     checkpoint_dir = f"data/training/{config.model_name}"
     os.makedirs(checkpoint_dir, exist_ok=True)
     
