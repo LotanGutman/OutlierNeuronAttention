@@ -6,14 +6,9 @@ import argparse
 from training.training_config import (
     DatasetType,
     YaRNConfig,
+    get_model_config,
     make_70M_MHA, make_70M_HOFA, make_70M_HOFA_flat32, 
-    make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend, 
-    make_13M_HOFA, make_13M_MHA,
-    make_30M_HOFA, make_30M_MHA,
-    make_125M_HOFA, make_125M_MHA, make_350M_HOFA, make_350M_MHA,
-    make_13M_HOFA_cpt, make_13M_MHA_cpt,
-    make_30M_HOFA_cpt, make_30M_MHA_cpt,
-    make_350M_HOFA_cpt, make_350M_MHA_cpt
+    make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend
 )
 
 
@@ -72,24 +67,17 @@ def main():
     parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
 
     args = parser.parse_args()
-    config = {
-        "13M": make_13M_HOFA,
-        "30M": make_30M_HOFA,
-        "70M": make_70M_HOFA,
-        "125M": make_125M_HOFA,
-        "350M": make_350M_HOFA}.get(getattr(args, 'scale', '350M'), make_350M_HOFA)()
+    model_arg = getattr(args, 'model', 'hofa')
+    if model_arg not in ["hofa", "mha"]:
+        model_arg = "hofa"
+
+    config = get_model_config(
+        scale=getattr(args, 'scale', '350M'),
+        model=model_arg,
+        is_cpt=getattr(args, 'cpt', False)
+    )
 
     if args.command == "train":
-        if getattr(args, 'cpt', False):
-            scale = getattr(args, 'scale', '350M')
-            is_mha = getattr(args, 'model', 'hofa') == "mha"
-            if scale == "13M": # for debugging
-                config = make_13M_MHA_cpt() if is_mha else make_13M_HOFA_cpt()
-            elif scale == "30M":
-                config = make_30M_MHA_cpt() if is_mha else make_30M_HOFA_cpt()
-            else:
-                config = make_350M_MHA_cpt() if is_mha else make_350M_HOFA_cpt()
-
         if args.download_data:
             chosen_dataset = DatasetType(args.dataset) if args.dataset else (DatasetType.PG19 if getattr(args, 'cpt', False) else DatasetType.FINEWEB)
             if chosen_dataset == DatasetType.PG19:
@@ -106,7 +94,8 @@ def main():
             from benchmarks.benchmark_zeroshot import evaluate_zeroshot
             eval_cfg = EvalExperimentConfig()
             if args.shared:
-                eval_configs = [make_125M_HOFA(), make_125M_MHA()]
+                scale = getattr(args, 'scale', '125M')
+                eval_configs = [get_model_config(scale, "hofa"), get_model_config(scale, "mha")]
                 evaluate_zeroshot(eval_configs, eval_cfg)
             else:
                 evaluate_zeroshot(config, eval_cfg, True)
@@ -118,7 +107,12 @@ def main():
                     make_70M_HOFA_depth_axis(), make_70M_HOFA_width_axis(), make_70M_HOFA_fixed_blend()
                 ], subdirectory="70M")
             elif args.shared:
-                plot_training_metrics([make_350M_HOFA(), make_350M_MHA()], subdirectory="350M")
+                scale = getattr(args, 'scale', '350M')
+                is_cpt = getattr(args, 'cpt', False)
+                hofa_cfg = get_model_config(scale=scale, model="hofa", is_cpt=is_cpt)
+                mha_cfg = get_model_config(scale=scale, model="mha", is_cpt=is_cpt)
+                subdir = f"{scale}_CPT" if is_cpt else scale
+                plot_training_metrics([hofa_cfg, mha_cfg], subdirectory=subdir)
             else:
                 plot_training_metrics(config)
         else:
@@ -138,22 +132,13 @@ def main():
             evaluate_pretrained_zeroshot(eval_cfg, is_simple=args.simple, scale=args.scale)
         elif args.shared:
             from benchmarks.benchmark_zeroshot import evaluate_zeroshot
-            if args.scale == "70M":
-                eval_configs = [make_70M_HOFA(), make_70M_MHA()]
-            elif args.scale == "350M":
-                eval_configs = [make_350M_HOFA(), make_350M_MHA()]
-            else:
-                eval_configs = [make_125M_HOFA(), make_125M_MHA()]
+            scale = getattr(args, 'scale', '125M')
+            eval_configs = [get_model_config(scale, "hofa"), get_model_config(scale, "mha")]
             evaluate_zeroshot(eval_configs, eval_cfg, is_simple=args.simple)
         else:
             from benchmarks.benchmark_zeroshot import evaluate_zeroshot
-            eval_config = config
-            if args.scale == "70M":
-                eval_config = make_70M_HOFA()
-            elif args.scale == "125M":
-                eval_config = make_125M_HOFA()
-            elif args.scale == "350M":
-                eval_config = make_350M_HOFA()
+            scale = getattr(args, 'scale', '350M')
+            eval_config = get_model_config(scale, getattr(args, 'model', 'hofa'))
             evaluate_zeroshot(eval_config, eval_cfg, is_simple=args.simple)
     elif args.command == "infer":
         from src.config import InferenceConfig
@@ -238,12 +223,8 @@ def main():
             from benchmarks.benchmarks_configs import LongContextExtrapolationConfig
             scale = getattr(args, 'scale', '350M')
             model_flag = getattr(args, 'model', 'both').lower()
-            if scale == "70M":
-                h_cfg, m_cfg = make_70M_HOFA(), make_70M_MHA()
-            elif scale == "125M":
-                h_cfg, m_cfg = make_125M_HOFA(), make_125M_MHA()
-            else:
-                h_cfg, m_cfg = make_350M_HOFA(), make_350M_MHA()
+            h_cfg = get_model_config(scale, "hofa")
+            m_cfg = get_model_config(scale, "mha")
 
             if model_flag == "hofa":
                 eval_models = [YaRNConfig(model=h_cfg)]

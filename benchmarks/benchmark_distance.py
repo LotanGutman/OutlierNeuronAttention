@@ -5,7 +5,7 @@ import math
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from training.training_config import make_125M_HOFA, make_125M_MHA, make_350M_HOFA, make_350M_MHA
+from training.training_config import get_model_config
 from benchmarks.benchmarks_configs import DistanceExperimentConfig
 from training.data_utils import FastTokenLoader
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
@@ -74,17 +74,7 @@ def hooked_hofa_forward(self, x):
     return original_hofa_forward(self, x)
 
 def compute_distances(model_name: str, config: DistanceExperimentConfig):
-    # Determine the model config factory
-    if model_name == "125M_MHA":
-        model_config_wrap = make_125M_MHA()
-    elif model_name == "125M_HOFA":
-        model_config_wrap = make_125M_HOFA()
-    elif model_name == "350M_MHA":
-        model_config_wrap = make_350M_MHA()
-    elif model_name == "350M_HOFA":
-        model_config_wrap = make_350M_HOFA()
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
+    model_config_wrap = get_model_config(model_name)
         
     device = config.device
     model_cfg = model_config_wrap.model_config

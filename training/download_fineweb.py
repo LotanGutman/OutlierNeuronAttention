@@ -36,7 +36,7 @@ import tiktoken
 from datasets import load_dataset
 from huggingface_hub import list_repo_files, hf_hub_download
 from tqdm import tqdm
-from training.training_config import LanguageModelingExperimentConfig
+from training.training_config import LanguageModelingExperimentConfig, get_model_config
 
 import itertools
 from collections import deque
@@ -387,7 +387,5 @@ if __name__ == "__main__":
     parser.add_argument("--val-only", action="store_true", help="Download only validation cache")
     cli_args = parser.parse_args()
 
-    import training.training_config as tc
-    factory = getattr(tc, f"make_{cli_args.scale}_HOFA", tc.make_350M_HOFA)
-    config = factory()
+    config = get_model_config(cli_args.scale, "hofa")
     download_and_tokenize(config, val_only=cli_args.val_only)

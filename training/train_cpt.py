@@ -17,7 +17,7 @@ torch.set_float32_matmul_precision('high')
 
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
 from src.yarn import patch_model_yarn, swap_rotary_to_native, restore_rotary_from_saved
-from training.training_config import LanguageModelingExperimentConfig, YaRNConfig
+from training.training_config import LanguageModelingExperimentConfig, YaRNConfig, get_model_config
 from interrupt_util.interrupts import GracefulInterruptHandler
 from training.data_utils import FastTokenLoader
 
@@ -240,9 +240,7 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
             base_seq_len = yarn_cfg.original_max_seq_len
         else:
             try:
-                import training.training_config as tc
-                base_factory = getattr(tc, f"make_{base_model_name}", None)
-                base_seq_len = base_factory().seq_len if base_factory else 1024
+                base_seq_len = get_model_config(base_model_name).seq_len
             except Exception:
                 base_seq_len = 1024
 

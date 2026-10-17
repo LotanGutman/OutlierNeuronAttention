@@ -436,3 +436,76 @@ def make_350M_MHA_cpt() -> YaRNConfig:
     cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
     return YaRNConfig(model=cfg)
 
+
+MODEL_CONFIG_REGISTRY = {
+    # Pretraining configs
+    ("13M", "HOFA", False): make_13M_HOFA,
+    ("13M", "MHA", False): make_13M_MHA,
+    ("30M", "HOFA", False): make_30M_HOFA,
+    ("30M", "MHA", False): make_30M_MHA,
+    ("70M", "HOFA", False): make_70M_HOFA,
+    ("70M", "MHA", False): make_70M_MHA,
+    ("125M", "HOFA", False): make_125M_HOFA,
+    ("125M", "MHA", False): make_125M_MHA,
+    ("350M", "HOFA", False): make_350M_HOFA,
+    ("350M", "MHA", False): make_350M_MHA,
+
+    # Continual Pretraining (YaRN) configs
+    ("13M", "HOFA", True): make_13M_HOFA_cpt,
+    ("13M", "MHA", True): make_13M_MHA_cpt,
+    ("30M", "HOFA", True): make_30M_HOFA_cpt,
+    ("30M", "MHA", True): make_30M_MHA_cpt,
+    ("350M", "HOFA", True): make_350M_HOFA_cpt,
+    ("350M", "MHA", True): make_350M_MHA_cpt,
+
+    # Direct string name lookups
+    "13M_HOFA": make_13M_HOFA,
+    "13M_MHA": make_13M_MHA,
+    "30M_HOFA": make_30M_HOFA,
+    "30M_MHA": make_30M_MHA,
+    "70M_HOFA": make_70M_HOFA,
+    "70M_MHA": make_70M_MHA,
+    "125M_HOFA": make_125M_HOFA,
+    "125M_MHA": make_125M_MHA,
+    "350M_HOFA": make_350M_HOFA,
+    "350M_MHA": make_350M_MHA,
+
+    "13M_HOFA_CPT": make_13M_HOFA_cpt,
+    "13M_MHA_CPT": make_13M_MHA_cpt,
+    "30M_HOFA_CPT": make_30M_HOFA_cpt,
+    "30M_MHA_CPT": make_30M_MHA_cpt,
+    "350M_HOFA_CPT": make_350M_HOFA_cpt,
+    "350M_MHA_CPT": make_350M_MHA_cpt,
+}
+
+
+def get_model_config(
+    scale: str = "350M",
+    model: Optional[str] = "hofa",
+    is_cpt: bool = False
+) -> Union[LanguageModelingExperimentConfig, YaRNConfig]:
+    """Retrieve model experiment configuration by (scale, model, is_cpt) tuple or composite name."""
+    clean_str = scale.strip().upper()
+
+    # Check if a composite string name was provided (e.g. '125M_MHA' or '13M_HOFA_CPT')
+    if "_" in clean_str or model is None:
+        if clean_str in MODEL_CONFIG_REGISTRY:
+            return MODEL_CONFIG_REGISTRY[clean_str]()
+        raise NotImplementedError(
+            f"No config registered for '{scale}'. "
+            f"Available named configs: {[k for k in MODEL_CONFIG_REGISTRY if isinstance(k, str)]}"
+        )
+
+    # Otherwise lookup by (scale, model, is_cpt)
+    key = (clean_str, model.strip().upper(), bool(is_cpt))
+    if key in MODEL_CONFIG_REGISTRY:
+        return MODEL_CONFIG_REGISTRY[key]()
+
+    available_tuples = [k for k in MODEL_CONFIG_REGISTRY if isinstance(k, tuple)]
+    raise NotImplementedError(
+        f"No config for combination: scale='{scale}', model='{model}', is_cpt={is_cpt}. "
+        f"Available combinations: {available_tuples}"
+    )
+
+
+
