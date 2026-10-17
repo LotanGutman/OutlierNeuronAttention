@@ -1,5 +1,6 @@
 import os
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+from src.utils.platform_utils import configure_pytorch_allocator
+configure_pytorch_allocator()
 import time
 import math
 import torch
@@ -190,6 +191,7 @@ def train(config: LanguageModelingExperimentConfig):
                         torch.save({
                             'model_state_dict': clean_state_dict,
                             'optimizer_state_dict': optimizer.state_dict(),
+                            'config': config,
                             'metrics': metrics,
                             'step': step,
                             'start_idx': start_idx,
@@ -218,6 +220,7 @@ def train(config: LanguageModelingExperimentConfig):
                 torch.save({
                     'model_state_dict': clean_state_dict,
                     'optimizer_state_dict': optimizer.state_dict(),
+                    'config': config,
                     'metrics': metrics,
                     'step': step,
                     'start_idx': start_idx,

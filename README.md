@@ -33,9 +33,9 @@ bash install.sh  # or bash install_no_mamba.sh (for environment without mamba-ss
 ## Reproduction Commands
 
 | Workflow | Command | Description |
-| **Data Preparation** | `python main.py train --scale 350M --download-data` (FineWeb-Edu) / `python main.py train --download-data --dataset pg19` (PG19) | Download and tokenize FineWeb-Edu (pretraining) or PG19 (16k continual pretraining) |
-| **Pretraining** | `python main.py train --scale 350M` | Run distributed pretraining (`70M`, `125M`, or `350M`) |
-| **Continual Pretraining** | `python main.py train --cpt --scale 350M [--model {hofa,mha}]` | Continual pretraining on PG19 at 16k context (HOFA or MHA) |
+| **Data Preparation** | `python main.py train --scale 350M --download-data [--val-only]` (FineWeb-Edu) / `python main.py train --download-data --dataset pg19` (PG19) | Download and tokenize FineWeb-Edu (pretraining) or PG19 (16k continual pretraining). Use `--val-only` to cache validation splits without full training data. |
+| **Pretraining** | `python main.py train --scale 350M` | Run distributed pretraining (`13M`, `70M`, `125M`, or `350M`) |
+| **Continual Pretraining** | `python main.py train --cpt --scale 350M [--model {hofa,mha}]` | Continual pretraining on PG19 at 16k context (`13M` or `350M`, HOFA or MHA) |
 | **Checkpoints Eval** | `python main.py train --scale 350M --eval` | Evaluate perplexity on validation splits |
 | **Context Extension** | `python main.py benchmark --extrapolation` | Training-free extension diagnostics ($1\text{k} \to 16\text{k}$ tokens) |
 | **Induction Retrieval** | `python main.py benchmark --induction [--plot]` | Associative recall on synthetic induction heads |
@@ -60,6 +60,7 @@ OutlierNeuronAttention/
 │   ├── yarn.py                                   # YaRN extrapolation module
 │   ├── config.py
 │   ├── chunk_gla_inlier.py, exact_attention.py, hofa_decode_triton.py, inference.py  # Fused Triton decode & reference kernels
+│   ├── utils/
 │   └── modules/                                  # Triton helpers, benchmarking & checkpointing utilities
 ├── benchmarks/                   # Synthetic, mechanistic, and extrapolation tasks
 │   ├── analyze_alpha.py

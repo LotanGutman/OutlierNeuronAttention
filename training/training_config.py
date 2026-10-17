@@ -65,18 +65,13 @@ class YaRNConfig:
     model: LanguageModelingExperimentConfig
     beta_fast: float = 32.0
     beta_slow: float = 1.0
-    mscale: float = 1.0
-    mscale_all_dim: float = 0.0
-    base: float = 10000.0
     original_max_seq_len: Optional[int] = None
     base_checkpoint_path: Optional[str] = None
-    reset_optimizer: bool = True
 
     def __post_init__(self):
-        if self.original_max_seq_len is None:
-            self.original_max_seq_len = self.model.model_config.block_size
         if self.base_checkpoint_path is None:
-            self.base_checkpoint_path = f"data/training/{self.model.model_name}/checkpoint_best_val.pt"
+            base_name = self.model.model_name.replace("_cpt", "")
+            self.base_checkpoint_path = f"data/training/{base_name}/checkpoint_best_val.pt"
 
 
 # ──────────────────────────────────────────────
@@ -123,6 +118,44 @@ def make_13M_MHA() -> LanguageModelingExperimentConfig:
         micro_batch_size=8,
         gradient_accumulation_steps=4,
     )
+
+
+# 30M models
+def make_30M_HOFA() -> LanguageModelingExperimentConfig:
+    """30M HOFA base model."""
+    return LanguageModelingExperimentConfig(
+        model_name="30M_HOFA",
+        plot_name="30M HOFA",
+        model_config=ModelConfig(
+            d_model=384, num_heads=6, num_layers=6,
+            r=[32, 16, 16, 16, 16, 32],
+            use_rope=True, block_size=1024,
+        ),
+        max_tokens=1_000_000_000,
+        train_steps=_compute_steps(1_000_000_000, 32, 1024),
+        learning_rate=6e-4, warmup_steps=300, print_every=100, save_every=250,
+        micro_batch_size=2,
+        gradient_accumulation_steps=16,
+    )
+
+
+def make_30M_MHA() -> LanguageModelingExperimentConfig:
+    """30M pure MHA baseline. r=d_head=64."""
+    return LanguageModelingExperimentConfig(
+        model_name="30M_MHA",
+        plot_name="30M MHA",
+        model_config=ModelConfig(
+            d_model=384, num_heads=6, num_layers=6,
+            r=64,
+            use_rope=True, block_size=1024,
+        ),
+        max_tokens=1_000_000_000,
+        train_steps=_compute_steps(1_000_000_000, 32, 1024),
+        learning_rate=6e-4, warmup_steps=300, print_every=100, save_every=250,
+        micro_batch_size=2,
+        gradient_accumulation_steps=16,
+    )
+
 
 # 70M models (Ablations)
 def _70M_base(**overrides) -> LanguageModelingExperimentConfig:
@@ -258,12 +291,105 @@ def make_350M_MHA() -> LanguageModelingExperimentConfig:
 
 
 
-"""
-Bellow are the configs for the continual pretraining experiments
-"""
+# Continual pretraining (CPT) configs
 
-def make_350M_HOFA_cpt() -> LanguageModelingExperimentConfig:
-    """350M HOFA Continual Pretraining (CPT) on PG19 at 16k context."""
+def make_13M_HOFA_cpt() -> YaRNConfig:
+    cfg = make_13M_HOFA()
+    cfg.model_name = "13M_HOFA_cpt"
+    cfg.plot_name = "13M HOFA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 1
+    cfg.gradient_accumulation_steps = 16
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
+    cfg.learning_rate = 5e-5
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 30
+    cfg.val_every = 50
+    cfg.val_num_batches = 16
+    cfg.save_every = 50
+    cfg.print_every = 10
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg)
+
+
+def make_13M_MHA_cpt() -> YaRNConfig:
+    cfg = make_13M_MHA()
+    cfg.model_name = "13M_MHA_cpt"
+    cfg.plot_name = "13M MHA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 1
+    cfg.gradient_accumulation_steps = 16
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
+    cfg.learning_rate = 5e-5
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 30
+    cfg.val_every = 50
+    cfg.val_num_batches = 16
+    cfg.save_every = 50
+    cfg.print_every = 10
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg)
+
+
+def make_30M_HOFA_cpt() -> YaRNConfig:
+    cfg = make_30M_HOFA()
+    cfg.model_name = "30M_HOFA_cpt"
+    cfg.plot_name = "30M HOFA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 1
+    cfg.gradient_accumulation_steps = 16
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
+    cfg.learning_rate = 3e-5
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 30
+    cfg.val_every = 50
+    cfg.val_num_batches = 16
+    cfg.save_every = 50
+    cfg.print_every = 10
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg)
+
+
+def make_30M_MHA_cpt() -> YaRNConfig:
+    cfg = make_30M_MHA()
+    cfg.model_name = "30M_MHA_cpt"
+    cfg.plot_name = "30M MHA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 1
+    cfg.gradient_accumulation_steps = 16
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
+    cfg.learning_rate = 3e-5
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 30
+    cfg.val_every = 50
+    cfg.val_num_batches = 16
+    cfg.save_every = 50
+    cfg.print_every = 10
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg)
+
+
+def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg = make_350M_HOFA()
     cfg.model_name = "350M_HOFA_cpt"
     cfg.plot_name = "350M HOFA (16k CPT)"
@@ -273,22 +399,21 @@ def make_350M_HOFA_cpt() -> LanguageModelingExperimentConfig:
     cfg.batch_size = 16
     cfg.micro_batch_size = 2
     cfg.gradient_accumulation_steps = 8
-    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)  # ~381 steps
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
     cfg.learning_rate = 1e-5
     cfg.weight_decay = 0.0
     cfg.warmup_steps = 30
     cfg.val_every = 50
-    cfg.val_num_batches = 16  # 16 * 16 * 16385 ~ 4.19M tokens
+    cfg.val_num_batches = 8
     cfg.save_every = 50
     cfg.print_every = 10
     cfg.dataset_name = DatasetType.PG19
     cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
     cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
-    return cfg
+    return YaRNConfig(model=cfg)
 
 
-def make_350M_MHA_cpt() -> LanguageModelingExperimentConfig:
-    """350M MHA Continual Pretraining (CPT) on PG19 at 16k context."""
+def make_350M_MHA_cpt() -> YaRNConfig:
     cfg = make_350M_MHA()
     cfg.model_name = "350M_MHA_cpt"
     cfg.plot_name = "350M MHA (16k CPT)"
@@ -298,24 +423,16 @@ def make_350M_MHA_cpt() -> LanguageModelingExperimentConfig:
     cfg.batch_size = 16
     cfg.micro_batch_size = 2
     cfg.gradient_accumulation_steps = 8
-    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)  # ~381 steps
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
     cfg.learning_rate = 1e-5
     cfg.weight_decay = 0.0
     cfg.warmup_steps = 30
     cfg.val_every = 50
-    cfg.val_num_batches = 16  # 16 * 16 * 16385 ~ 4.19M tokens
+    cfg.val_num_batches = 8
     cfg.save_every = 50
     cfg.print_every = 10
     cfg.dataset_name = DatasetType.PG19
     cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
     cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
-    return cfg
-
-
-
-
-
-
-
-
+    return YaRNConfig(model=cfg)
 

@@ -1,4 +1,5 @@
-import os
+from src.utils.platform_utils import configure_pytorch_allocator
+configure_pytorch_allocator()
 import json
 import argparse
 
@@ -7,7 +8,11 @@ from training.training_config import (
     YaRNConfig,
     make_70M_MHA, make_70M_HOFA, make_70M_HOFA_flat32, 
     make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend, 
+    make_13M_HOFA, make_13M_MHA,
+    make_30M_HOFA, make_30M_MHA,
     make_125M_HOFA, make_125M_MHA, make_350M_HOFA, make_350M_MHA,
+    make_13M_HOFA_cpt, make_13M_MHA_cpt,
+    make_30M_HOFA_cpt, make_30M_MHA_cpt,
     make_350M_HOFA_cpt, make_350M_MHA_cpt
 )
 
@@ -18,11 +23,12 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     parser_train = subparsers.add_parser("train", help="Run training, plotting, dataset downloading, or zero-shot evaluation")
-    parser_train.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="350M", help="Model scale to train or evaluate (default: 350M)")
+    parser_train.add_argument("--scale", type=str, choices=["13M", "30M", "70M", "125M", "350M"], default="350M", help="Model scale to train or evaluate (default: 350M)")
     parser_train.add_argument("--cpt", action="store_true", help="Continual pretraining mode at 16k context on PG19")
     parser_train.add_argument("--model", type=str, choices=["hofa", "mha"], default="hofa", help="Model variant to train in CPT mode (default: hofa)")
     parser_train.add_argument("--dataset", type=str, choices=[d.value for d in DatasetType], default=None, help="Dataset to download/tokenize (default: fineweb, or pg19 if --cpt is set)")
     parser_train.add_argument("--download-data", action="store_true", help="Download and cache the dataset for training")
+    parser_train.add_argument("--val-only", action="store_true", help="Download and cache only the validation dataset")
     parser_train.add_argument("--plot", action="store_true", help="Plot training metrics")
     parser_train.add_argument("--shared", action="store_true", help="Plot shared training metrics for HOFA and MHA")
     parser_train.add_argument("--70m", dest="plot_70m", action="store_true", help="Plot shared training metrics for all 70M ablations")
@@ -67,26 +73,31 @@ def main():
 
     args = parser.parse_args()
     config = {
+        "13M": make_13M_HOFA,
+        "30M": make_30M_HOFA,
         "70M": make_70M_HOFA,
         "125M": make_125M_HOFA,
         "350M": make_350M_HOFA}.get(getattr(args, 'scale', '350M'), make_350M_HOFA)()
 
     if args.command == "train":
         if getattr(args, 'cpt', False):
-            if getattr(args, 'model', 'hofa') == "mha":
-                config = make_350M_MHA_cpt()
+            scale = getattr(args, 'scale', '350M')
+            is_mha = getattr(args, 'model', 'hofa') == "mha"
+            if scale == "13M": # for debugging
+                config = make_13M_MHA_cpt() if is_mha else make_13M_HOFA_cpt()
+            elif scale == "30M":
+                config = make_30M_MHA_cpt() if is_mha else make_30M_HOFA_cpt()
             else:
-                config = make_350M_HOFA_cpt()
+                config = make_350M_MHA_cpt() if is_mha else make_350M_HOFA_cpt()
 
         if args.download_data:
             chosen_dataset = DatasetType(args.dataset) if args.dataset else (DatasetType.PG19 if getattr(args, 'cpt', False) else DatasetType.FINEWEB)
             if chosen_dataset == DatasetType.PG19:
                 from training.download_pg19 import download_and_tokenize_pg19
-                cpt_cfg = make_350M_MHA_cpt() if getattr(args, 'model', 'hofa') == "mha" else make_350M_HOFA_cpt()
-                download_and_tokenize_pg19(cpt_cfg)
+                download_and_tokenize_pg19(config)
             else:
                 from training.download_fineweb import download_and_tokenize
-                download_and_tokenize(config)
+                download_and_tokenize(config, val_only=args.val_only)
             import os
             print("\n[INFO] Data download completed successfully! Exiting immediately to prevent HuggingFace teardown bugs.")
             os._exit(0)
@@ -111,8 +122,12 @@ def main():
             else:
                 plot_training_metrics(config)
         else:
-            from training.train import train
-            train(config)
+            if getattr(args, 'cpt', False):
+                from training.train_cpt import train_cpt
+                train_cpt(config)
+            else:
+                from training.train import train
+                train(config)
     elif args.command == "eval":
         from benchmarks.benchmarks_configs import EvalExperimentConfig
         sample_limit = None if args.limit is None or args.limit <= 0 else args.limit

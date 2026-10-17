@@ -276,42 +276,35 @@ def plot_shared_profiling():
                      color='black', va='center', ha='left', fontsize=12, fontweight='bold')
 
     # Prefill FLOPs
-    flops_mha_g = [f / 1e9 for f in p_flops_mha]
-    flops_hyb_g = [f / 1e9 for f in p_flops_hyb]
+    flops_mha_t = [f / 1e12 for f in p_flops_mha]
+    flops_hyb_t = [f / 1e12 for f in p_flops_hyb]
 
-    ax_pre_flop.plot(p_valid_lens[:len(flops_mha_g)], flops_mha_g, **style_mha)
-    ax_pre_flop.plot(p_valid_lens[:len(flops_hyb_g)], flops_hyb_g, **style_hyb)
+    ax_pre_flop.plot(p_valid_lens[:len(flops_mha_t)], flops_mha_t, **style_mha)
+    ax_pre_flop.plot(p_valid_lens[:len(flops_hyb_t)], flops_hyb_t, **style_hyb)
     ax_pre_flop.set_xscale('log', base=2)
-    ax_pre_flop.set_yscale('log', base=10) 
+    ax_pre_flop.set_yscale('linear')
     ax_pre_flop.xaxis.set_major_formatter(formatter_x)
+    ax_pre_flop.yaxis.set_major_formatter(formatter_y)
     ax_pre_flop.set_xticks(p_valid_lens)
     ax_pre_flop.set_xlabel('Context Length ($N$)')
-    ax_pre_flop.set_ylabel('Forward Compute [GFLOPs]')
+    ax_pre_flop.set_ylabel('Forward Compute [TFLOPs]')
     ax_pre_flop.set_title('Prefill Compute (FLOPs)')
-    ax_pre_flop.grid(True, which="both", linestyle=':', alpha=0.6)
+    ax_pre_flop.grid(True, linestyle=':', alpha=0.6)
     
-    if len(flops_mha_g) > 0 and len(flops_hyb_g) > 0:
-        max_idx = min(len(flops_mha_g), len(flops_hyb_g)) - 1
+    if len(flops_mha_t) > 0 and len(flops_hyb_t) > 0:
+        max_idx = min(len(flops_mha_t), len(flops_hyb_t)) - 1
         max_len = p_valid_lens[max_idx]
-        val_mha = flops_mha_g[max_idx]
-        val_hyb = flops_hyb_g[max_idx]
+        val_mha = flops_mha_t[max_idx]
+        val_hyb = flops_hyb_t[max_idx]
         reduction = (val_mha - val_hyb) / val_mha * 100.0
 
-        tail_factor = 1.45
-        top_tail = val_mha * tail_factor
-        bottom_tail = val_hyb / tail_factor
-
-        # Connecting line between the two markers
-        ax_pre_flop.plot([max_len, max_len], [val_hyb, val_mha], color='black', lw=1.5)
-        # Inward-pointing arrows (->--<-)
-        ax_pre_flop.annotate('', xy=(max_len, val_mha), xytext=(max_len, top_tail),
-                             arrowprops=dict(arrowstyle='->', color='black', lw=1.5))
-        ax_pre_flop.annotate('', xy=(max_len, val_hyb), xytext=(max_len, bottom_tail),
-                             arrowprops=dict(arrowstyle='->', color='black', lw=1.5))
-
-        ax_pre_flop.text(max_len * 1.15, (val_mha * val_hyb) ** 0.5, f'-{reduction:.1f}%', 
+        ax_pre_flop.annotate(
+            '', xy=(max_len, val_hyb), xytext=(max_len, val_mha),
+            arrowprops=dict(arrowstyle="<->", color='black', lw=1.5)
+        )
+        ax_pre_flop.text(max_len * 1.15, (val_mha + val_hyb) / 2, f'-{reduction:.1f}%', 
                  color='black', va='center', ha='left', fontsize=12, fontweight='bold', clip_on=False)
-        ax_pre_flop.set_ylim(top=top_tail * 1.3)
+        ax_pre_flop.set_ylim(bottom=-val_mha * 0.02, top=val_mha * 1.05)
     
     # Prefill Speedup
     min_len = min(len(p_times_mha), len(p_times_hyb))

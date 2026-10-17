@@ -237,7 +237,9 @@ def build_book_level_split(
     }
 
 
-def download_and_tokenize_pg19(config: LanguageModelingExperimentConfig, base_dir: str = "data/datasets"):
+def download_and_tokenize_pg19(config, base_dir: str = "data/datasets"):
+    if hasattr(config, "model"):
+        config = config.model
     os.makedirs(base_dir, exist_ok=True)
 
     tokenizer_name = config.model_config.tokenizer_name

@@ -34,7 +34,7 @@ Training-free context extension diagnostics use YaRN implemented in `src/yarn.py
 
 The project maintains two distinct data preparation pipelines targeting `FastTokenLoader`:
 
-1. `training/download_fineweb.py` - Pretraining on FineWeb-Edu
+1. `training/download_fineweb.py` - Pretraining on FineWeb-Edu (and also validation, which is tracked in the extended context continual pretraining)
 
 2. `training/download_pg19.py` - Continual Pretraining on PG19
 - no cross-book boundary contamination.

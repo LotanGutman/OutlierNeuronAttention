@@ -27,7 +27,7 @@ def calc_hofa_flops_per_token(P, H, d_h, r_list, N):
     outlier_flops = 0
     inlier_flops = 0
     for r in r_list:
-        outlier_flops += 12 * H * r * N
+        outlier_flops += 6 * H * (r + d_h) * N
         inlier_flops += 18 * H * (d_h - r) * d_h
     return dense_flops + outlier_flops + inlier_flops
 

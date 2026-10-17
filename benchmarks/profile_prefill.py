@@ -275,43 +275,36 @@ def plot_profile_results(data=None, cache_path=None, save_plot=True):
             ax1.text(max_len * 1.15, (val_mha + val_hyb) / 2, f'+{improvement:.1f}%', 
                      color='black', va='center', ha='left', fontsize=12, fontweight='bold')
     
-    # --- Plot 2: Forward FLOPs (Log Y to show parallel scaling lines) ---
-    flops_mha_g = [f / 1e9 for f in flops_mha]
-    flops_hyb_g = [f / 1e9 for f in flops_hyb]
+    # --- Plot 2: Forward FLOPs ---
+    flops_mha_t = [f / 1e12 for f in flops_mha]
+    flops_hyb_t = [f / 1e12 for f in flops_hyb]
 
-    ax2.plot(valid_lens[:len(flops_mha_g)], flops_mha_g, label='MHA (FlashAttention)', **style_mha)
-    ax2.plot(valid_lens[:len(flops_hyb_g)], flops_hyb_g, label='HOFA, r = 16', **style_hyb)
+    ax2.plot(valid_lens[:len(flops_mha_t)], flops_mha_t, label='MHA (FlashAttention)', **style_mha)
+    ax2.plot(valid_lens[:len(flops_hyb_t)], flops_hyb_t, label='HOFA, r = 16', **style_hyb)
     ax2.set_xscale('log', base=2)
-    ax2.set_yscale('log', base=10) 
+    ax2.set_yscale('linear')
     ax2.xaxis.set_major_formatter(formatter_x)
+    ax2.yaxis.set_major_formatter(formatter_y)
     ax2.set_xticks(valid_lens)
     ax2.set_xlabel('Sequence Length ($N$)')
-    ax2.set_ylabel('Forward Compute [GFLOPs]')
+    ax2.set_ylabel('Forward Compute [TFLOPs]')
     ax2.set_title('Prefill Compute (FLOPs)')
-    ax2.grid(True, which="both", linestyle=':', alpha=0.6)
+    ax2.grid(True, linestyle=':', alpha=0.6)
     
-    if len(flops_mha_g) > 0 and len(flops_hyb_g) > 0:
-        max_idx = min(len(flops_mha_g), len(flops_hyb_g)) - 1
+    if len(flops_mha_t) > 0 and len(flops_hyb_t) > 0:
+        max_idx = min(len(flops_mha_t), len(flops_hyb_t)) - 1
         max_len = valid_lens[max_idx]
-        val_mha = flops_mha_g[max_idx]
-        val_hyb = flops_hyb_g[max_idx]
+        val_mha = flops_mha_t[max_idx]
+        val_hyb = flops_hyb_t[max_idx]
         reduction = (val_mha - val_hyb) / val_mha * 100.0
 
-        tail_factor = 1.45
-        top_tail = val_mha * tail_factor
-        bottom_tail = val_hyb / tail_factor
-
-        # Connecting line between the two markers
-        ax2.plot([max_len, max_len], [val_hyb, val_mha], color='black', lw=1.5)
-        # Inward-pointing arrows (->--<-)
-        ax2.annotate('', xy=(max_len, val_mha), xytext=(max_len, top_tail),
-                     arrowprops=dict(arrowstyle='->', color='black', lw=1.5))
-        ax2.annotate('', xy=(max_len, val_hyb), xytext=(max_len, bottom_tail),
-                     arrowprops=dict(arrowstyle='->', color='black', lw=1.5))
-
-        ax2.text(max_len * 1.15, (val_mha * val_hyb) ** 0.5, f'-{reduction:.1f}%', 
+        ax2.annotate(
+            '', xy=(max_len, val_hyb), xytext=(max_len, val_mha),
+            arrowprops=dict(arrowstyle="<->", color='black', lw=1.5)
+        )
+        ax2.text(max_len * 1.15, (val_mha + val_hyb) / 2, f'-{reduction:.1f}%', 
                  color='black', va='center', ha='left', fontsize=12, fontweight='bold', clip_on=False)
-        ax2.set_ylim(top=top_tail * 1.3)
+        ax2.set_ylim(bottom=-val_mha * 0.02, top=val_mha * 1.05)
     
     min_len = min(len(times_mha), len(times_hyb))
     speedups = [times_mha[i] / times_hyb[i] for i in range(min_len)]

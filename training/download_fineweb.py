@@ -44,7 +44,7 @@ from collections import deque
 
     
 
-def download_and_tokenize(config: LanguageModelingExperimentConfig):
+def download_and_tokenize(config: LanguageModelingExperimentConfig, val_only: bool = False):
     dataset_name = "HuggingFaceFW/fineweb-edu"
     model_size = config.model_name.split('_')[0]
 
@@ -372,7 +372,8 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
         # Always process validation first from the start of the stream
         process_split(val_cache_path, val_max_tokens, "validation")
         # Then immediately process training from where validation left off
-        process_split(train_cache_path, train_max_tokens, "training")
+        if not val_only:
+            process_split(train_cache_path, train_max_tokens, "training")
     finally:
         # Ensure thread exits cleanly
         stop_event.set()
@@ -380,5 +381,13 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig):
     return val_cache_path, train_cache_path
 
 if __name__ == "__main__":
-    config = LanguageModelingExperimentConfig()
-    download_and_tokenize(config)
+    import argparse
+    parser = argparse.ArgumentParser(description="Download FineWeb data")
+    parser.add_argument("--scale", type=str, default="350M", help="Model scale (13M, 70M, 125M, 350M)")
+    parser.add_argument("--val-only", action="store_true", help="Download only validation cache")
+    cli_args = parser.parse_args()
+
+    import training.training_config as tc
+    factory = getattr(tc, f"make_{cli_args.scale}_HOFA", tc.make_350M_HOFA)
+    config = factory()
+    download_and_tokenize(config, val_only=cli_args.val_only)
