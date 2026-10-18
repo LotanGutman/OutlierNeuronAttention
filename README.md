@@ -2,7 +2,7 @@
 
 # Hybrid Outlier-Factorized Attention (HOFA)
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![PyTorch 2.6.0](https://img.shields.io/badge/PyTorch-2.6.0-ee4c2c.svg?logo=pytorch)](https://pytorch.org)
 [![Paper](https://img.shields.io/badge/Paper-PDF-red.svg)](docs/preprint.pdf)
 
@@ -90,4 +90,6 @@ OutlierNeuronAttention/
 
 ## License
 
-This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the PolyForm Noncommercial License 1.0.0 - see the [LICENSE](LICENSE) file for details.
+
+For commercial licensing or inquiries, please contact the author.
