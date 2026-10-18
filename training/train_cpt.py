@@ -93,6 +93,7 @@ def forward_and_backward_chunked(
     targets: torch.Tensor,
     grad_accum_steps: int = 1,
     chunk_size: int = 4096,
+    checkpointing_interval: Optional[int] = None,
 ) -> float:
     # Chunked CE loss calculation (identical to direct CE) to prevent VRAM explosion at long contexts
     B, N = x.shape
@@ -100,8 +101,11 @@ def forward_and_backward_chunked(
 
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
         h = model.token_emb(x)
-        for layer in model.layers:
-            h = layer(h)
+        for i, layer in enumerate(model.layers):
+            if checkpointing_interval is not None and (i % checkpointing_interval == 0):
+                h = torch.utils.checkpoint.checkpoint(layer, h, use_reentrant=False)
+            else:
+                h = layer(h)
         h = model.ln_f(h)
 
         h_flat = h.view(total_tokens, -1)
@@ -327,6 +331,9 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
         return pg19_ppl
 
     min_lr = 0.1 * lm_cfg.learning_rate
+    ckpt_interval = getattr(lm_cfg, 'activation_checkpointing_interval', None)
+    if ckpt_interval is not None:
+        print(f"[CPT] Layer activation checkpointing enabled every {ckpt_interval} layer(s).")
     print(f"\nStarting {lm_cfg.model_name} CPT from step {start_step} to {lm_cfg.train_steps}...")
 
     avg_step_time = None
@@ -352,6 +359,7 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
                     model, x, y,
                     grad_accum_steps=lm_cfg.gradient_accumulation_steps,
                     chunk_size=4096,
+                    checkpointing_interval=ckpt_interval,
                 )
                 accum_loss += step_loss / lm_cfg.gradient_accumulation_steps
 

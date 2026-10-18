@@ -140,6 +140,10 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig, val_only: bo
     val_current = os.path.getsize(val_cache_path) // 2 if os.path.exists(val_cache_path) else 0
     train_current = os.path.getsize(train_cache_path) // 2 if os.path.exists(train_cache_path) else 0
 
+    if val_only and val_current >= val_max_tokens:
+        print(f"Validation cache already exists with {val_current} tokens (needs {val_max_tokens}). Skipping download.")
+        return val_cache_path, train_cache_path
+
     if val_current >= val_max_tokens and train_current >= train_max_tokens:
         print("Both validation and training caches already exist with enough tokens. Skipping download.")
         return val_cache_path, train_cache_path
@@ -147,14 +151,17 @@ def download_and_tokenize(config: LanguageModelingExperimentConfig, val_only: bo
     # Conditional loading logic based on required size
     if total_requested_tokens > 10_000_000_000:
         dataset_name_large = "HuggingFaceFW/fineweb_edu_100BT-shuffled"
-        num_parquets = int(total_requested_tokens / 750_000_000) + 2
-        print(f"Target size ({total_requested_tokens} tokens) > 10B. Fetching file list from HF ({dataset_name_large})...")
+        num_parquets = 1 if val_only else (int(total_requested_tokens / 750_000_000) + 2)
+        if val_only:
+            print(f"Validation only mode ({val_max_tokens} tokens). Fetching 1 parquet from HF ({dataset_name_large})...")
+        else:
+            print(f"Target size ({total_requested_tokens} tokens) > 10B. Fetching file list from HF ({dataset_name_large})...")
         
         all_files = list_repo_files(dataset_name_large, repo_type="dataset")
         valid_files = sorted([f for f in all_files if f.endswith(".parquet")])
         data_files = valid_files[:num_parquets]
         
-        print(f"Downloading {len(data_files)} raw pre-shuffled parquets...")
+        print(f"Downloading {len(data_files)} raw pre-shuffled parquet(s)...")
         local_files = []
         for hf_file in data_files:
             local_path = hf_hub_download(

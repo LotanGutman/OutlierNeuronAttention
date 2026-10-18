@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Union, List, Tuple, Optional
+from typing import Union, List, Tuple, Optional, Callable
 from enum import Enum
 import torch
 from src.config import ModelConfig
@@ -59,6 +59,7 @@ class LanguageModelingExperimentConfig:
 
     val_every: int = 500
     val_num_batches: int = 50
+    activation_checkpointing_interval: Optional[int] = None
 
 @dataclass
 class YaRNConfig:
@@ -397,8 +398,8 @@ def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg.model_config.block_size = 16384
     cfg.max_tokens = 100_000_000
     cfg.batch_size = 16
-    cfg.micro_batch_size = 2
-    cfg.gradient_accumulation_steps = 8
+    cfg.micro_batch_size = 1
+    cfg.gradient_accumulation_steps = 16
     cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
     cfg.learning_rate = 1e-5
     cfg.weight_decay = 0.0
@@ -410,6 +411,7 @@ def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg.dataset_name = DatasetType.PG19
     cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
     cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    cfg.activation_checkpointing_interval = 2
     return YaRNConfig(model=cfg)
 
 
@@ -421,8 +423,8 @@ def make_350M_MHA_cpt() -> YaRNConfig:
     cfg.model_config.block_size = 16384
     cfg.max_tokens = 100_000_000
     cfg.batch_size = 16
-    cfg.micro_batch_size = 2
-    cfg.gradient_accumulation_steps = 8
+    cfg.micro_batch_size = 1
+    cfg.gradient_accumulation_steps = 16
     cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
     cfg.learning_rate = 1e-5
     cfg.weight_decay = 0.0
@@ -434,6 +436,7 @@ def make_350M_MHA_cpt() -> YaRNConfig:
     cfg.dataset_name = DatasetType.PG19
     cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
     cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    cfg.activation_checkpointing_interval = 2
     return YaRNConfig(model=cfg)
 
 

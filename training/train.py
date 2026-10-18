@@ -22,6 +22,9 @@ def train(config: LanguageModelingExperimentConfig):
     val_cache_path: str = config.val_cache_path or f"data/datasets/data_{model_size}_val_cache.bin"
     checkpoint_dir = f"data/training/{config.model_name}"
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    if getattr(config, 'activation_checkpointing_interval', None) is not None:
+        print(f"[Notice] activation_checkpointing_interval={config.activation_checkpointing_interval} is ignored during regular pretraining (designed for long-context continual pretraining).")
     
     if not os.path.exists(cache_path) or not os.path.exists(val_cache_path):
         raise FileNotFoundError(f"Dataset cache not found at {cache_path} or {val_cache_path}. Run download script first.")
