@@ -392,6 +392,7 @@ def make_30M_MHA_cpt() -> YaRNConfig:
 
 def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg = make_350M_HOFA()
+    base_seq_len = cfg.seq_len
     cfg.model_name = "350M_HOFA_cpt"
     cfg.plot_name = "350M HOFA (16k CPT)"
     cfg.seq_len = 16384
@@ -412,11 +413,12 @@ def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
     cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
     cfg.activation_checkpointing_interval = 2
-    return YaRNConfig(model=cfg)
+    return YaRNConfig(model=cfg, original_max_seq_len=base_seq_len)
 
 
 def make_350M_MHA_cpt() -> YaRNConfig:
     cfg = make_350M_MHA()
+    base_seq_len = cfg.seq_len
     cfg.model_name = "350M_MHA_cpt"
     cfg.plot_name = "350M MHA (16k CPT)"
     cfg.seq_len = 16384
@@ -437,7 +439,7 @@ def make_350M_MHA_cpt() -> YaRNConfig:
     cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
     cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
     cfg.activation_checkpointing_interval = 2
-    return YaRNConfig(model=cfg)
+    return YaRNConfig(model=cfg, original_max_seq_len=base_seq_len)
 
 
 MODEL_CONFIG_REGISTRY = {

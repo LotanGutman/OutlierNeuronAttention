@@ -1,3 +1,7 @@
+"""
+Deciding on what the original base seq length is a bit messy, so working that out is a big TODO ;)
+"""
+
 import os
 import math
 import torch
@@ -5,7 +9,7 @@ import torch.nn as nn
 from typing import Optional
 import gc
 
-from training.training_config import YaRNConfig
+from training.training_config import YaRNConfig, get_model_config
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM as TrainSubwordLM
 from src.HybridOutlierFactorizedAttention import SubwordLM as InferenceSubwordLM
 
@@ -22,8 +26,10 @@ def patch_model_yarn(
     beta_fast: float = 32.0,
     beta_slow: float = 1.0,
     dtype: torch.dtype = torch.bfloat16,
+    scale: Optional[float] = None,
 ) -> int:
-    scale = max(1.0, float(target_seq_len) / float(original_seq_len))
+    if scale is None:
+        scale = max(1.0, float(target_seq_len) / float(original_seq_len))
     patched = 0
 
     rope_base = float(getattr(getattr(model, "config", None), "rope_base", 10000.0))
@@ -137,11 +143,16 @@ class YaRNModel(nn.Module):
         self.device = device
         self.dtype = dtype
         self.inference_model = inference_model
-        self.original_max_seq_len = (
-            yarn_config.original_max_seq_len
-            if yarn_config.original_max_seq_len is not None
-            else yarn_config.model.model_config.block_size
-        )
+        if yarn_config.original_max_seq_len is not None:
+            self.original_max_seq_len = yarn_config.original_max_seq_len
+        elif "_cpt" in getattr(yarn_config.model, "model_name", "").lower():
+            base_model_name = yarn_config.model.model_name.replace("_cpt", "").replace("_CPT", "")
+            try:
+                self.original_max_seq_len = get_model_config(base_model_name).seq_len
+            except Exception:
+                self.original_max_seq_len = getattr(yarn_config.model.model_config, "block_size", 1024)
+        else:
+            self.original_max_seq_len = getattr(yarn_config.model.model_config, "block_size", 1024)
 
         if self.inference_model:
             self.model = InferenceSubwordLM(
@@ -163,9 +174,16 @@ class YaRNModel(nn.Module):
                 if isinstance(ckpt, dict):
                     ckpt.pop("optimizer_state_dict", None)
                     ckpt.pop("optimizer", None)
-                    if yarn_config.original_max_seq_len is None and "config" in ckpt:
-                        saved_cfg = ckpt["config"]
-                        self.original_max_seq_len = getattr(saved_cfg, "seq_len", getattr(saved_cfg.model_config, "block_size", 1024))
+                    if yarn_config.original_max_seq_len is not None:
+                        self.original_max_seq_len = yarn_config.original_max_seq_len
+                    elif "starting_base_ckpt_info" in ckpt:
+                        self.original_max_seq_len = ckpt["starting_base_ckpt_info"].get("base_seq_len", 1024)
+                    else:
+                        base_model_name = getattr(yarn_config.model, "model_name", "").replace("_cpt", "").replace("_CPT", "")
+                        try:
+                            self.original_max_seq_len = get_model_config(base_model_name).seq_len
+                        except Exception:
+                            self.original_max_seq_len = getattr(yarn_config.model.model_config, "block_size", 1024)
                 self.model.load_state_dict(state_dict)
                 del ckpt, state_dict
                 gc.collect()
@@ -178,7 +196,7 @@ class YaRNModel(nn.Module):
             return self.model.forward_step(*args, **kwargs)
         return self.forward(*args, **kwargs)
 
-    def set_context_length(self, seq_len: int) -> int:
+    def set_context_length(self, seq_len: int, scale: Optional[float] = None) -> int:
         return patch_model_yarn(
             self.model,
             target_seq_len=seq_len,
@@ -186,6 +204,7 @@ class YaRNModel(nn.Module):
             beta_fast=float(self.yarn_config.beta_fast),
             beta_slow=float(self.yarn_config.beta_slow),
             dtype=self.dtype,
+            scale=scale,
         )
 
     def __getattr__(self, name: str):

@@ -25,7 +25,7 @@
 ```bash
 git clone https://github.com/LotanGutman/OutlierNeuronAttention.git
 cd OutlierNeuronAttention
-bash install.sh  # or bash install_no_mamba.sh (for environment without mamba-ssm)
+bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-ssm, which is only used for comparison benchmarks)
 ```
 
 ---
@@ -33,6 +33,7 @@ bash install.sh  # or bash install_no_mamba.sh (for environment without mamba-ss
 ## Reproduction Commands
 
 | Workflow | Command | Description |
+| :--- | :--- | :--- |
 | **Data Preparation** | `python main.py train --scale 350M --download-data [--val-only]` (FineWeb-Edu) / `python main.py train --download-data --dataset pg19` (PG19) | Download and tokenize FineWeb-Edu (pretraining) or PG19 (16k continual pretraining). Use `--val-only` to cache validation splits without full training data. |
 | **Pretraining** | `python main.py train --scale 350M` | Run distributed pretraining (`13M`, `70M`, `125M`, or `350M`) |
 | **Continual Pretraining** | `python main.py train --cpt --scale 350M [--model {hofa,mha}]` | Continual pretraining on PG19 at 16k context (`13M` or `350M`, HOFA or MHA) |

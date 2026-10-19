@@ -64,6 +64,8 @@ def main():
     parser_bench.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="350M", help="Model scale for benchmark evaluation (default: 350M)")
     parser_bench.add_argument("--length", "--seq-len", dest="length", type=int, nargs="*", default=None, help="Sequence length(s) to evaluate (default: None, auto-inherits model native length)")
     parser_bench.add_argument("--batch-size", type=int, default=None, help="Batch size for evaluation (default: None, auto-adapts)")
+    parser_bench.add_argument("--force", action="store_true", help="Force re-run and bypass cached results")
+    parser_bench.add_argument("--cpt", action=argparse.BooleanOptionalAction, default=True, help="Evaluate CPT checkpoints (default: True)")
     parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
 
     args = parser.parse_args()
@@ -223,22 +225,27 @@ def main():
             from benchmarks.benchmarks_configs import LongContextExtrapolationConfig
             scale = getattr(args, 'scale', '350M')
             model_flag = getattr(args, 'model', 'both').lower()
-            h_cfg = get_model_config(scale, "hofa")
-            m_cfg = get_model_config(scale, "mha")
+            is_cpt = getattr(args, 'cpt', True)
+            h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
+            m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
+            h_yarn = h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg)
+            m_yarn = m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg)
 
             if model_flag == "hofa":
-                eval_models = [YaRNConfig(model=h_cfg)]
+                eval_models = [h_yarn]
             elif model_flag == "mha":
-                eval_models = [YaRNConfig(model=m_cfg)]
+                eval_models = [m_yarn]
             else:
-                eval_models = [YaRNConfig(model=h_cfg), YaRNConfig(model=m_cfg)]
+                eval_models = [h_yarn, m_yarn]
 
+            default_cfg = LongContextExtrapolationConfig()
             length_arg = getattr(args, 'length', None)
-            seq_lengths = tuple(length_arg) if length_arg is not None else (1024, 2048, 4096, 8192)
+            seq_lengths = tuple(length_arg) if length_arg is not None else default_cfg.seq_lengths
 
             extrap_cfg = LongContextExtrapolationConfig(
                 models=eval_models,
                 seq_lengths=seq_lengths,
+                force_rerun=getattr(args, 'force', False),
             )
             if args.plot:
                 plot_long_context(extrap_cfg)

@@ -9,6 +9,7 @@ import math
 import json
 import hashlib
 from typing import Optional, Union
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
@@ -48,40 +49,86 @@ def evaluate_cache(
     num_batches: int,
     device: torch.device,
     chunk_size: int = 4096,
+    index_path: Optional[str] = None,
 ) -> Optional[float]:
     if not os.path.exists(cache_path):
         return None
 
     file_size_bytes = os.path.getsize(cache_path)
     total_tokens = file_size_bytes // 2
-    tokens_needed = num_batches * batch_size * (seq_len + 1)
-    if total_tokens < tokens_needed:
-        return None
+    window_tokens = seq_len + 1
 
-    loader = FastTokenLoader(cache_path, batch_size, seq_len, start_idx=0)
+    target_windows = []
+    if index_path is None:
+        candidate_idx = cache_path.replace(".bin", "_index.json")
+        if os.path.exists(candidate_idx):
+            index_path = candidate_idx
+
+    if index_path and os.path.exists(index_path):
+        try:
+            with open(index_path, "r", encoding="utf-8") as f:
+                idx_data = json.load(f)
+                books = idx_data.get("books", [])
+                total_windows = total_tokens // window_tokens
+                for b in books:
+                    fw = b.get("first_window", 0)
+                    if fw < total_windows:
+                        target_windows.append(fw)
+        except Exception:
+            target_windows = []
+
     total_loss = 0.0
     total_tokens_eval = 0
 
     model.eval()
     with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        for _ in range(num_batches):
-            x, y, _ = loader.get_batch()
-            x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True)
+        if target_windows:
+            mmap_data = np.memmap(cache_path, dtype=np.uint16, mode='r')
+            for w_idx in target_windows:
+                start_token = w_idx * window_tokens
+                raw = mmap_data[start_token : start_token + window_tokens]
+                if len(raw) < window_tokens:
+                    continue
+                tensor = torch.from_numpy(raw.astype(np.int64)).unsqueeze(0).to(device, non_blocking=True)
+                x = tensor[:, :-1].contiguous()
+                y = tensor[:, 1:].contiguous()
 
-            h = model.token_emb(x)
-            for layer in model.layers:
-                h = layer(h)
-            h = model.ln_f(h)
+                h = model.token_emb(x)
+                for layer in model.layers:
+                    h = layer(h)
+                h = model.ln_f(h)
 
-            h_flat = h.view(-1, h.shape[-1])
-            y_flat = y.view(-1)
-            for i in range(0, h_flat.shape[0], chunk_size):
-                end = min(i + chunk_size, h_flat.shape[0])
-                sub_logits = model.lm_head(h_flat[i:end])
-                sub_loss = F.cross_entropy(sub_logits, y_flat[i:end], reduction='sum')
-                total_loss += sub_loss.item()
-                total_tokens_eval += (end - i)
+                h_flat = h.view(-1, h.shape[-1])
+                y_flat = y.view(-1)
+                for i in range(0, h_flat.shape[0], chunk_size):
+                    end = min(i + chunk_size, h_flat.shape[0])
+                    sub_logits = model.lm_head(h_flat[i:end])
+                    sub_loss = F.cross_entropy(sub_logits, y_flat[i:end], reduction='sum')
+                    total_loss += sub_loss.item()
+                    total_tokens_eval += (end - i)
+        else:
+            tokens_needed = num_batches * batch_size * window_tokens
+            if total_tokens < tokens_needed:
+                return None
+            loader = FastTokenLoader(cache_path, batch_size, seq_len, start_idx=0)
+            for _ in range(num_batches):
+                x, y, _ = loader.get_batch()
+                x = x.to(device, non_blocking=True)
+                y = y.to(device, non_blocking=True)
+
+                h = model.token_emb(x)
+                for layer in model.layers:
+                    h = layer(h)
+                h = model.ln_f(h)
+
+                h_flat = h.view(-1, h.shape[-1])
+                y_flat = y.view(-1)
+                for i in range(0, h_flat.shape[0], chunk_size):
+                    end = min(i + chunk_size, h_flat.shape[0])
+                    sub_logits = model.lm_head(h_flat[i:end])
+                    sub_loss = F.cross_entropy(sub_logits, y_flat[i:end], reduction='sum')
+                    total_loss += sub_loss.item()
+                    total_tokens_eval += (end - i)
 
     model.train()
     return math.exp(total_loss / total_tokens_eval) if total_tokens_eval > 0 else None
@@ -388,14 +435,16 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
             metrics['learning_rate'].append(lr)
             metrics['step_times'].append(step_time)
 
-            if step % lm_cfg.val_every == 0:
-                val_ppl = run_evaluations(step)
+            is_last_step = (step + 1) == lm_cfg.train_steps
+            if step % lm_cfg.val_every == 0 or is_last_step:
+                eval_step = (step + 1) if is_last_step else step
+                val_ppl = run_evaluations(eval_step)
                 if val_ppl is not None and val_ppl < best_val_ppl:
                     best_val_ppl = val_ppl
                     best_ckpt_path = os.path.join(checkpoint_dir, "checkpoint_best_val.pt")
                     best_temp_path = best_ckpt_path + ".tmp"
                     torch.save({
-                        'step': step,
+                        'step': eval_step,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'metrics': metrics,

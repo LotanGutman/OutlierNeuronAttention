@@ -1,5 +1,5 @@
 """
-Context length extrapolation benchmark with canonical YaRN.
+Context length extrapolation benchmark on full PG-19 test books with canonical YaRN.
 """
 
 import os
@@ -19,12 +19,11 @@ import matplotlib.ticker as ticker
 
 from src.yarn import YaRNModel
 from training.training_config import YaRNConfig
-from training.data_utils import FastTokenLoader
 from benchmarks.benchmarks_configs import LongContextExtrapolationConfig, CACHE_PATH
 
 
 def bootstrap_ci(losses: List[float], num_resamples: int = 1000, alpha: float = 0.05) -> Tuple[float, float, float]:
-    """Computes mean and 95% bootstrap confidence interval."""
+    """Computes mean and 95% bootstrap confidence interval over books."""
     if not losses:
         return float('nan'), float('nan'), float('nan')
     if len(losses) == 1:
@@ -45,7 +44,7 @@ def bootstrap_ci(losses: List[float], num_resamples: int = 1000, alpha: float = 
 
 
 def compute_chunked_loss(logits: torch.Tensor, targets: torch.Tensor, chunk_size: int = 2048) -> float:
-    """Computes cross-entropy loss in sequence chunks to avoid VRAM spikes."""
+    """Computes cross-entropy loss in sequence chunks to prevent activation VRAM explosion."""
     B, N, V = logits.shape
     total_loss_sum = 0.0
     y_flat = targets.view(B, N)
@@ -58,33 +57,47 @@ def compute_chunked_loss(logits: torch.Tensor, targets: torch.Tensor, chunk_size
     return total_loss_sum / (B * N)
 
 
-def evaluate_long_context_metrics(
+def evaluate_books_extrapolation(
     model: YaRNModel,
-    val_cache_path: str,
+    data_path: str,
+    books: List[dict],
     seq_len: int,
-    total_tokens_target: int = 500000,
-    device: str = 'cuda'
+    device: str = 'cuda',
+    max_books: Optional[int] = None,
+    eval_target_tokens: Optional[int] = None,
 ) -> Dict:
-    batch_size = 1
-    num_batches = max(1, total_tokens_target // seq_len)
-    loader = FastTokenLoader(val_cache_path, batch_size, seq_len, start_idx=0)
+    """Evaluates non-overlapping windows of length seq_len spanning eval_target_tokens from each book."""
+    bin_data = np.memmap(data_path, dtype=np.uint16, mode='r')
+    target_books = books if max_books is None else books[:max_books]
 
     seq_losses: List[float] = []
 
     model.eval()
     with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        for _ in range(num_batches):
-            x, y, _ = loader.get_batch()
-            x = x.to(device)
-            y = y.to(device)
+        for b_info in target_books:
+            start = b_info["start"]
+            target_span = eval_target_tokens if (eval_target_tokens is not None and eval_target_tokens >= seq_len) else seq_len
+            n_chunks = max(1, target_span // seq_len)
+            book_chunk_losses: List[float] = []
 
-            logits, _ = model(x)
-            seq_loss = compute_chunked_loss(logits, y, chunk_size=2048)
+            for c_idx in range(n_chunks):
+                c_start = start + c_idx * seq_len
+                tok_slice = bin_data[c_start : c_start + seq_len + 1].astype(np.int64)
+                toks = torch.from_numpy(tok_slice)
+                x = toks[:seq_len].unsqueeze(0).to(device)
+                y = toks[1 : seq_len + 1].unsqueeze(0).to(device)
 
-            if not (math.isnan(seq_loss) or math.isinf(seq_loss)):
-                seq_losses.append(seq_loss)
+                logits, _ = model(x)
+                chunk_loss = compute_chunked_loss(logits, y, chunk_size=2048)
 
-            del logits, x, y
+                if not (math.isnan(chunk_loss) or math.isinf(chunk_loss)):
+                    book_chunk_losses.append(chunk_loss)
+
+                del logits, x, y, toks
+
+            if book_chunk_losses:
+                seq_losses.append(sum(book_chunk_losses) / len(book_chunk_losses))
+
             if seq_len >= 8192:
                 torch.cuda.empty_cache()
 
@@ -96,10 +109,11 @@ def evaluate_long_context_metrics(
     ppl_low = math.exp(low_loss) if not math.isnan(low_loss) else float('nan')
     ppl_high = math.exp(high_loss) if not math.isnan(high_loss) else float('nan')
 
+    actual_span = (eval_target_tokens if (eval_target_tokens is not None and eval_target_tokens >= seq_len) else seq_len)
     return {
         'seq_len': seq_len,
-        'num_batches': len(seq_losses),
-        'total_tokens': len(seq_losses) * seq_len,
+        'num_books_evaluated': len(seq_losses),
+        'total_tokens': len(seq_losses) * actual_span,
         'loss_mean': mean_loss,
         'loss_ci_95': [low_loss, high_loss],
         'ppl_mean': ppl_mean,
@@ -115,10 +129,22 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
     models: List[YaRNConfig] = [config.models] if isinstance(config.models, YaRNConfig) else list(config.models)
     seq_lengths = list(config.seq_lengths)
 
-    print("YaRN Context Length Extrapolation Benchmark")
+    print("=" * 80)
+    print("YaRN Context Length Extrapolation Benchmark (PG-19 Test Split)")
     print(f"Device: {device}")
     print(f"Models: {[m.model.model_name for m in models]}")
-    print(f"Sequence lengths: {seq_lengths}\n")
+    print(f"Sequence lengths: {seq_lengths}")
+    print(f"Data source: {config.data_path}")
+    print(f"RoPE Setting: {'Fixed s=16.0 (Trained CPT Tables)' if config.use_fixed_yarn else 'Dynamic s=N/1024'}")
+    print("=" * 80 + "\n")
+
+    if not os.path.exists(config.data_path) or not os.path.exists(config.index_path):
+        raise FileNotFoundError(f"PG-19 test dataset not found: {config.data_path} or {config.index_path}")
+
+    with open(config.index_path, "r", encoding="utf-8") as f:
+        index_data = json.load(f)
+    all_books = index_data.get("books", [])
+    total_books_in_split = len(all_books)
 
     os.makedirs(CACHE_PATH, exist_ok=True)
     cache_file = os.path.join(CACHE_PATH, config.cache_file_name)
@@ -129,6 +155,7 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
                 results = json.load(f)
         except Exception:
             results = {}
+
     for m in models:
         if m.model.model_name not in results:
             results[m.model.model_name] = {}
@@ -136,50 +163,61 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
     for yarn_cfg in models:
         model_name = yarn_cfg.model.model_name
         plot_name = yarn_cfg.model.plot_name
-        scale_tag = model_name.split("_")[0]
-        val_cache_path = f"data/datasets/data_{scale_tag}_val_cache.bin"
-
-        if not os.path.exists(val_cache_path):
-            print(f"[WARNING] Validation cache not found: {val_cache_path}. Skipping {model_name}.")
-            continue
 
         print(f"\nEvaluating {plot_name} ({model_name})...")
 
         for N in seq_lengths:
-            if str(N) in results.get(model_name, {}) and 'ppl_mean' in results[model_name][str(N)]:
-                ppl = results[model_name][str(N)]['ppl_mean']
-                ci = results[model_name][str(N)]['ppl_ci_95']
-                print(f"[{model_name}] N={N:5d} | Cached result: PPL={ppl:6.2f} [{ci[0]:5.2f}, {ci[1]:5.2f}]")
+            req_len = max(N, getattr(config, 'eval_target_tokens', N) or N)
+            eligible_books = [b for b in all_books if b["length"] >= req_len + 1]
+            n_books = len(eligible_books)
+
+            if n_books == 0:
+                print(f"[{model_name}] N={N:5d} | No eligible books with length >= {req_len+1}. Skipping.")
                 continue
 
+            if not config.force_rerun and str(N) in results.get(model_name, {}) and 'ppl_mean' in results[model_name][str(N)]:
+                ppl = results[model_name][str(N)]['ppl_mean']
+                ci = results[model_name][str(N)]['ppl_ci_95']
+                n_eval = results[model_name][str(N)].get('num_books_evaluated', n_books)
+                print(f"[{model_name}] N={N:5d} | Cached result: PPL={ppl:6.2f} [{ci[0]:5.2f}, {ci[1]:5.2f}] ({n_eval}/{total_books_in_split} books)")
+                continue
+
+            print(f"[{model_name}] N={N:5d} | Initializing model... ({n_books}/{total_books_in_split} books eligible)")
             t0 = time.time()
             yarn_model = YaRNModel(yarn_cfg, device=device, dtype=torch.bfloat16)
-            n_patched = yarn_model.set_context_length(N)
-            s = N / yarn_model.original_max_seq_len
-            print(f"[{model_name}] Initialized for N={N} (s={s:.1f}x, {n_patched} layers patched, {time.time() - t0:.1f}s)")
+
+            # Primary setting: s=16 fixed for N <= 16k; dynamic scale s=N/1024 for N > 16k
+            if config.use_fixed_yarn:
+                scale_val = max(16.0, float(N) / float(yarn_model.original_max_seq_len))
+            else:
+                scale_val = None
+            n_patched = yarn_model.set_context_length(N, scale=scale_val)
+            s_eff = scale_val if scale_val is not None else (N / yarn_model.original_max_seq_len)
+            print(f"[{model_name}] Patched {n_patched} layers (RoPE scale s={s_eff:.1f}x, init: {time.time() - t0:.1f}s)")
 
             try:
-                metrics = evaluate_long_context_metrics(
+                metrics = evaluate_books_extrapolation(
                     yarn_model,
-                    val_cache_path,
+                    data_path=config.data_path,
+                    books=eligible_books,
                     seq_len=N,
-                    total_tokens_target=config.total_tokens_target,
                     device=device,
+                    eval_target_tokens=getattr(config, 'eval_target_tokens', None),
                 )
                 results[model_name][str(N)] = metrics
 
                 ppl = metrics['ppl_mean']
                 ppl_low, ppl_high = metrics['ppl_ci_95']
-                n_seqs = metrics['num_batches']
+                n_bks = metrics['num_books_evaluated']
                 n_toks = metrics['total_tokens']
 
-                print(f"[{model_name}] N={N:5d} | {n_seqs:3d} seqs ({n_toks:7d} tok) | PPL: {ppl:7.2f} (95% CI: [{ppl_low:6.2f}, {ppl_high:6.2f}])")
+                print(f"[{model_name}] N={N:5d} | {n_bks:3d} books ({n_toks:7d} tok) | PPL: {ppl:7.2f} (95% CI: [{ppl_low:6.2f}, {ppl_high:6.2f}])")
 
                 with open(cache_file, "w") as f:
                     json.dump(results, f, indent=2)
 
             except torch.cuda.OutOfMemoryError:
-                print(f"[{model_name}] N={N:5d} | CUDA OOM encountered.")
+                print(f"[{model_name}] N={N:5d} | CUDA OutOfMemory encountered. Gracefully stopping sweep for this model.")
                 torch.cuda.empty_cache()
                 break
             finally:
@@ -191,11 +229,14 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
     cache_file = os.path.join(CACHE_PATH, config.cache_file_name)
     with open(cache_file, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nResults cached to {cache_file}\n")
+    print(f"\nAll completed results cached to {cache_file}\n")
 
     headers = [f"{m.model.plot_name:<24}" for m in models]
-    print(f"{'Context Length (N)':<20} | " + " | ".join(headers))
+    print(f"{'Context Length (N)':<20} | {'Books':<7} | " + " | ".join(headers))
     for N in seq_lengths:
+        req_len = max(N, getattr(config, 'eval_target_tokens', N) or N)
+        eligible_books = [b for b in all_books if b["length"] >= req_len + 1]
+        b_count = f"{len(eligible_books)}/{total_books_in_split}"
         row_vals = []
         for m in models:
             m_res = results[m.model.model_name].get(str(N), {})
@@ -205,7 +246,7 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
                 row_vals.append(f"{ppl:6.2f} [{ci[0]:5.2f}, {ci[1]:5.2f}]")
             else:
                 row_vals.append("N/A")
-        print(f"N = {N:<16d} | " + " | ".join(f"{v:<24}" for v in row_vals))
+        print(f"N = {N:<16d} | {b_count:<7} | " + " | ".join(f"{v:<24}" for v in row_vals))
 
     if save_plot:
         plot_long_context(config, results=results)
@@ -252,7 +293,7 @@ def plot_long_context(config: Optional[LongContextExtrapolationConfig] = None, r
         marker = markers[idx % len(markers)]
         label = label_map.get(m_name, m_name)
 
-        ax.plot(lengths, vals, marker, color=color, linewidth=2.0, markersize=7, label=f"{label} (YaRN)")
+        ax.plot(lengths, vals, marker, color=color, linewidth=2.0, markersize=7, label=label)
         yerr = [
             [v - l for v, l in zip(vals, lows)],
             [h - v for v, h in zip(vals, highs)]
@@ -269,9 +310,9 @@ def plot_long_context(config: Optional[LongContextExtrapolationConfig] = None, r
         ax.set_yscale("log")
         ax.get_yaxis().set_major_formatter(ticker.ScalarFormatter())
 
-    ax.set_xlabel("Context Length N (Tokens)", fontsize=11, fontweight="medium")
-    ax.set_ylabel("Validation Perplexity (95% Bootstrap CI)", fontsize=11, fontweight="medium")
-    ax.set_title("Training-Free Extension Diagnostics: Context Length Extrapolation", fontsize=12, fontweight="bold", pad=12)
+    ax.set_xlabel("Context Length N (Tokens)", fontsize=11)
+    ax.set_ylabel("Perplexity on PG-19 Test", fontsize=11)
+    ax.set_title("Context Length Extrapolation (PG-19)", fontsize=12, fontweight="bold", pad=12)
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.legend(frameon=True, fontsize=10.0, loc="upper left")
     fig.tight_layout()
