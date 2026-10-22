@@ -216,7 +216,7 @@ class LongContextExtrapolationConfig:
     models: Union[YaRNConfig, List[YaRNConfig]] = field(
         default_factory=lambda: [make_350M_HOFA_cpt(), make_350M_MHA_cpt()]
     )
-    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384)
+    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768, 65536)
     eval_target_tokens: Optional[int] = 16384
     data_path: str = "data/datasets/pg19_test_books.bin"
     index_path: str = "data/datasets/pg19_test_books_index.json"

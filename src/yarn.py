@@ -128,7 +128,7 @@ def restore_rotary_from_saved(model: nn.Module, saved_states: list) -> None:
 
 
 class YaRNModel(nn.Module):
-    """Contained YaRN context extension class for MHA \ HOFA"""
+    """YaRN context extension class for HOFA"""
     def __init__(
         self,
         yarn_config: YaRNConfig,

@@ -207,18 +207,53 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
     model = SubwordLM(lm_cfg.vocab_size, lm_cfg.model_config)
     model.to(device)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=lm_cfg.learning_rate,
-        weight_decay=lm_cfg.weight_decay,
-        betas=(0.9, 0.95),
-        fused=True
-    )
+    gate_multiplier = getattr(lm_cfg, 'gate_lr_multiplier', None)
+    if gate_multiplier is not None and gate_multiplier != 1.0:
+        gate_param_ids = set()
+        gate_params = []
+        for name, module in model.named_modules():
+            if getattr(module, '_is_gate', False) or name.endswith('gate_proj') or name.endswith('mix_proj'):
+                for p in module.parameters():
+                    if id(p) not in gate_param_ids:
+                        gate_param_ids.add(id(p))
+                        gate_params.append(p)
+            elif hasattr(module, 'fixed_mix') and isinstance(module.fixed_mix, torch.nn.Parameter):
+                p = module.fixed_mix
+                if id(p) not in gate_param_ids:
+                    gate_param_ids.add(id(p))
+                    gate_params.append(p)
+            elif hasattr(module, 'gla_scale') and isinstance(module.gla_scale, torch.nn.Parameter):
+                p = module.gla_scale
+                if id(p) not in gate_param_ids:
+                    gate_param_ids.add(id(p))
+                    gate_params.append(p)
+
+        base_params = [p for p in model.parameters() if id(p) not in gate_param_ids]
+        print(f"[CPT Optimizer] Decoupled gate optimization enabled: {len(gate_params)} gate tensors (multiplier={gate_multiplier:.1f}x, peak_lr={lm_cfg.learning_rate * gate_multiplier:.1e}), {len(base_params)} base tensors.")
+        
+        optimizer = torch.optim.AdamW(
+            [
+                {'params': base_params, 'lr': lm_cfg.learning_rate, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': 1.0},
+                {'params': gate_params, 'lr': lm_cfg.learning_rate * gate_multiplier, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': gate_multiplier},
+            ],
+            betas=(0.9, 0.95),
+            fused=True
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=lm_cfg.learning_rate,
+            weight_decay=lm_cfg.weight_decay,
+            betas=(0.9, 0.95),
+            fused=True
+        )
 
     metrics = {
         'processed_tokens': [],
         'loss': [],
         'learning_rate': [],
+        'gate_alpha': [],
+        'gate_decay': [],
         'step_times': [],
         'val_steps': [],
         'val_pg19_ppl': [],
@@ -238,12 +273,17 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
         print(f"Resuming CPT from existing checkpoint: {cpt_ckpt_path}")
         ckpt = torch.load(cpt_ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model_state_dict'])
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        try:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        except Exception as e:
+            print(f"[CPT] Notice: Could not restore optimizer state dict ({e}). Re-initializing optimizer state for current parameter groups.")
         if 'starting_base_ckpt_info' in ckpt:
             starting_base_ckpt_info = ckpt['starting_base_ckpt_info']
             base_seq_len = starting_base_ckpt_info.get("base_seq_len", base_seq_len)
         if 'metrics' in ckpt:
             metrics.update(ckpt['metrics'])
+            metrics.setdefault('gate_alpha', [])
+            metrics.setdefault('gate_decay', [])
         if 'step' in ckpt:
             start_step = ckpt['step']
         if 'start_idx' in ckpt:
@@ -380,7 +420,12 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
     min_lr = 0.1 * lm_cfg.learning_rate
     ckpt_interval = getattr(lm_cfg, 'activation_checkpointing_interval', None)
     if ckpt_interval is not None:
-        print(f"[CPT] Layer activation checkpointing enabled every {ckpt_interval} layer(s).")
+        print(f"[CPT] Layer activation checkpointing enabled every {ckpt_interval} layers.")
+
+    if start_step == 0:
+        print(f"\n[CPT] Running initial Step 0 baseline evaluation (zero-shot YaRN)...")
+        run_evaluations(0)
+
     print(f"\nStarting {lm_cfg.model_name} CPT from step {start_step} to {lm_cfg.train_steps}...")
 
     avg_step_time = None
@@ -392,7 +437,8 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
             t0 = time.time()
             lr = get_cpt_lr(step, lm_cfg.train_steps, lm_cfg.learning_rate, min_lr=min_lr, warmup_steps=lm_cfg.warmup_steps)
             for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
+                mult = param_group.get('lr_multiplier', 1.0)
+                param_group['lr'] = lr * mult
 
             optimizer.zero_grad(set_to_none=True)
             accum_loss = 0.0
@@ -436,7 +482,7 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
             metrics['step_times'].append(step_time)
 
             is_last_step = (step + 1) == lm_cfg.train_steps
-            if step % lm_cfg.val_every == 0 or is_last_step:
+            if (step > 0 and step % lm_cfg.val_every == 0) or is_last_step:
                 eval_step = (step + 1) if is_last_step else step
                 val_ppl = run_evaluations(eval_step)
                 if val_ppl is not None and val_ppl < best_val_ppl:
@@ -457,7 +503,22 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
                     os.replace(best_temp_path, best_ckpt_path)
                     print(f"*** New best validation perplexity ({best_val_ppl:.2f})! Saved to {best_ckpt_path} ***")
 
-            print(f"\rStep {step}/{lm_cfg.train_steps} - loss: {accum_loss:.4f} ({avg_step_time:.2f}s/step, ETA: H: {eta_hours}, M: {eta_minutes})", end="", flush=True)
+            gate_stats = ""
+            mean_alpha = None
+            mean_decay = None
+            is_pure_mha = "MHA" in lm_cfg.model_name or (hasattr(model.config, 'r') and model.config.r == model.config.d_head)
+            if not is_pure_mha: # = HOFA. TODO make tihs more robust
+                mix_biases = [layer.attn.mix_proj.bias for layer in model.layers if hasattr(layer, 'attn') and hasattr(layer.attn, 'mix_proj') and layer.attn.mix_proj.bias is not None]
+                decay_biases = [layer.attn.gate_proj.bias for layer in model.layers if hasattr(layer, 'attn') and hasattr(layer.attn, 'gate_proj') and layer.attn.gate_proj.bias is not None]
+                if mix_biases and decay_biases:
+                    mean_alpha = torch.sigmoid(torch.cat(mix_biases)).mean().item()
+                    mean_decay = torch.sigmoid(-torch.cat(decay_biases)).mean().item()
+                    gate_stats = f" [alpha: {mean_alpha:.3f}, gamma: {mean_decay:.3f}]"
+
+            metrics['gate_alpha'].append(mean_alpha)
+            metrics['gate_decay'].append(mean_decay)
+
+            print(f"\rStep {step}/{lm_cfg.train_steps} - loss: {accum_loss:.4f}{gate_stats} ({avg_step_time:.2f}s/step, ETA: H: {eta_hours}, M: {eta_minutes})", end="", flush=True)
 
             if step > 0 and step % lm_cfg.save_every == 0:
                 temp_path = cpt_ckpt_path + ".tmp"

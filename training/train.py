@@ -25,6 +25,8 @@ def train(config: LanguageModelingExperimentConfig):
 
     if getattr(config, 'activation_checkpointing_interval', None) is not None:
         print(f"[Notice] activation_checkpointing_interval={config.activation_checkpointing_interval} is ignored during regular pretraining (designed for long-context continual pretraining).")
+    if getattr(config, 'gate_lr_multiplier', None) is not None and config.gate_lr_multiplier != 1.0:
+        print(f"[Notice] gate_lr_multiplier={config.gate_lr_multiplier} is ignored during regular pretraining (designed for long-context continual pretraining).")
     
     if not os.path.exists(cache_path) or not os.path.exists(val_cache_path):
         raise FileNotFoundError(f"Dataset cache not found at {cache_path} or {val_cache_path}. Run download script first.")

@@ -60,6 +60,7 @@ class LanguageModelingExperimentConfig:
     val_every: int = 500
     val_num_batches: int = 50
     activation_checkpointing_interval: Optional[int] = None
+    gate_lr_multiplier: Optional[float] = None
 
 @dataclass
 class YaRNConfig:
@@ -80,9 +81,9 @@ class YaRNConfig:
 # ──────────────────────────────────────────────
 
 def _compute_steps(tokens: int, batch_size: int, seq_len: int) -> int:
-    steps = tokens // (batch_size * seq_len)
-    # Round to nearest hundred for cleanliness
-    return (steps // 100) * 100
+    steps = tokens / (batch_size * seq_len)
+    # round to nearest 100 (so that it evaluates last point)
+    return int(round(steps / 100.0)) * 100
 
 # 13M models (For quick debugging)
 def make_13M_HOFA() -> LanguageModelingExperimentConfig:
@@ -306,6 +307,7 @@ def make_13M_HOFA_cpt() -> YaRNConfig:
     cfg.gradient_accumulation_steps = 16
     cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
     cfg.learning_rate = 5e-5
+    cfg.gate_lr_multiplier = 10.0
     cfg.weight_decay = 0.0
     cfg.warmup_steps = 30
     cfg.val_every = 50
@@ -354,6 +356,7 @@ def make_30M_HOFA_cpt() -> YaRNConfig:
     cfg.gradient_accumulation_steps = 16
     cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
     cfg.learning_rate = 3e-5
+    cfg.gate_lr_multiplier = 10.0
     cfg.weight_decay = 0.0
     cfg.warmup_steps = 30
     cfg.val_every = 50
@@ -402,9 +405,10 @@ def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg.micro_batch_size = 1
     cfg.gradient_accumulation_steps = 16
     cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
-    cfg.learning_rate = 1e-5
+    cfg.learning_rate = 2e-5
+    cfg.gate_lr_multiplier = 10.0
     cfg.weight_decay = 0.0
-    cfg.warmup_steps = 30
+    cfg.warmup_steps = 20
     cfg.val_every = 50
     cfg.val_num_batches = 8
     cfg.save_every = 50
@@ -428,9 +432,9 @@ def make_350M_MHA_cpt() -> YaRNConfig:
     cfg.micro_batch_size = 1
     cfg.gradient_accumulation_steps = 16
     cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
-    cfg.learning_rate = 1e-5
+    cfg.learning_rate = 2e-5
     cfg.weight_decay = 0.0
-    cfg.warmup_steps = 30
+    cfg.warmup_steps = 20
     cfg.val_every = 50
     cfg.val_num_batches = 8
     cfg.save_every = 50
