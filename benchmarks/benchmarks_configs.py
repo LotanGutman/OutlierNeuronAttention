@@ -216,8 +216,9 @@ class LongContextExtrapolationConfig:
     models: Union[YaRNConfig, List[YaRNConfig]] = field(
         default_factory=lambda: [make_350M_HOFA_cpt(), make_350M_MHA_cpt()]
     )
-    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768, 65536)
+    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768)
     eval_target_tokens: Optional[int] = 16384
+    max_books: Optional[int] = None
     data_path: str = "data/datasets/pg19_test_books.bin"
     index_path: str = "data/datasets/pg19_test_books_index.json"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"

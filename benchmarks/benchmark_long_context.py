@@ -169,7 +169,9 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
         for N in seq_lengths:
             req_len = max(N, getattr(config, 'eval_target_tokens', N) or N)
             eligible_books = [b for b in all_books if b["length"] >= req_len + 1]
-            n_books = len(eligible_books)
+            max_b = getattr(config, 'max_books', None)
+            target_eligible = eligible_books if max_b is None else eligible_books[:max_b]
+            n_books = len(target_eligible)
 
             if n_books == 0:
                 print(f"[{model_name}] N={N:5d} | No eligible books with length >= {req_len+1}. Skipping.")
@@ -203,6 +205,7 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
                     seq_len=N,
                     device=device,
                     eval_target_tokens=getattr(config, 'eval_target_tokens', None),
+                    max_books=max_b,
                 )
                 results[model_name][str(N)] = metrics
 
@@ -236,7 +239,9 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
     for N in seq_lengths:
         req_len = max(N, getattr(config, 'eval_target_tokens', N) or N)
         eligible_books = [b for b in all_books if b["length"] >= req_len + 1]
-        b_count = f"{len(eligible_books)}/{total_books_in_split}"
+        max_b = getattr(config, 'max_books', None)
+        eval_bks = eligible_books if max_b is None else eligible_books[:max_b]
+        b_count = f"{len(eval_bks)}/{total_books_in_split}"
         row_vals = []
         for m in models:
             m_res = results[m.model.model_name].get(str(N), {})
@@ -312,12 +317,13 @@ def plot_long_context(config: Optional[LongContextExtrapolationConfig] = None, r
 
     ax.set_xlabel("Context Length N (Tokens)", fontsize=11)
     ax.set_ylabel("Perplexity on PG-19 Test", fontsize=11)
-    ax.set_title("Context Length Extrapolation (PG-19)", fontsize=12, fontweight="bold", pad=12)
+    ax.set_title("PG-19 Context Extrapolation", fontsize=12, fontweight="bold", pad=12)
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.legend(frameon=True, fontsize=10.0, loc="upper left")
     fig.tight_layout()
 
-    plot_pdf = os.path.join(plot_dir, "yarn_length_extrapolation.pdf")
+    base_name = getattr(config, 'plot_file_name', config.cache_file_name.replace('.json', '') if config else "yarn_length_extrapolation")
+    plot_pdf = os.path.join(plot_dir, f"{base_name}.pdf")
     fig.savefig(plot_pdf, bbox_inches="tight")
     plt.close(fig)
     print(f"Plot saved to {plot_pdf}")
