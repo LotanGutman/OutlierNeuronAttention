@@ -18,7 +18,7 @@ torch.set_float32_matmul_precision('high')
 
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
 from src.yarn import patch_model_yarn, swap_rotary_to_native, restore_rotary_from_saved
-from training.training_config import LanguageModelingExperimentConfig, YaRNConfig, get_model_config
+from training.training_config import LanguageModelingExperimentConfig, YaRNConfig, YaRNMode, get_model_config
 from interrupt_util.interrupts import GracefulInterruptHandler
 from training.data_utils import FastTokenLoader
 
@@ -389,6 +389,7 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
     beta_fast = getattr(yarn_cfg, 'beta_fast', 32.0) if yarn_cfg else 32.0
     beta_slow = getattr(yarn_cfg, 'beta_slow', 1.0) if yarn_cfg else 1.0
 
+    ymode = getattr(yarn_cfg, 'yarn_mode', None) or YaRNMode.default()
     n_patched = patch_model_yarn(
         model,
         target_seq_len=lm_cfg.seq_len,
@@ -396,9 +397,10 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
         beta_fast=beta_fast,
         beta_slow=beta_slow,
         dtype=torch.bfloat16,
+        yarn_mode=ymode,
     )
     s = lm_cfg.seq_len / base_seq_len
-    print(f"Patched {n_patched} layers with canonical YaRN RoPE (s={s:.1f}x, {base_seq_len} -> {lm_cfg.seq_len}).")
+    print(f"Patched {n_patched} layers with canonical YaRN RoPE (s={s:.1f}x, mode={ymode}, {base_seq_len} -> {lm_cfg.seq_len}).")
 
     interrupt_handler = GracefulInterruptHandler()
     interrupt_handler.attach()

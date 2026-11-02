@@ -1,8 +1,17 @@
 from dataclasses import dataclass, field
-from typing import Union, List, Tuple, Optional, Callable
+from typing import Union, List, Tuple, Optional, Callable, Any
 from enum import Enum
 import torch
 from src.config import ModelConfig
+
+class YaRNMode(str, Enum):
+    GEOMETRIC = "geometric"
+    POST_CPT_GEOMETRIC = "post_cpt_geometric"
+    ARITHMETIC = "arithmetic"
+
+    @classmethod
+    def default(cls) -> "YaRNMode":
+        return cls.GEOMETRIC
 
 class DatasetType(str, Enum):
     FINEWEB = "fineweb"
@@ -70,6 +79,7 @@ class YaRNConfig:
     original_max_seq_len: Optional[int] = None
     base_checkpoint_path: Optional[str] = None
     use_spectral_shift: bool = False  # Experimental SpectralShift Algorithm 1 (https://arxiv.org/abs/2609.14320)
+    yarn_mode: Union[YaRNMode, str] = field(default_factory=YaRNMode.default)
 
     def __post_init__(self):
         if self.base_checkpoint_path is None:

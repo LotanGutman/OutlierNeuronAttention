@@ -346,6 +346,16 @@ def plot_training_metrics(configs: Union[Any, List[Any]], subdirectory: str = ""
                 ax_cpt.set_ylabel("Validation Perplexity", fontsize=12)
                 ax_cpt.grid(True, linestyle=':', alpha=0.5)
 
+                # Cap Y-axis to magnify the convergence region (excluding massive Step 0 spike)
+                all_cpt_ppls = [d["val_ppl"] for d in all_data.values() if d.get("has_val") and len(d.get("val_ppl", [])) > 1]
+                if all_cpt_ppls:
+                    cpt_post_step0 = [p for ppls in all_cpt_ppls for p in ppls[1:] if p is not None and p > 0]
+                    cpt_step0 = [ppls[0] for ppls in all_cpt_ppls if ppls[0] is not None and ppls[0] > 0]
+                    if cpt_post_step0:
+                        y_bottom = max(0, min(cpt_post_step0) * 0.95)
+                        y_top = max(cpt_post_step0) * 1.06
+                        ax_cpt.set_ylim(bottom=y_bottom, top=y_top)
+
                 # Right: In-Domain Retention (FineWeb 1k)
                 ax_ret.set_title("In-Domain Retention", fontsize=13, fontweight='bold', pad=10)
                 has_retention_data = False
@@ -392,6 +402,8 @@ def plot_training_metrics(configs: Union[Any, List[Any]], subdirectory: str = ""
                 plt.title(f"PG-19 Continual Pretraining: Validation Perplexity vs. {title_x}", fontsize=14, fontweight='bold', pad=10)
                 plt.xlabel(title_x, fontsize=12)
                 plt.ylabel("Validation Perplexity", fontsize=12)
+                if all_cpt_ppls and cpt_post_step0:
+                    plt.ylim(bottom=y_bottom, top=y_top)
                 plt.grid(True, linestyle=':', alpha=0.5)
                 plt.legend(frameon=True, framealpha=0.9, fontsize=11)
                 plt.tight_layout()

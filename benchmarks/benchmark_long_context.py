@@ -17,7 +17,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-from src.yarn import YaRNModel
+from src.yarn import YaRNModel, YaRNMode
 from training.training_config import YaRNConfig
 from benchmarks.benchmarks_configs import LongContextExtrapolationConfig, CACHE_PATH
 
@@ -193,9 +193,10 @@ def run_long_context_experiment(config: Optional[LongContextExtrapolationConfig]
                 scale_val = max(16.0, float(N) / float(yarn_model.original_max_seq_len))
             else:
                 scale_val = None
-            n_patched = yarn_model.set_context_length(N, scale=scale_val)
+            ymode = getattr(yarn_cfg, 'yarn_mode', None) or YaRNMode.default()
+            n_patched = yarn_model.set_context_length(N, scale=scale_val, yarn_mode=ymode)
             s_eff = scale_val if scale_val is not None else (N / yarn_model.original_max_seq_len)
-            print(f"[{model_name}] Patched {n_patched} layers (RoPE scale s={s_eff:.1f}x, init: {time.time() - t0:.1f}s)")
+            print(f"[{model_name}] Patched {n_patched} layers (RoPE scale s={s_eff:.1f}x, mode={ymode}, init: {time.time() - t0:.1f}s)")
 
             try:
                 metrics = evaluate_books_extrapolation(

@@ -2,6 +2,7 @@ from src.utils.platform_utils import configure_pytorch_allocator
 configure_pytorch_allocator()
 import json
 import argparse
+import os
 
 from training.training_config import (
     DatasetType,
@@ -88,8 +89,6 @@ def main():
             else:
                 from training.download_fineweb import download_and_tokenize
                 download_and_tokenize(config, val_only=args.val_only)
-            import os
-            print("\n[INFO] Data download completed successfully! Exiting immediately to prevent HuggingFace teardown bugs.")
             os._exit(0)
         elif args.eval:
             from benchmarks.benchmarks_configs import EvalExperimentConfig

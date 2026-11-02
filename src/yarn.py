@@ -1,15 +1,15 @@
 """
-Deciding on what the original base seq length is a bit messy, so working that out is a big TODO ;)
+YaRN Context Extension module with multi-mode frequency scaling.
 """
 
 import os
 import math
+from typing import Optional, Union
+import gc
 import torch
 import torch.nn as nn
-from typing import Optional
-import gc
 
-from training.training_config import YaRNConfig, get_model_config
+from training.training_config import YaRNMode, YaRNConfig, get_model_config
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM as TrainSubwordLM
 from src.HybridOutlierFactorizedAttention import SubwordLM as InferenceSubwordLM
 
@@ -27,7 +27,9 @@ def patch_model_yarn(
     beta_slow: float = 1.0,
     dtype: torch.dtype = torch.bfloat16,
     scale: Optional[float] = None,
+    yarn_mode: Optional[Union[YaRNMode, str]] = None,
 ) -> int:
+    mode = YaRNMode.default() if yarn_mode is None else (yarn_mode.value if isinstance(yarn_mode, YaRNMode) else str(yarn_mode).lower())
     if scale is None:
         scale = max(1.0, float(target_seq_len) / float(original_seq_len))
     patched = 0
@@ -55,8 +57,20 @@ def patch_model_yarn(
                 if high <= low:
                     high = low + 1e-3
                 ramp = ((freq_idx - low) / (high - low)).clamp(0.0, 1.0)
-                inv_freq_interpolation = inv_freq_extrapolation / scale
-                inv_freq = ramp * inv_freq_interpolation + (1.0 - ramp) * inv_freq_extrapolation
+
+                mode_val = mode.value if isinstance(mode, YaRNMode) else str(mode).lower()
+
+                if mode_val == YaRNMode.GEOMETRIC.value:
+                    inv_freq = inv_freq_extrapolation * (scale ** (-ramp))
+                elif mode_val == YaRNMode.POST_CPT_GEOMETRIC.value:
+                    s_cpt = 16.0
+                    inv_freq_cpt = ramp * (inv_freq_extrapolation / s_cpt) + (1.0 - ramp) * inv_freq_extrapolation
+                    s_ext = max(1.0, scale / s_cpt)
+                    inv_freq = inv_freq_cpt * (s_ext ** (-ramp))
+                else:  # arithmetic (standard)
+                    inv_freq_interpolation = inv_freq_extrapolation / scale
+                    inv_freq = ramp * inv_freq_interpolation + (1.0 - ramp) * inv_freq_extrapolation
+
                 effective_mscale = 1.0 + 0.1 * math.log(scale)
             else:
                 inv_freq = inv_freq_extrapolation
@@ -196,7 +210,13 @@ class YaRNModel(nn.Module):
             return self.model.forward_step(*args, **kwargs)
         return self.forward(*args, **kwargs)
 
-    def set_context_length(self, seq_len: int, scale: Optional[float] = None) -> int:
+    def set_context_length(
+        self,
+        seq_len: int,
+        scale: Optional[float] = None,
+        yarn_mode: Optional[Union[YaRNMode, str]] = None,
+    ) -> int:
+        mode = yarn_mode or getattr(self.yarn_config, "yarn_mode", None) or YaRNMode.default()
         return patch_model_yarn(
             self.model,
             target_seq_len=seq_len,
@@ -205,6 +225,7 @@ class YaRNModel(nn.Module):
             beta_slow=float(self.yarn_config.beta_slow),
             dtype=self.dtype,
             scale=scale,
+            yarn_mode=mode,
         )
 
     def __getattr__(self, name: str):
