@@ -225,3 +225,36 @@ class LongContextExtrapolationConfig:
     cache_file_name: str = "long_context_extrapolation_results.json"
     use_fixed_yarn: bool = True
     force_rerun: bool = False
+
+
+@dataclass
+class TemperatureYaRNConfig:
+    """Position-segment temperature scaling configuration."""
+    models: Union[YaRNConfig, List[YaRNConfig]] = field(
+        default_factory=lambda: [make_350M_HOFA_cpt(), make_350M_MHA_cpt()]
+    )
+    seq_len: int = 65536
+    chunk_size: int = 2048
+    scale_factors: tuple[float, ...] = (1.00, 1.10, 1.20, 1.25, 1.30, 1.35, 1.40, 1.42, 1.50, 1.55, 1.60, 1.65, 1.70, 1.80, 1.90)
+    max_books: Optional[int] = 25
+    data_path: str = "data/datasets/pg19_test_books.bin"
+    index_path: str = "data/datasets/pg19_test_books_index.json"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_file_name: str = "temperature_yarn_results.json"
+    force_rerun: bool = False
+
+
+@dataclass
+class EntropyYaRNConfig:
+    """Attention entropy benchmark configuration."""
+    models: Union[YaRNConfig, List[YaRNConfig]] = field(
+        default_factory=lambda: [make_350M_HOFA_cpt(), make_350M_MHA_cpt()]
+    )
+    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768, 65536)
+    num_sample_queries: int = 64
+    max_books: Optional[int] = 15
+    data_path: str = "data/datasets/pg19_test_books.bin"
+    index_path: str = "data/datasets/pg19_test_books_index.json"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_file_name: str = "entropy_yarn_results.json"
+    force_rerun: bool = False

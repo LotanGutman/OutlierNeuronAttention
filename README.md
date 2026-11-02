@@ -38,7 +38,9 @@ bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-s
 | **Pretraining** | `python main.py train --scale 350M` | Run distributed pretraining (`13M`, `70M`, `125M`, or `350M`) |
 | **Continual Pretraining** | `python main.py train --cpt --scale 350M [--model {hofa,mha}]` | Continual pretraining on PG19 at 16k context (`13M` or `350M`, HOFA or MHA) |
 | **Checkpoints Eval** | `python main.py train --scale 350M --eval` | Evaluate perplexity on validation splits |
-| **Context Extension** | `python main.py benchmark --extrapolation` | Training-free extension diagnostics ($1\text{k} \to 16\text{k}$ tokens) |
+| **Context Extension** | `python main.py benchmark --extrapolation [--plot]` | Long-context extrapolation evaluation ($1\text{k} \to 64\text{k}$ tokens) |
+| **Temperature Scaling** | `python main.py benchmark --temp-yarn [--plot]` | Position-segment pre-softmax temperature scaling sweep ($1/\sqrt{t}$) |
+| **Attention Entropy** | `python main.py benchmark --entropy-yarn [--plot]` | Normalized attention entropy invariance ($H / \ln N$) across sequence lengths |
 | **Induction Retrieval** | `python main.py benchmark --induction [--plot]` | Associative recall on synthetic induction heads |
 | **Capacity Cliff** | `python main.py benchmark --induction-degradation [--plot]` | Phase transition and critical capacity cliff |
 | **Associative Copying** | `python main.py benchmark --copy [--plot]` | Sequence copying capability benchmark |
@@ -68,9 +70,11 @@ OutlierNeuronAttention/
 │   ├── benchmark_K_eff.py
 │   ├── benchmark_copying.py
 │   ├── benchmark_distance.py
+│   ├── benchmark_entropy_YaRN.py
 │   ├── benchmark_induction.py
 │   ├── benchmark_induction_degradation.py
 │   ├── benchmark_long_context.py
+│   ├── benchmark_temperature_YaRN.py
 │   ├── benchmark_zeroshot.py
 │   ├── benchmarks_configs.py
 │   ├── profile_decode.py

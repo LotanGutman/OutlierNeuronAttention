@@ -53,7 +53,7 @@ def main():
     parser_profile.add_argument("--use-cache", action=argparse.BooleanOptionalAction, default=True, help="Use cached results if available (default: True)")
     parser_profile.add_argument("--plot-shared", action="store_true", help="Plot a shared 2x3 figure of both prefill and decode results")
 
-    parser_bench = subparsers.add_parser("benchmark", help="Run synthetic capability benchmarks")
+    parser_bench = subparsers.add_parser("benchmark", aliases=["bench"], help="Run synthetic capability benchmarks")
     parser_bench.add_argument("--induction", action="store_true", help="Run the Induction Head capability benchmark")
     parser_bench.add_argument("--induction-degradation", action="store_true", help="Run the r=10 extended context degradation benchmark")
     parser_bench.add_argument("--copy", action="store_true", help="Run the Sequential Copying capability benchmark")
@@ -61,6 +61,8 @@ def main():
     parser_bench.add_argument("--keff", action="store_true", help="Run the K_eff Probability Mass benchmark")
     parser_bench.add_argument("--distance", action="store_true", help="Run the Effective Attention Distance benchmark")
     parser_bench.add_argument("--extrapolation", dest="extrapolation", action="store_true", help="Run the context length extrapolation benchmark")
+    parser_bench.add_argument("--temp-yarn", dest="temp_yarn", action="store_true", help="Run the position-segment pre-softmax temperature scaling benchmark (YaRN Fig. 5)")
+    parser_bench.add_argument("--entropy-yarn", dest="entropy_yarn", action="store_true", help="Run the normalized attention entropy invariance benchmark (arXiv:2610.10114)")
     parser_bench.add_argument("--model", type=str, choices=["both", "hofa", "mha"], default="both", help="Model variant to evaluate (default: both)")
     parser_bench.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="350M", help="Model scale for benchmark evaluation (default: 350M)")
     parser_bench.add_argument("--length", "--seq-len", dest="length", type=int, nargs="*", default=None, help="Sequence length(s) to evaluate (default: None, auto-inherits model native length)")
@@ -179,7 +181,7 @@ def main():
             run_decode_profiling(config=DecodeExperimentConfig(), force_rerun=force_rerun, save_results=args.save)
         else:
             print("Please specify either --prefill or --decode to profile.")
-    elif args.command == "benchmark":
+    elif args.command in ("benchmark", "bench"):
         if args.induction:
             if args.plot:
                 from benchmarks.plotting.plot_induction import plot_unified_trendline, plot_feature_norm_disparity
@@ -250,8 +252,63 @@ def main():
                 plot_long_context(extrap_cfg)
             else:
                 run_long_context_experiment(extrap_cfg)
+        elif getattr(args, 'temp_yarn', False):
+            from benchmarks.benchmark_temperature_YaRN import run_temperature_yarn_experiment, plot_temperature_yarn
+            from benchmarks.benchmarks_configs import TemperatureYaRNConfig
+            scale = getattr(args, 'scale', '350M')
+            model_flag = getattr(args, 'model', 'both').lower()
+            is_cpt = getattr(args, 'cpt', True)
+            h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
+            m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
+            h_yarn = h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg)
+            m_yarn = m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg)
+
+            eval_models = [h_yarn] if model_flag == "hofa" else ([m_yarn] if model_flag == "mha" else [h_yarn, m_yarn])
+            
+            default_cfg = TemperatureYaRNConfig()
+            length_arg = getattr(args, 'length', None)
+            target_len = length_arg[0] if (length_arg is not None and len(length_arg) > 0) else default_cfg.seq_len
+
+            temp_cfg = TemperatureYaRNConfig(
+                models=eval_models,
+                seq_len=target_len,
+                force_rerun=getattr(args, 'force', False),
+            )
+            if args.plot:
+                plot_temperature_yarn(temp_cfg)
+            else:
+                run_temperature_yarn_experiment(temp_cfg)
+                plot_temperature_yarn(temp_cfg)
+
+        elif getattr(args, 'entropy_yarn', False):
+            from benchmarks.benchmark_entropy_YaRN import run_entropy_yarn_experiment, plot_entropy_yarn
+            from benchmarks.benchmarks_configs import EntropyYaRNConfig
+            scale = getattr(args, 'scale', '350M')
+            model_flag = getattr(args, 'model', 'both').lower()
+            is_cpt = getattr(args, 'cpt', True)
+            h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
+            m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
+            h_yarn = h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg)
+            m_yarn = m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg)
+
+            eval_models = [h_yarn] if model_flag == "hofa" else ([m_yarn] if model_flag == "mha" else [h_yarn, m_yarn])
+            
+            default_cfg = EntropyYaRNConfig()
+            length_arg = getattr(args, 'length', None)
+            seq_lens = tuple(length_arg) if length_arg is not None else default_cfg.seq_lengths
+
+            ent_cfg = EntropyYaRNConfig(
+                models=eval_models,
+                seq_lengths=seq_lens,
+                force_rerun=getattr(args, 'force', False),
+            )
+            if args.plot:
+                plot_entropy_yarn(ent_cfg)
+            else:
+                run_entropy_yarn_experiment(ent_cfg)
+                plot_entropy_yarn(ent_cfg)
         else:
-            print("Please specify a valid benchmark flag (e.g. --induction, --copy, --alpha, --keff, --distance, or --extrapolation).")
+            print("Please specify a valid benchmark flag (e.g. --induction, --copy, --alpha, --keff, --distance, --extrapolation, --temp-yarn, or --entropy-yarn).")
     else:
         parser.print_help()
 
