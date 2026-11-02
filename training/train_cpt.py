@@ -232,13 +232,46 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
             fused=True
         )
     else:
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=lm_cfg.learning_rate,
-            weight_decay=lm_cfg.weight_decay,
-            betas=(0.9, 0.95),
-            fused=True
-        )
+        gate_multiplier = getattr(lm_cfg, 'gate_lr_multiplier', None)
+        if gate_multiplier is not None and gate_multiplier != 1.0:
+            gate_param_ids = set()
+            gate_params = []
+            for name, module in model.named_modules():
+                if getattr(module, '_is_gate', False) or name.endswith('gate_proj') or name.endswith('mix_proj'):
+                    for p in module.parameters():
+                        if id(p) not in gate_param_ids:
+                            gate_param_ids.add(id(p))
+                            gate_params.append(p)
+                elif hasattr(module, 'fixed_mix') and isinstance(module.fixed_mix, torch.nn.Parameter):
+                    p = module.fixed_mix
+                    if id(p) not in gate_param_ids:
+                        gate_param_ids.add(id(p))
+                        gate_params.append(p)
+                elif hasattr(module, 'gla_scale') and isinstance(module.gla_scale, torch.nn.Parameter):
+                    p = module.gla_scale
+                    if id(p) not in gate_param_ids:
+                        gate_param_ids.add(id(p))
+                        gate_params.append(p)
+
+            base_params = [p for p in model.parameters() if id(p) not in gate_param_ids]
+            print(f"[CPT Optimizer] Decoupled gate optimization enabled: {len(gate_params)} gate tensors (multiplier={gate_multiplier:.1f}x, peak_lr={lm_cfg.learning_rate * gate_multiplier:.1e}), {len(base_params)} base tensors.")
+            
+            optimizer = torch.optim.AdamW(
+                [
+                    {'params': base_params, 'lr': lm_cfg.learning_rate, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': 1.0},
+                    {'params': gate_params, 'lr': lm_cfg.learning_rate * gate_multiplier, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': gate_multiplier},
+                ],
+                betas=(0.9, 0.95),
+                fused=True
+            )
+        else:
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=lm_cfg.learning_rate,
+                weight_decay=lm_cfg.weight_decay,
+                betas=(0.9, 0.95),
+                fused=True
+            )
 
     metrics = {
         'processed_tokens': [],

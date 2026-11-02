@@ -60,6 +60,7 @@ class LanguageModelingExperimentConfig:
     val_every: int = 500
     val_num_batches: int = 50
     activation_checkpointing_interval: Optional[int] = None
+    gate_lr_multiplier: Optional[float] = None
 
 @dataclass
 class YaRNConfig:
@@ -307,6 +308,7 @@ def make_13M_HOFA_cpt() -> YaRNConfig:
     cfg.gradient_accumulation_steps = 16
     cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
     cfg.learning_rate = 5e-5
+    cfg.gate_lr_multiplier = 10.0
     cfg.weight_decay = 0.0
     cfg.warmup_steps = 30
     cfg.val_every = 50
@@ -355,6 +357,7 @@ def make_30M_HOFA_cpt() -> YaRNConfig:
     cfg.gradient_accumulation_steps = 16
     cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
     cfg.learning_rate = 3e-5
+    cfg.gate_lr_multiplier = 10.0
     cfg.weight_decay = 0.0
     cfg.warmup_steps = 30
     cfg.val_every = 50
@@ -404,6 +407,7 @@ def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg.gradient_accumulation_steps = 16
     cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
     cfg.learning_rate = 2e-5
+    cfg.gate_lr_multiplier = 10.0
     cfg.weight_decay = 0.0
     cfg.warmup_steps = 20
     cfg.val_every = 50
