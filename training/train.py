@@ -10,7 +10,7 @@ torch.set_float32_matmul_precision('high')
 import numpy as np
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
 from training.training_config import LanguageModelingExperimentConfig
-from interrupt_util.interrupts import GracefulInterruptHandler
+from src.utils.interrupts import GracefulInterruptHandler
 from src.modules.benchmark_utils import adjust_learning_rate
 from training.modules.eval import compute_val_ppl_from_cache
 

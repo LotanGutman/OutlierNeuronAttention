@@ -411,6 +411,7 @@ def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg.plot_name = "350M HOFA (16k CPT)"
     cfg.seq_len = 16384
     cfg.model_config.block_size = 16384
+    cfg.model_config.fp32_gates = True
     cfg.max_tokens = 100_000_000
     cfg.batch_size = 16
     cfg.micro_batch_size = 1

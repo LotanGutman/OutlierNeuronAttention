@@ -120,15 +120,26 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
             Y_mha = F.scaled_dot_product_attention(Q_mha, K_mha, V_mha, is_causal=True, scale=1.0)
 
-            W_g = self.gate_proj.weight
-            W_g_q, W_g_k = W_g.chunk(2, dim=1)
-            W_g_q_gla = W_g_q[self.forced_mha_heads:]
-            W_g_k_gla = W_g_k[self.forced_mha_heads:]
-            b_g_gla = self.gate_proj.bias[self.forced_mha_heads:]
+            if getattr(self, 'fp32_gates', False):
+                Qf_gla, Kf_gla = Q_gla.float(), K_gla.float()
+                W_g = self.gate_proj.weight.float()
+                W_g_q, W_g_k = W_g.chunk(2, dim=1)
+                W_g_q_gla = W_g_q[self.forced_mha_heads:]
+                W_g_k_gla = W_g_k[self.forced_mha_heads:]
+                b_g_gla = self.gate_proj.bias.float()[self.forced_mha_heads:].view(1, -1, 1)
+            else:
+                Qf_gla, Kf_gla = Q_gla, K_gla
+                W_g = self.gate_proj.weight
+                W_g_q, W_g_k = W_g.chunk(2, dim=1)
+                W_g_q_gla = W_g_q[self.forced_mha_heads:]
+                W_g_k_gla = W_g_k[self.forced_mha_heads:]
+                b_g_gla = self.gate_proj.bias[self.forced_mha_heads:].view(1, -1, 1).to(dtype_in)
 
-            gate_logits = torch.einsum('bhnf,hf->bhn', Q_gla, W_g_q_gla) + \
-                          torch.einsum('bhnf,hf->bhn', K_gla, W_g_k_gla) + \
-                          b_g_gla.view(1, -1, 1).to(dtype_in)
+            gate_logits = (
+                torch.einsum('bhnf,hf->bhn', Qf_gla, W_g_q_gla)
+                + torch.einsum('bhnf,hf->bhn', Kf_gla, W_g_k_gla)
+                + b_g_gla
+            )
             log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
 
             Y_gla, states_out = chunk_gla_inlier_fwd(Q_gla, K_gla, V_gla, log_gamma, 0, self.chunk_size)
@@ -268,15 +279,26 @@ class HybridOutlierFactorizedAttention(nn.Module):
                 cache_new = (K_past, V_past)
             Y_mha = F.scaled_dot_product_attention(Q_mha, K_past, V_past, is_causal=False, scale=1.0)
 
-            W_g = self.gate_proj.weight
-            W_g_q, W_g_k = W_g.chunk(2, dim=1)
-            W_g_q_gla = W_g_q[self.forced_mha_heads:]
-            W_g_k_gla = W_g_k[self.forced_mha_heads:]
-            b_g_gla = self.gate_proj.bias[self.forced_mha_heads:]
+            if getattr(self, 'fp32_gates', False):
+                Qf_gla, Kf_gla = Q_gla.float(), K_gla.float()
+                W_g = self.gate_proj.weight.float()
+                W_g_q, W_g_k = W_g.chunk(2, dim=1)
+                W_g_q_gla = W_g_q[self.forced_mha_heads:]
+                W_g_k_gla = W_g_k[self.forced_mha_heads:]
+                b_g_gla = self.gate_proj.bias.float()[self.forced_mha_heads:].view(1, -1, 1)
+            else:
+                Qf_gla, Kf_gla = Q_gla, K_gla
+                W_g = self.gate_proj.weight
+                W_g_q, W_g_k = W_g.chunk(2, dim=1)
+                W_g_q_gla = W_g_q[self.forced_mha_heads:]
+                W_g_k_gla = W_g_k[self.forced_mha_heads:]
+                b_g_gla = self.gate_proj.bias[self.forced_mha_heads:].view(1, -1, 1).to(dtype_in)
 
-            gate_logits = torch.einsum('bhnf,hf->bhn', Q_gla, W_g_q_gla) + \
-                          torch.einsum('bhnf,hf->bhn', K_gla, W_g_k_gla) + \
-                          b_g_gla.view(1, -1, 1).to(dtype_in)
+            gate_logits = (
+                torch.einsum('bhnf,hf->bhn', Qf_gla, W_g_q_gla)
+                + torch.einsum('bhnf,hf->bhn', Kf_gla, W_g_k_gla)
+                + b_g_gla
+            )
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads - self.forced_mha_heads, 1, 1)
 
             if state_I is None:

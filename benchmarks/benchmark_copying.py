@@ -14,7 +14,7 @@ from src.config import ModelConfig
 from src.modules.benchmark_utils import GenericBenchmarkLM, AttentionType, adjust_learning_rate
 from benchmarks.benchmarks_configs import CopyingExperimentConfig
 from src.modules.checkpointing import save_checkpoint, load_checkpoint
-from interrupt_util.interrupts import GracefulInterruptHandler
+from src.utils.interrupts import GracefulInterruptHandler
 
 def generate_copying_batch(batch_size, pattern_len, gap_len, vocab_size, delim_token, device):
     """

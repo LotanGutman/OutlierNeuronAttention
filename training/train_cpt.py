@@ -19,7 +19,7 @@ torch.set_float32_matmul_precision('high')
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
 from src.yarn import patch_model_yarn, swap_rotary_to_native, restore_rotary_from_saved
 from training.training_config import LanguageModelingExperimentConfig, YaRNConfig, YaRNMode, get_model_config
-from interrupt_util.interrupts import GracefulInterruptHandler
+from src.utils.interrupts import GracefulInterruptHandler
 from training.data_utils import FastTokenLoader
 
 

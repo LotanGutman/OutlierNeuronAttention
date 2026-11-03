@@ -24,3 +24,4 @@ class GracefulInterruptHandler:
         self.stop_requested = True
         self.last_interrupt_time = current_time
         print("\n      [Ctrl+C] Early stopping current model. Press Ctrl+C again within 2 seconds to hard exit.")
+

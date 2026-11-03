@@ -1,4 +1,4 @@
-"""Normalized attention entropy and DuoAttention head classification benchmark."""
+"""Normalized attention entropy and layerwise head retrieval benchmark."""
 
 import os
 import sys
@@ -190,19 +190,12 @@ def evaluate_entropy_for_length(
     model_mean_norm_entropy = float(np.mean(mean_layer_norm_entropies))
     model_mean_raw_entropy = float(np.mean(mean_layer_raw_entropies))
 
-    # DuoAttention Head Classification across all layers (num_layers * num_heads)
+    # Head Retrieval Scores across all layers (num_layers * num_heads)
     all_head_ret_scores: List[float] = []
     for l_idx in range(num_layers):
         if book_layer_head_rets[l_idx]:
             layer_mean_rets = torch.stack(book_layer_head_rets[l_idx], dim=0).mean(dim=0).tolist()
             all_head_ret_scores.extend(layer_mean_rets)
-
-    duo_threshold = 1e-5
-    streaming_head_count = sum(1 for s in all_head_ret_scores if s < duo_threshold)
-    retrieval_head_count = sum(1 for s in all_head_ret_scores if s >= duo_threshold)
-    total_heads = len(all_head_ret_scores)
-    streaming_head_ratio = streaming_head_count / total_heads if total_heads > 0 else 0.0
-    retrieval_head_ratio = retrieval_head_count / total_heads if total_heads > 0 else 0.0
 
     # Layer group breakdowns
     n_third = num_layers // 3
@@ -219,10 +212,6 @@ def evaluate_entropy_for_length(
         "late_norm_entropy": late_norm_entropy,
         "layer_norm_entropies": mean_layer_norm_entropies,
         "head_retrieval_scores": all_head_ret_scores,
-        "streaming_head_count": streaming_head_count,
-        "retrieval_head_count": retrieval_head_count,
-        "streaming_head_ratio": streaming_head_ratio,
-        "retrieval_head_ratio": retrieval_head_ratio,
         "num_books": len(target_books),
         "num_queries": len(query_indices)
     }
@@ -287,8 +276,7 @@ def run_entropy_yarn_experiment(config: Optional[EntropyYaRNConfig] = None):
                 and "normalized_entropy_mean" in results[model_name][str(N)]
                 and "head_retrieval_scores" in results[model_name][str(N)]):
                 cached_val = results[model_name][str(N)]["normalized_entropy_mean"]
-                cached_stream = results[model_name][str(N)].get("streaming_head_ratio", 0.0) * 100.0
-                print(f"[{model_name}] N={N:5d} | Cached H/ln(N): {cached_val:.4f} | Streaming Heads: {cached_stream:.1f}% ({len(eval_books)} books)")
+                print(f"[{model_name}] N={N:5d} | Cached H/ln(N): {cached_val:.4f} ({len(eval_books)} books)")
                 continue
 
             print(f"[{model_name}] N={N:5d} | Initializing model and patching RoPE...", end="", flush=True)
@@ -312,8 +300,7 @@ def run_entropy_yarn_experiment(config: Optional[EntropyYaRNConfig] = None):
             with open(cache_file, "w") as f:
                 json.dump(results, f, indent=2)
 
-            stream_pct = res['streaming_head_ratio'] * 100.0
-            print(f" Done in {time.time() - t_eval:.1f}s | H/ln(N): {res['normalized_entropy_mean']:.4f} | Streaming Heads: {stream_pct:.1f}% ({res['streaming_head_count']}/{len(res['head_retrieval_scores'])})")
+            print(f" Done in {time.time() - t_eval:.1f}s | H/ln(N): {res['normalized_entropy_mean']:.4f}")
 
             del yarn_model
             torch.cuda.empty_cache()
@@ -323,7 +310,7 @@ def run_entropy_yarn_experiment(config: Optional[EntropyYaRNConfig] = None):
 
 
 def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
-    """Plot normalized attention entropy vs context length and DuoAttention head distribution."""
+    """Plot normalized attention entropy vs context length and layerwise head retrieval distribution."""
     if config is None:
         config = EntropyYaRNConfig()
 
@@ -414,7 +401,7 @@ def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
         print(f"Saved attention entropy invariance plot to: {pdf_entropy_path}")
 
     # =========================================================================
-    # PLOT 2: Head Classification & Retrieval Distribution
+    # PLOT 2: Layerwise Entropy & Head Retrieval Dynamics
     # =========================================================================
     target_N_candidates = []
     for m_name in available_models:
@@ -423,80 +410,55 @@ def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
                 target_N_candidates.append(int(k))
 
     if not target_N_candidates:
-        print("No head retrieval score data found in cache. Skipping DuoAttention plot.")
+        print("No head retrieval score data found in cache. Skipping layerwise retrieval plot.")
         return
 
     eval_N = max(target_N_candidates)
     str_eval_N = str(eval_N)
 
-    fig2, (ax_bar, ax_curve) = plt.subplots(1, 2, figsize=(14, 5.5))
+    fig2, (ax_layer, ax_curve) = plt.subplots(1, 2, figsize=(14, 5.5))
 
-    # Panel A: Stacked Bar Chart of Head Breakdown
-    model_labels = []
-    streaming_pcts = []
-    retrieval_pcts = []
-    streaming_raw = []
-    retrieval_raw = []
-
+    # Panel A: Layer-by-Layer Attention Entropy at N=16k
     for m_name in available_models:
-        if str_eval_N not in results[m_name] or "head_retrieval_scores" not in results[m_name][str_eval_N]:
+        if str_eval_N not in results[m_name] or "layer_norm_entropies" not in results[m_name][str_eval_N]:
             continue
         entry = results[m_name][str_eval_N]
+        layer_entropies = entry["layer_norm_entropies"]
         is_mha = "MHA" in m_name
-        label = "350M MHA" if is_mha else "350M HOFA"
-        model_labels.append(label)
-        s_count = entry.get("streaming_head_count", 0)
-        r_count = entry.get("retrieval_head_count", 0)
-        tot = max(1, s_count + r_count)
-        s_ratio = s_count / tot * 100.0
-        r_ratio = r_count / tot * 100.0
-        streaming_pcts.append(s_ratio)
-        retrieval_pcts.append(r_ratio)
-        streaming_raw.append(s_count)
-        retrieval_raw.append(r_count)
+        label = "350M MHA (16k CPT)" if is_mha else "350M HOFA (16k CPT)"
+        color = colors["mha"] if is_mha else colors["hofa"]
+        marker = markers["mha"] if is_mha else markers["hofa"]
+        linestyle = "--" if is_mha else "-"
 
-    bar_width = 0.45
-    x_indices = np.arange(len(model_labels))
+        ax_layer.plot(
+            range(len(layer_entropies)),
+            layer_entropies,
+            marker=marker,
+            markersize=6,
+            linewidth=2.0,
+            label=label,
+            color=color,
+            linestyle=linestyle
+        )
 
-    col_stream = "#2ca25f"
-    col_ret = "#2b5c8f"
-
-    p1 = ax_bar.bar(x_indices, streaming_pcts, bar_width, label=r"Streaming Heads ($\text{RetScore} < 10^{-5}$)", color=col_stream, edgecolor="black", linewidth=0.8)
-    p2 = ax_bar.bar(x_indices, retrieval_pcts, bar_width, bottom=streaming_pcts, label=r"Retrieval Heads ($\text{RetScore} \geq 10^{-5}$)", color=col_ret, edgecolor="black", linewidth=0.8)
-
-    for i in range(len(model_labels)):
-        if streaming_pcts[i] > 8.0:
-            ax_bar.text(
-                x_indices[i],
-                streaming_pcts[i] / 2.0,
-                f"Streaming\n{streaming_raw[i]} heads\n({streaming_pcts[i]:.1f}%)",
-                ha="center", va="center", color="white", fontweight="bold", fontsize=10
-            )
-        if retrieval_pcts[i] > 8.0:
-            ax_bar.text(
-                x_indices[i],
-                streaming_pcts[i] + (retrieval_pcts[i] / 2.0),
-                f"Retrieval\n{retrieval_raw[i]} heads\n({retrieval_pcts[i]:.1f}%)",
-                ha="center", va="center", color="white", fontweight="bold", fontsize=10
-            )
-
-    ax_bar.set_xticks(x_indices)
-    ax_bar.set_xticklabels(model_labels, fontweight="bold", fontsize=11)
-    ax_bar.set_ylabel("Attention Heads Share (%)")
-    ax_bar.set_ylim([0, 105])
-    ax_bar.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter())
-    ax_bar.grid(True, linestyle=":", alpha=0.5, axis="y")
-    ax_bar.set_title(f"(a) DuoAttention Head Ratio at $N={eval_N // 1024}$k Context", fontweight="bold")
-    ax_bar.legend(loc="upper right", framealpha=0.9, fontsize=9)
+    ax_layer.set_xlabel("Layer Index")
+    ax_layer.set_ylabel(r"Normalized Attention Entropy $\bar{H} = H / \ln(N)$")
+    ax_layer.set_title(f"(a) Layer-by-Layer Attention Entropy ($N={eval_N // 1024}$k)", fontweight="bold")
+    ax_layer.grid(True, linestyle=":", alpha=0.5)
+    ax_layer.legend(loc="upper right", framealpha=0.9, fontsize=10)
+    ax_layer.set_ylim([0.35, 1.05])
+    ax_layer.set_xticks(range(0, 24, 2))
 
     # Panel B: Sorted Head Retrieval Scores Curve
+    max_head_count = 0
     for m_name in available_models:
         if str_eval_N not in results[m_name] or "head_retrieval_scores" not in results[m_name][str_eval_N]:
             continue
         entry = results[m_name][str_eval_N]
         raw_scores = sorted(entry["head_retrieval_scores"])
+        max_head_count = max(max_head_count, len(raw_scores))
         is_mha = "MHA" in m_name
-        label = "350M MHA" if is_mha else "350M HOFA"
+        label = "350M MHA (16k CPT)" if is_mha else "350M HOFA (16k CPT)"
         color = colors["mha"] if is_mha else colors["hofa"]
         marker = markers["mha"] if is_mha else markers["hofa"]
         linestyle = "--" if is_mha else "-"
@@ -513,21 +475,28 @@ def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
             markevery=max(1, len(raw_scores) // 20)
         )
 
-    ax_curve.axhline(1e-5, color="darkred", linestyle=":", linewidth=2.0, label=r"DuoAttention Threshold ($10^{-5}$)")
     ax_curve.set_yscale("log")
-    ax_curve.set_xlabel("Sorted Attention Head Index (0 to 383)")
+    ax_curve.set_xlabel(f"Sorted Attention Head Index (0 to {max_head_count - 1})")
     ax_curve.set_ylabel("Attention Retrieval Score")
     ax_curve.set_title(f"(b) Sorted Head Retrieval Scores ($N={eval_N // 1024}$k)", fontweight="bold")
     ax_curve.grid(True, linestyle=":", alpha=0.5, which="both")
-    ax_curve.legend(loc="upper left", framealpha=0.9, fontsize=9)
+    ax_curve.legend(loc="lower right", framealpha=0.9, fontsize=10)
 
-    fig2.suptitle("Attention Head Retrieval Distribution (DuoAttention)", fontweight="bold")
+    fig2.suptitle("Layerwise Entropy & Head Retrieval Dynamics ($N=16$k Context)", fontweight="bold")
     plt.tight_layout()
 
-    pdf_head_path = os.path.join(out_dir, "duo_attention_head_distribution.pdf")
-    fig2.savefig(pdf_head_path, dpi=300)
+    # Remove obsolete duo_attention_head_distribution.pdf if present
+    old_pdf_path = os.path.join(out_dir, "duo_attention_head_distribution.pdf")
+    if os.path.exists(old_pdf_path):
+        try:
+            os.remove(old_pdf_path)
+        except OSError:
+            pass
+
+    pdf_layer_path = os.path.join(out_dir, "layerwise_entropy_and_retrieval.pdf")
+    fig2.savefig(pdf_layer_path, dpi=300)
     plt.close(fig2)
-    print(f"Saved DuoAttention head distribution plot to: {pdf_head_path}")
+    print(f"Saved layerwise entropy and retrieval plot to: {pdf_layer_path}")
 
 
 if __name__ == "__main__":
