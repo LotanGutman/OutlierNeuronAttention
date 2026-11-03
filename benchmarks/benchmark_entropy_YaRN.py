@@ -1,4 +1,4 @@
-"""Normalized attention entropy benchmark."""
+"""Normalized attention entropy and DuoAttention head classification benchmark."""
 
 import os
 import sys
@@ -26,13 +26,16 @@ def compute_normalized_entropy_chunked(
     K: torch.Tensor,
     scale: float,
     query_indices: List[int],
-) -> Tuple[float, float]:
-    """Computes Shannon entropy H and normalized entropy H / ln(i+1) for sample queries without OOM."""
+) -> Tuple[float, float, torch.Tensor]:
+    """Computes Shannon entropy H, normalized entropy H / ln(i+1), and head retrieval score."""
     # Q, K: (B=1, H, N, d)
     B, num_heads, N, d = Q.shape
     total_norm_entropy = 0.0
     total_raw_entropy = 0.0
     valid_count = 0
+
+    head_retrieval_sum = torch.zeros(num_heads, dtype=torch.float64, device=Q.device)
+    retrieval_query_count = 0
 
     for q_idx in query_indices:
         if q_idx <= 1:
@@ -47,11 +50,11 @@ def compute_normalized_entropy_chunked(
         # Numerically stable entropy:
         # A_ij = softmax(scores)
         # H_i = - sum A_ij * ln(A_ij)
-        # Using log_softmax:
         log_probs = F.log_softmax(scores, dim=-1)  # (1, H, 1, max_j)
         probs = log_probs.exp()
-        # Entropy per head: (1, H, 1)
-        h_per_head = -(probs * log_probs).sum(dim=-1).squeeze(-1)  # (1, H)
+        
+        # Entropy per head: (1, H)
+        h_per_head = -(probs * log_probs).sum(dim=-1).squeeze(-1)
 
         h_mean_query = h_per_head.mean().item()  # Average across heads
         max_entropy = math.log(max_j)
@@ -61,9 +64,20 @@ def compute_normalized_entropy_chunked(
         total_raw_entropy += h_mean_query
         valid_count += 1
 
-    if valid_count == 0:
-        return 0.0, 0.0
-    return total_raw_entropy / valid_count, total_norm_entropy / valid_count
+        # Retrieval score: mass on distant keys [4, q_idx - 127) excluding sinks [0, 4) and 128 local tokens
+        if q_idx > 131:
+            distant_mass = probs[0, :, 0, 4 : (q_idx - 127)].sum(dim=-1).to(torch.float64)  # (H,)
+            head_retrieval_sum += distant_mass
+            retrieval_query_count += 1
+
+    mean_raw = total_raw_entropy / valid_count if valid_count > 0 else 0.0
+    mean_norm = total_norm_entropy / valid_count if valid_count > 0 else 0.0
+    if retrieval_query_count > 0:
+        head_ret_scores = (head_retrieval_sum / retrieval_query_count).cpu()
+    else:
+        head_ret_scores = torch.zeros(num_heads, dtype=torch.float64)
+
+    return mean_raw, mean_norm, head_ret_scores
 
 
 def extract_layer_q_k(layer: nn.Module, x: torch.Tensor, N: int) -> Tuple[torch.Tensor, torch.Tensor, float]:
@@ -111,12 +125,11 @@ def evaluate_entropy_for_length(
     device: str = "cuda",
     max_books: Optional[int] = None,
 ) -> Dict:
-    """Evaluates normalized attention entropy for a given sequence length across layers."""
+    """Evaluates normalized attention entropy and DuoAttention head retrieval scores across layers."""
     bin_data = np.memmap(data_path, dtype=np.uint16, mode='r')
     target_books = books if max_books is None else books[:max_books]
 
-    # Sample query indices log-spaced / evenly spaced along sequence length
-    # e.g. from 64 to seq_len - 1
+    # Sample query indices evenly spaced along sequence length
     query_indices = np.linspace(64, seq_len - 1, num_sample_queries, dtype=int).tolist()
     query_indices = sorted(list(set(query_indices)))
 
@@ -126,6 +139,7 @@ def evaluate_entropy_for_length(
 
     book_layer_norm_entropies: List[List[float]] = [[] for _ in range(num_layers)]
     book_layer_raw_entropies: List[List[float]] = [[] for _ in range(num_layers)]
+    book_layer_head_rets: List[List[torch.Tensor]] = [[] for _ in range(num_layers)]
 
     model.eval()
     with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
@@ -155,9 +169,10 @@ def evaluate_entropy_for_length(
                     h_norm = h
                 Q, K, scale = extract_layer_q_k(layer, h_norm, seq_len)
                 
-                raw_h, norm_h = compute_normalized_entropy_chunked(Q, K, scale, query_indices)
+                raw_h, norm_h, head_ret = compute_normalized_entropy_chunked(Q, K, scale, query_indices)
                 book_layer_raw_entropies[l_idx].append(raw_h)
                 book_layer_norm_entropies[l_idx].append(norm_h)
+                book_layer_head_rets[l_idx].append(head_ret)
 
                 # Advance representation through layer for accurate deeper activations
                 h = layer(h)
@@ -175,6 +190,20 @@ def evaluate_entropy_for_length(
     model_mean_norm_entropy = float(np.mean(mean_layer_norm_entropies))
     model_mean_raw_entropy = float(np.mean(mean_layer_raw_entropies))
 
+    # DuoAttention Head Classification across all layers (num_layers * num_heads)
+    all_head_ret_scores: List[float] = []
+    for l_idx in range(num_layers):
+        if book_layer_head_rets[l_idx]:
+            layer_mean_rets = torch.stack(book_layer_head_rets[l_idx], dim=0).mean(dim=0).tolist()
+            all_head_ret_scores.extend(layer_mean_rets)
+
+    duo_threshold = 1e-5
+    streaming_head_count = sum(1 for s in all_head_ret_scores if s < duo_threshold)
+    retrieval_head_count = sum(1 for s in all_head_ret_scores if s >= duo_threshold)
+    total_heads = len(all_head_ret_scores)
+    streaming_head_ratio = streaming_head_count / total_heads if total_heads > 0 else 0.0
+    retrieval_head_ratio = retrieval_head_count / total_heads if total_heads > 0 else 0.0
+
     # Layer group breakdowns
     n_third = num_layers // 3
     early_norm_entropy = float(np.mean(mean_layer_norm_entropies[:n_third]))
@@ -189,6 +218,11 @@ def evaluate_entropy_for_length(
         "mid_norm_entropy": mid_norm_entropy,
         "late_norm_entropy": late_norm_entropy,
         "layer_norm_entropies": mean_layer_norm_entropies,
+        "head_retrieval_scores": all_head_ret_scores,
+        "streaming_head_count": streaming_head_count,
+        "retrieval_head_count": retrieval_head_count,
+        "streaming_head_ratio": streaming_head_ratio,
+        "retrieval_head_ratio": retrieval_head_ratio,
         "num_books": len(target_books),
         "num_queries": len(query_indices)
     }
@@ -203,11 +237,12 @@ def run_entropy_yarn_experiment(config: Optional[EntropyYaRNConfig] = None):
     seq_lengths = list(config.seq_lengths)
 
     print("=" * 80)
-    print("Normalized Attention Entropy Invariance Benchmark (arXiv:2610.10114)")
+    print("Normalized Attention Entropy & Head Retrieval Benchmark")
     print(f"Device: {device}")
     print(f"Models: {[m.model.model_name for m in models]}")
-    print(f"Sequence lengths (1k -> 64k): {seq_lengths}")
+    print(f"Sequence lengths: {seq_lengths}")
     print(f"Sample queries per sequence: {config.num_sample_queries}")
+    print(f"Max books per length: {config.max_books}")
     print(f"Data source: {config.data_path}")
     print("=" * 80 + "\n")
 
@@ -247,15 +282,18 @@ def run_entropy_yarn_experiment(config: Optional[EntropyYaRNConfig] = None):
 
             eval_books = eligible_books[:config.max_books] if config.max_books else eligible_books
 
-            if not config.force_rerun and str(N) in results[model_name] and "normalized_entropy_mean" in results[model_name][str(N)]:
+            if (not config.force_rerun 
+                and str(N) in results[model_name] 
+                and "normalized_entropy_mean" in results[model_name][str(N)]
+                and "head_retrieval_scores" in results[model_name][str(N)]):
                 cached_val = results[model_name][str(N)]["normalized_entropy_mean"]
-                print(f"[{model_name}] N={N:5d} | Cached H/ln(N): {cached_val:.4f} ({len(eval_books)} books)")
+                cached_stream = results[model_name][str(N)].get("streaming_head_ratio", 0.0) * 100.0
+                print(f"[{model_name}] N={N:5d} | Cached H/ln(N): {cached_val:.4f} | Streaming Heads: {cached_stream:.1f}% ({len(eval_books)} books)")
                 continue
 
             print(f"[{model_name}] N={N:5d} | Initializing model and patching RoPE...", end="", flush=True)
-            t0 = time.time()
             yarn_model = YaRNModel(yarn_cfg, device=device, dtype=torch.bfloat16)
-            scale_val = max(16.0, float(N) / float(yarn_model.original_max_seq_len))
+            scale_val = max(1.0, float(N) / float(yarn_model.original_max_seq_len))
             ymode = getattr(yarn_cfg, 'yarn_mode', None) or YaRNMode.default()
             yarn_model.set_context_length(N, scale=scale_val, yarn_mode=ymode)
 
@@ -274,7 +312,8 @@ def run_entropy_yarn_experiment(config: Optional[EntropyYaRNConfig] = None):
             with open(cache_file, "w") as f:
                 json.dump(results, f, indent=2)
 
-            print(f" Done in {time.time() - t_eval:.1f}s | H/ln(N): {res['normalized_entropy_mean']:.4f}")
+            stream_pct = res['streaming_head_ratio'] * 100.0
+            print(f" Done in {time.time() - t_eval:.1f}s | H/ln(N): {res['normalized_entropy_mean']:.4f} | Streaming Heads: {stream_pct:.1f}% ({res['streaming_head_count']}/{len(res['head_retrieval_scores'])})")
 
             del yarn_model
             torch.cuda.empty_cache()
@@ -284,7 +323,7 @@ def run_entropy_yarn_experiment(config: Optional[EntropyYaRNConfig] = None):
 
 
 def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
-    """Plot normalized attention entropy vs sequence length."""
+    """Plot normalized attention entropy vs context length and DuoAttention head distribution."""
     if config is None:
         config = EntropyYaRNConfig()
 
@@ -301,6 +340,9 @@ def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
         print("No models found in cache.")
         return
 
+    out_dir = "data/plots/length_extrapolation_entropy_scaling"
+    os.makedirs(out_dir, exist_ok=True)
+
     plt.rcParams.update({
         'font.family': 'sans-serif',
         'font.size': 11,
@@ -312,8 +354,6 @@ def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
         'figure.titlesize': 14
     })
 
-    fig, ax = plt.subplots(figsize=(8, 5.5))
-
     colors = {
         "hofa": "#1f77b4",  # Blue
         "mha": "#d62728",   # Red
@@ -323,9 +363,18 @@ def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
         "mha": "s",
     }
 
+    # =========================================================================
+    # PLOT 1: Attention Entropy Invariance vs Context Length (arXiv:2610.10114)
+    # =========================================================================
+    fig1, ax1 = plt.subplots(figsize=(8, 5.5))
+
+    all_plotted_lens = set()
     for m_name in available_models:
         m_data = results[m_name]
-        sorted_lens = sorted([int(k) for k in m_data.keys()])
+        sorted_lens = sorted([int(k) for k in m_data.keys() if "normalized_entropy_mean" in m_data[k]])
+        if not sorted_lens:
+            continue
+        all_plotted_lens.update(sorted_lens)
         norm_entropies = [m_data[str(k)]["normalized_entropy_mean"] for k in sorted_lens]
 
         is_mha = "MHA" in m_name
@@ -334,7 +383,7 @@ def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
         marker = markers["mha"] if is_mha else markers["hofa"]
         linestyle = "--" if is_mha else "-"
 
-        ax.plot(
+        ax1.plot(
             sorted_lens,
             norm_entropies,
             marker=marker,
@@ -345,33 +394,151 @@ def plot_entropy_yarn(config: Optional[EntropyYaRNConfig] = None):
             linestyle=linestyle
         )
 
-    ax.set_xscale('log', base=2)
-    ax.set_xticks(config.seq_lengths)
-    ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    if all_plotted_lens:
+        ax1.set_xscale('log', base=2)
+        tick_lens = sorted(list(all_plotted_lens))
+        ax1.set_xticks(tick_lens)
+        ax1.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
 
-    ax.set_xlabel("Context Length $N$ (Tokens)")
-    ax.set_ylabel(r"Normalized Attention Entropy $\bar{H} = H / \ln(N)$")
-    ax.set_title("Attention Entropy Invariance vs. Context Length\n(arXiv:2610.10114 Replication)", fontweight='bold')
-    ax.grid(True, linestyle=":", alpha=0.6)
-    ax.legend(loc="best", framealpha=0.9)
-    ax.set_ylim([0.0, 1.05])
+        ax1.set_xlabel("Context Length $N$ (Tokens)")
+        ax1.set_ylabel(r"Normalized Attention Entropy $\bar{H} = H / \ln(N)$")
+        ax1.set_title("Attention Entropy Invariance vs. Context Length", fontweight='bold')
+        ax1.grid(True, linestyle=":", alpha=0.6)
+        ax1.legend(loc="best", framealpha=0.9)
+        ax1.set_ylim([0.0, 1.05])
+        plt.tight_layout()
 
+        pdf_entropy_path = os.path.join(out_dir, "attention_entropy_invariance.pdf")
+        fig1.savefig(pdf_entropy_path, dpi=300)
+        plt.close(fig1)
+        print(f"Saved attention entropy invariance plot to: {pdf_entropy_path}")
+
+    # =========================================================================
+    # PLOT 2: Head Classification & Retrieval Distribution
+    # =========================================================================
+    target_N_candidates = []
+    for m_name in available_models:
+        for k in results[m_name].keys():
+            if "head_retrieval_scores" in results[m_name][k]:
+                target_N_candidates.append(int(k))
+
+    if not target_N_candidates:
+        print("No head retrieval score data found in cache. Skipping DuoAttention plot.")
+        return
+
+    eval_N = max(target_N_candidates)
+    str_eval_N = str(eval_N)
+
+    fig2, (ax_bar, ax_curve) = plt.subplots(1, 2, figsize=(14, 5.5))
+
+    # Panel A: Stacked Bar Chart of Head Breakdown
+    model_labels = []
+    streaming_pcts = []
+    retrieval_pcts = []
+    streaming_raw = []
+    retrieval_raw = []
+
+    for m_name in available_models:
+        if str_eval_N not in results[m_name] or "head_retrieval_scores" not in results[m_name][str_eval_N]:
+            continue
+        entry = results[m_name][str_eval_N]
+        is_mha = "MHA" in m_name
+        label = "350M MHA" if is_mha else "350M HOFA"
+        model_labels.append(label)
+        s_count = entry.get("streaming_head_count", 0)
+        r_count = entry.get("retrieval_head_count", 0)
+        tot = max(1, s_count + r_count)
+        s_ratio = s_count / tot * 100.0
+        r_ratio = r_count / tot * 100.0
+        streaming_pcts.append(s_ratio)
+        retrieval_pcts.append(r_ratio)
+        streaming_raw.append(s_count)
+        retrieval_raw.append(r_count)
+
+    bar_width = 0.45
+    x_indices = np.arange(len(model_labels))
+
+    col_stream = "#2ca25f"
+    col_ret = "#2b5c8f"
+
+    p1 = ax_bar.bar(x_indices, streaming_pcts, bar_width, label=r"Streaming Heads ($\text{RetScore} < 10^{-5}$)", color=col_stream, edgecolor="black", linewidth=0.8)
+    p2 = ax_bar.bar(x_indices, retrieval_pcts, bar_width, bottom=streaming_pcts, label=r"Retrieval Heads ($\text{RetScore} \geq 10^{-5}$)", color=col_ret, edgecolor="black", linewidth=0.8)
+
+    for i in range(len(model_labels)):
+        if streaming_pcts[i] > 8.0:
+            ax_bar.text(
+                x_indices[i],
+                streaming_pcts[i] / 2.0,
+                f"Streaming\n{streaming_raw[i]} heads\n({streaming_pcts[i]:.1f}%)",
+                ha="center", va="center", color="white", fontweight="bold", fontsize=10
+            )
+        if retrieval_pcts[i] > 8.0:
+            ax_bar.text(
+                x_indices[i],
+                streaming_pcts[i] + (retrieval_pcts[i] / 2.0),
+                f"Retrieval\n{retrieval_raw[i]} heads\n({retrieval_pcts[i]:.1f}%)",
+                ha="center", va="center", color="white", fontweight="bold", fontsize=10
+            )
+
+    ax_bar.set_xticks(x_indices)
+    ax_bar.set_xticklabels(model_labels, fontweight="bold", fontsize=11)
+    ax_bar.set_ylabel("Attention Heads Share (%)")
+    ax_bar.set_ylim([0, 105])
+    ax_bar.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter())
+    ax_bar.grid(True, linestyle=":", alpha=0.5, axis="y")
+    ax_bar.set_title(f"(a) DuoAttention Head Ratio at $N={eval_N // 1024}$k Context", fontweight="bold")
+    ax_bar.legend(loc="upper right", framealpha=0.9, fontsize=9)
+
+    # Panel B: Sorted Head Retrieval Scores Curve
+    for m_name in available_models:
+        if str_eval_N not in results[m_name] or "head_retrieval_scores" not in results[m_name][str_eval_N]:
+            continue
+        entry = results[m_name][str_eval_N]
+        raw_scores = sorted(entry["head_retrieval_scores"])
+        is_mha = "MHA" in m_name
+        label = "350M MHA" if is_mha else "350M HOFA"
+        color = colors["mha"] if is_mha else colors["hofa"]
+        marker = markers["mha"] if is_mha else markers["hofa"]
+        linestyle = "--" if is_mha else "-"
+        
+        ax_curve.plot(
+            range(len(raw_scores)),
+            raw_scores,
+            label=label,
+            color=color,
+            linestyle=linestyle,
+            linewidth=2.0,
+            marker=marker,
+            markersize=3.5,
+            markevery=max(1, len(raw_scores) // 20)
+        )
+
+    ax_curve.axhline(1e-5, color="darkred", linestyle=":", linewidth=2.0, label=r"DuoAttention Threshold ($10^{-5}$)")
+    ax_curve.set_yscale("log")
+    ax_curve.set_xlabel("Sorted Attention Head Index (0 to 383)")
+    ax_curve.set_ylabel("Attention Retrieval Score")
+    ax_curve.set_title(f"(b) Sorted Head Retrieval Scores ($N={eval_N // 1024}$k)", fontweight="bold")
+    ax_curve.grid(True, linestyle=":", alpha=0.5, which="both")
+    ax_curve.legend(loc="upper left", framealpha=0.9, fontsize=9)
+
+    fig2.suptitle("Attention Head Retrieval Distribution (DuoAttention)", fontweight="bold")
     plt.tight_layout()
 
-    out_dir = "data/plots/length_extrapolation_entropy_scaling"
-    os.makedirs(out_dir, exist_ok=True)
-    pdf_path = os.path.join(out_dir, "attention_entropy_invariance.pdf")
-    plt.savefig(pdf_path, dpi=300)
-    plt.close()
-
-    print(f"Saved attention entropy plot to: {pdf_path}")
+    pdf_head_path = os.path.join(out_dir, "duo_attention_head_distribution.pdf")
+    fig2.savefig(pdf_head_path, dpi=300)
+    plt.close(fig2)
+    print(f"Saved DuoAttention head distribution plot to: {pdf_head_path}")
 
 
 if __name__ == "__main__":
     cfg = EntropyYaRNConfig()
+    if "--all-lengths" in sys.argv:
+        cfg.seq_lengths = (1024, 2048, 4096, 8192, 16384, 32768, 65536)
+    if "--force" in sys.argv:
+        cfg.force_rerun = True
+
     if "--plot" in sys.argv:
         plot_entropy_yarn(cfg)
     else:
         run_entropy_yarn_experiment(cfg)
         plot_entropy_yarn(cfg)
-

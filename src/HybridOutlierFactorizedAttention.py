@@ -56,23 +56,43 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # Inlier normalization and learned LayerScale for the GLA pathway
         self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)
         self.gla_scale = nn.Parameter(torch.ones(1, self.num_heads, 1, self.d_head))
+        self.fp32_gates = getattr(model_cfg, 'fp32_gates', False)
 
     def _compute_gates_optimized(self, Q, K):
         # Q, K: (B, H, N, d_head)
-        W_g = self.gate_proj.weight  # (H, 2*d_head)
-        W_g_q, W_g_k = W_g.chunk(2, dim=1)
-        
-        gate_logits = torch.einsum('bhnf,hf->bhn', Q, W_g_q) + \
-                      torch.einsum('bhnf,hf->bhn', K, W_g_k) + \
-                      self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+        if getattr(self, 'fp32_gates', False):
+            Qf, Kf = Q.float(), K.float()
+            W_g = self.gate_proj.weight.float()  # (H, 2*d_head)
+            W_g_q, W_g_k = W_g.chunk(2, dim=1)
+            bias = self.gate_proj.bias.float().view(1, self.num_heads, 1)
+        else:
+            Qf, Kf = Q, K
+            W_g = self.gate_proj.weight
+            W_g_q, W_g_k = W_g.chunk(2, dim=1)
+            bias = self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+
+        gate_logits = (
+            torch.einsum('bhnf,hf->bhn', Qf, W_g_q)
+            + torch.einsum('bhnf,hf->bhn', Kf, W_g_k)
+            + bias
+        )
 
         if hasattr(self, 'mix_proj'):
-            W_m = self.mix_proj.weight   # (H, 2*d_head)
-            W_m_q, W_m_k = W_m.chunk(2, dim=1)
-            mix_logits = torch.einsum('bhnf,hf->bhn', Q, W_m_q) + \
-                         torch.einsum('bhnf,hf->bhn', K, W_m_k) + \
-                         self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
-            mix_g = torch.sigmoid(mix_logits).unsqueeze(-1)
+            if getattr(self, 'fp32_gates', False):
+                W_m = self.mix_proj.weight.float()   # (H, 2*d_head)
+                W_m_q, W_m_k = W_m.chunk(2, dim=1)
+                bias_m = self.mix_proj.bias.float().view(1, self.num_heads, 1)
+            else:
+                W_m = self.mix_proj.weight
+                W_m_q, W_m_k = W_m.chunk(2, dim=1)
+                bias_m = self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+
+            mix_logits = (
+                torch.einsum('bhnf,hf->bhn', Qf, W_m_q)
+                + torch.einsum('bhnf,hf->bhn', Kf, W_m_k)
+                + bias_m
+            )
+            mix_g = torch.sigmoid(mix_logits).to(Q.dtype).unsqueeze(-1)
         elif hasattr(self, 'fixed_mix'):
             mix_g = torch.sigmoid(self.fixed_mix).to(Q.dtype).expand(Q.shape[0], -1, Q.shape[2], -1)
         else:

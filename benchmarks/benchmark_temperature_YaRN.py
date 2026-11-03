@@ -21,18 +21,6 @@ from benchmarks.benchmarks_configs import TemperatureYaRNConfig, CACHE_PATH
 from benchmarks.benchmark_long_context import compute_chunked_loss
 
 
-def set_model_attention_scale(model: YaRNModel, scale: float) -> int:
-    """Sets attention_scale across all attention layers of the model."""
-    count = 0
-    layers = getattr(getattr(model, "model", model), "layers", [])
-    for layer in layers:
-        attn = getattr(layer, "attn", None)
-        if attn is not None and hasattr(attn, "attention_scale"):
-            attn.attention_scale = scale
-            count += 1
-    return count
-
-
 def evaluate_segments_for_scale(
     model: YaRNModel,
     data_path: str,
@@ -40,6 +28,8 @@ def evaluate_segments_for_scale(
     seq_len: int,
     chunk_size: int,
     scale_factor: float,
+    scale_val: float,
+    ymode: YaRNMode,
     device: str = "cuda",
     max_books: Optional[int] = None,
 ) -> Dict:
@@ -48,12 +38,8 @@ def evaluate_segments_for_scale(
     target_books = books if max_books is None else books[:max_books]
     num_chunks = seq_len // chunk_size
 
-    # Divide out the effective_mscale^2 already baked into cos_cached and sin_cached
-    orig_len = getattr(model, "original_max_seq_len", 1024)
-    s_rope = max(1.0, float(seq_len) / float(orig_len))
-    baked_mscale = 1.0 + 0.1 * math.log(s_rope)
-    actual_attn_scale = (scale_factor / baked_mscale) ** 2
-    set_model_attention_scale(model, actual_attn_scale)
+    # Set temperature scaling (mscale = 1/sqrt(t)) directly into RoPE buffers
+    model.set_context_length(seq_len, scale=scale_val, yarn_mode=ymode, mscale=scale_factor)
 
     chunk_losses_per_book: List[List[float]] = [[] for _ in range(num_chunks)]
     overall_book_losses: List[float] = []
@@ -126,7 +112,7 @@ def run_temperature_yarn_experiment(config: Optional[TemperatureYaRNConfig] = No
     scale_factors = list(config.scale_factors)
 
     print("=" * 80)
-    print("Position-Segment Pre-Softmax Temperature Scaling Benchmark (YaRN Fig. 5)")
+    print("Position-Segment Pre-Softmax Temperature Scaling Benchmark")
     print(f"Device: {device}")
     print(f"Models: {[m.model.model_name for m in models]}")
     print(f"Sequence Length: {seq_len:,} tokens ({seq_len // chunk_size} chunks of {chunk_size} tokens)")
@@ -191,6 +177,8 @@ def run_temperature_yarn_experiment(config: Optional[TemperatureYaRNConfig] = No
                 seq_len=seq_len,
                 chunk_size=chunk_size,
                 scale_factor=sf,
+                scale_val=scale_val,
+                ymode=ymode,
                 device=device,
                 max_books=len(eval_books),
             )
@@ -287,7 +275,7 @@ def plot_temperature_yarn(config: Optional[TemperatureYaRNConfig] = None):
         ax.legend(title="Token Segments", loc="lower left", framealpha=0.9)
 
     axes1[0].set_ylabel(r"Perplexity Change % (from $1/\sqrt{t}=1$ to higher)")
-    fig1.suptitle(f"Perplexity Change % of Token Segments at {seq_len // 1024}k Context\n(YaRN Fig. 5 Replication)", fontweight='bold')
+    fig1.suptitle(f"Perplexity Change % of Token Segments at {seq_len // 1024}k Context", fontweight='bold')
     plt.tight_layout()
 
     pdf_pct_path = os.path.join(out_dir, "position_segment_temperature_scaling.pdf")

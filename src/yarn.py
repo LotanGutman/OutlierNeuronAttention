@@ -28,6 +28,8 @@ def patch_model_yarn(
     dtype: torch.dtype = torch.bfloat16,
     scale: Optional[float] = None,
     yarn_mode: Optional[Union[YaRNMode, str]] = None,
+    mscale_coeff: float = 0.1,
+    mscale: Optional[float] = None,
 ) -> int:
     mode = YaRNMode.default() if yarn_mode is None else (yarn_mode.value if isinstance(yarn_mode, YaRNMode) else str(yarn_mode).lower())
     if scale is None:
@@ -71,10 +73,10 @@ def patch_model_yarn(
                     inv_freq_interpolation = inv_freq_extrapolation / scale
                     inv_freq = ramp * inv_freq_interpolation + (1.0 - ramp) * inv_freq_extrapolation
 
-                effective_mscale = 1.0 + 0.1 * math.log(scale)
+                effective_mscale = float(mscale) if mscale is not None else (1.0 + mscale_coeff * math.log(scale))
             else:
                 inv_freq = inv_freq_extrapolation
-                effective_mscale = 1.0
+                effective_mscale = float(mscale) if mscale is not None else 1.0
 
             rot.inv_freq = inv_freq
             cache_len = max(rot.max_seq_len_cached, target_seq_len)
@@ -215,6 +217,8 @@ class YaRNModel(nn.Module):
         seq_len: int,
         scale: Optional[float] = None,
         yarn_mode: Optional[Union[YaRNMode, str]] = None,
+        mscale_coeff: float = 0.1,
+        mscale: Optional[float] = None,
     ) -> int:
         mode = yarn_mode or getattr(self.yarn_config, "yarn_mode", None) or YaRNMode.default()
         return patch_model_yarn(
@@ -226,6 +230,8 @@ class YaRNModel(nn.Module):
             dtype=self.dtype,
             scale=scale,
             yarn_mode=mode,
+            mscale_coeff=mscale_coeff,
+            mscale=mscale,
         )
 
     def __getattr__(self, name: str):
