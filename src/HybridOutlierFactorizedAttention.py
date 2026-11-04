@@ -56,40 +56,27 @@ class HybridOutlierFactorizedAttention(nn.Module):
         # Inlier normalization and learned LayerScale for the GLA pathway
         self.inlier_norm = nn.RMSNorm(self.d_head, elementwise_affine=False)
         self.gla_scale = nn.Parameter(torch.ones(1, self.num_heads, 1, self.d_head))
-        self.fp32_gates = getattr(model_cfg, 'fp32_gates', False)
 
     def _compute_gates_optimized(self, Q, K):
         # Q, K: (B, H, N, d_head)
-        if getattr(self, 'fp32_gates', False):
-            Qf, Kf = Q.float(), K.float()
-            W_g = self.gate_proj.weight.float()  # (H, 2*d_head)
-            W_g_q, W_g_k = W_g.chunk(2, dim=1)
-            bias = self.gate_proj.bias.float().view(1, self.num_heads, 1)
-        else:
-            Qf, Kf = Q, K
-            W_g = self.gate_proj.weight
-            W_g_q, W_g_k = W_g.chunk(2, dim=1)
-            bias = self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+        W_g = self.gate_proj.weight
+        W_g_q, W_g_k = W_g.chunk(2, dim=1)
+        bias = self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
 
         gate_logits = (
-            torch.einsum('bhnf,hf->bhn', Qf, W_g_q)
-            + torch.einsum('bhnf,hf->bhn', Kf, W_g_k)
+            torch.einsum('bhnf,hf->bhn', Q, W_g_q)
+            + torch.einsum('bhnf,hf->bhn', K, W_g_k)
             + bias
         )
 
         if hasattr(self, 'mix_proj'):
-            if getattr(self, 'fp32_gates', False):
-                W_m = self.mix_proj.weight.float()   # (H, 2*d_head)
-                W_m_q, W_m_k = W_m.chunk(2, dim=1)
-                bias_m = self.mix_proj.bias.float().view(1, self.num_heads, 1)
-            else:
-                W_m = self.mix_proj.weight
-                W_m_q, W_m_k = W_m.chunk(2, dim=1)
-                bias_m = self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+            W_m = self.mix_proj.weight
+            W_m_q, W_m_k = W_m.chunk(2, dim=1)
+            bias_m = self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
 
             mix_logits = (
-                torch.einsum('bhnf,hf->bhn', Qf, W_m_q)
-                + torch.einsum('bhnf,hf->bhn', Kf, W_m_k)
+                torch.einsum('bhnf,hf->bhn', Q, W_m_q)
+                + torch.einsum('bhnf,hf->bhn', K, W_m_k)
                 + bias_m
             )
             mix_g = torch.sigmoid(mix_logits).to(Q.dtype).unsqueeze(-1)
@@ -120,24 +107,15 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
             Y_mha = F.scaled_dot_product_attention(Q_mha, K_mha, V_mha, is_causal=True, scale=1.0)
 
-            if getattr(self, 'fp32_gates', False):
-                Qf_gla, Kf_gla = Q_gla.float(), K_gla.float()
-                W_g = self.gate_proj.weight.float()
-                W_g_q, W_g_k = W_g.chunk(2, dim=1)
-                W_g_q_gla = W_g_q[self.forced_mha_heads:]
-                W_g_k_gla = W_g_k[self.forced_mha_heads:]
-                b_g_gla = self.gate_proj.bias.float()[self.forced_mha_heads:].view(1, -1, 1)
-            else:
-                Qf_gla, Kf_gla = Q_gla, K_gla
-                W_g = self.gate_proj.weight
-                W_g_q, W_g_k = W_g.chunk(2, dim=1)
-                W_g_q_gla = W_g_q[self.forced_mha_heads:]
-                W_g_k_gla = W_g_k[self.forced_mha_heads:]
-                b_g_gla = self.gate_proj.bias[self.forced_mha_heads:].view(1, -1, 1).to(dtype_in)
+            W_g = self.gate_proj.weight
+            W_g_q, W_g_k = W_g.chunk(2, dim=1)
+            W_g_q_gla = W_g_q[self.forced_mha_heads:]
+            W_g_k_gla = W_g_k[self.forced_mha_heads:]
+            b_g_gla = self.gate_proj.bias[self.forced_mha_heads:].view(1, -1, 1).to(dtype_in)
 
             gate_logits = (
-                torch.einsum('bhnf,hf->bhn', Qf_gla, W_g_q_gla)
-                + torch.einsum('bhnf,hf->bhn', Kf_gla, W_g_k_gla)
+                torch.einsum('bhnf,hf->bhn', Q_gla, W_g_q_gla)
+                + torch.einsum('bhnf,hf->bhn', K_gla, W_g_k_gla)
                 + b_g_gla
             )
             log_gamma = F.logsigmoid(-gate_logits).squeeze(-1)
@@ -279,24 +257,15 @@ class HybridOutlierFactorizedAttention(nn.Module):
                 cache_new = (K_past, V_past)
             Y_mha = F.scaled_dot_product_attention(Q_mha, K_past, V_past, is_causal=False, scale=1.0)
 
-            if getattr(self, 'fp32_gates', False):
-                Qf_gla, Kf_gla = Q_gla.float(), K_gla.float()
-                W_g = self.gate_proj.weight.float()
-                W_g_q, W_g_k = W_g.chunk(2, dim=1)
-                W_g_q_gla = W_g_q[self.forced_mha_heads:]
-                W_g_k_gla = W_g_k[self.forced_mha_heads:]
-                b_g_gla = self.gate_proj.bias.float()[self.forced_mha_heads:].view(1, -1, 1)
-            else:
-                Qf_gla, Kf_gla = Q_gla, K_gla
-                W_g = self.gate_proj.weight
-                W_g_q, W_g_k = W_g.chunk(2, dim=1)
-                W_g_q_gla = W_g_q[self.forced_mha_heads:]
-                W_g_k_gla = W_g_k[self.forced_mha_heads:]
-                b_g_gla = self.gate_proj.bias[self.forced_mha_heads:].view(1, -1, 1).to(dtype_in)
+            W_g = self.gate_proj.weight
+            W_g_q, W_g_k = W_g.chunk(2, dim=1)
+            W_g_q_gla = W_g_q[self.forced_mha_heads:]
+            W_g_k_gla = W_g_k[self.forced_mha_heads:]
+            b_g_gla = self.gate_proj.bias[self.forced_mha_heads:].view(1, -1, 1).to(dtype_in)
 
             gate_logits = (
-                torch.einsum('bhnf,hf->bhn', Qf_gla, W_g_q_gla)
-                + torch.einsum('bhnf,hf->bhn', Kf_gla, W_g_k_gla)
+                torch.einsum('bhnf,hf->bhn', Q_gla, W_g_q_gla)
+                + torch.einsum('bhnf,hf->bhn', K_gla, W_g_k_gla)
                 + b_g_gla
             )
             gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads - self.forced_mha_heads, 1, 1)

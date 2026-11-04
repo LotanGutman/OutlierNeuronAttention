@@ -207,71 +207,46 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
     model = SubwordLM(lm_cfg.vocab_size, lm_cfg.model_config)
     model.to(device)
 
-    use_spectral_shift = getattr(yarn_cfg, 'use_spectral_shift', False) if yarn_cfg else False
-    if use_spectral_shift:
-        orig_len = getattr(yarn_cfg, 'original_max_seq_len', 1024) or 1024
-        s_shift = (float(orig_len) / float(lm_cfg.seq_len)) ** 0.5
+    gate_multiplier = getattr(lm_cfg, 'gate_lr_multiplier', None)
+    if gate_multiplier is not None and gate_multiplier != 1.0:
         gate_param_ids = set()
         gate_params = []
         for name, module in model.named_modules():
-            if name.endswith('gate_proj'):
+            if getattr(module, '_is_gate', False) or name.endswith('gate_proj') or name.endswith('mix_proj'):
                 for p in module.parameters():
                     if id(p) not in gate_param_ids:
                         gate_param_ids.add(id(p))
                         gate_params.append(p)
+            elif hasattr(module, 'fixed_mix') and isinstance(module.fixed_mix, torch.nn.Parameter):
+                p = module.fixed_mix
+                if id(p) not in gate_param_ids:
+                    gate_param_ids.add(id(p))
+                    gate_params.append(p)
+            elif hasattr(module, 'gla_scale') and isinstance(module.gla_scale, torch.nn.Parameter):
+                p = module.gla_scale
+                if id(p) not in gate_param_ids:
+                    gate_param_ids.add(id(p))
+                    gate_params.append(p)
 
         base_params = [p for p in model.parameters() if id(p) not in gate_param_ids]
-        print(f"[CPT Optimizer] SpectralShift gate LR scaling enabled: {len(gate_params)} gate tensors (multiplier={s_shift:.4f}, peak_lr={lm_cfg.learning_rate * s_shift:.1e}), {len(base_params)} base tensors.")
+        print(f"[CPT Optimizer] Decoupled gate optimization enabled: {len(gate_params)} gate tensors (multiplier={gate_multiplier:.1f}x, peak_lr={lm_cfg.learning_rate * gate_multiplier:.1e}), {len(base_params)} base tensors.")
         
         optimizer = torch.optim.AdamW(
             [
                 {'params': base_params, 'lr': lm_cfg.learning_rate, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': 1.0},
-                {'params': gate_params, 'lr': lm_cfg.learning_rate * s_shift, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': s_shift},
+                {'params': gate_params, 'lr': lm_cfg.learning_rate * gate_multiplier, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': gate_multiplier},
             ],
             betas=(0.9, 0.95),
             fused=True
         )
     else:
-        gate_multiplier = getattr(lm_cfg, 'gate_lr_multiplier', None)
-        if gate_multiplier is not None and gate_multiplier != 1.0:
-            gate_param_ids = set()
-            gate_params = []
-            for name, module in model.named_modules():
-                if getattr(module, '_is_gate', False) or name.endswith('gate_proj') or name.endswith('mix_proj'):
-                    for p in module.parameters():
-                        if id(p) not in gate_param_ids:
-                            gate_param_ids.add(id(p))
-                            gate_params.append(p)
-                elif hasattr(module, 'fixed_mix') and isinstance(module.fixed_mix, torch.nn.Parameter):
-                    p = module.fixed_mix
-                    if id(p) not in gate_param_ids:
-                        gate_param_ids.add(id(p))
-                        gate_params.append(p)
-                elif hasattr(module, 'gla_scale') and isinstance(module.gla_scale, torch.nn.Parameter):
-                    p = module.gla_scale
-                    if id(p) not in gate_param_ids:
-                        gate_param_ids.add(id(p))
-                        gate_params.append(p)
-
-            base_params = [p for p in model.parameters() if id(p) not in gate_param_ids]
-            print(f"[CPT Optimizer] Decoupled gate optimization enabled: {len(gate_params)} gate tensors (multiplier={gate_multiplier:.1f}x, peak_lr={lm_cfg.learning_rate * gate_multiplier:.1e}), {len(base_params)} base tensors.")
-            
-            optimizer = torch.optim.AdamW(
-                [
-                    {'params': base_params, 'lr': lm_cfg.learning_rate, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': 1.0},
-                    {'params': gate_params, 'lr': lm_cfg.learning_rate * gate_multiplier, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': gate_multiplier},
-                ],
-                betas=(0.9, 0.95),
-                fused=True
-            )
-        else:
-            optimizer = torch.optim.AdamW(
-                model.parameters(),
-                lr=lm_cfg.learning_rate,
-                weight_decay=lm_cfg.weight_decay,
-                betas=(0.9, 0.95),
-                fused=True
-            )
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=lm_cfg.learning_rate,
+            weight_decay=lm_cfg.weight_decay,
+            betas=(0.9, 0.95),
+            fused=True
+        )
 
     metrics = {
         'processed_tokens': [],
@@ -374,17 +349,6 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
         print(f"Base checkpoint SHA256: {starting_base_ckpt_info['sha256'][:16]}... (base step {starting_base_ckpt_info['step']}, base_seq_len {base_seq_len})")
         del ckpt, state_dict
         gc.collect()
-
-        # Apply SpectralShift Algorithm 1 to inlier gate projections
-        if use_spectral_shift:
-            s_shift = (float(base_seq_len) / float(lm_cfg.seq_len)) ** 0.5
-            with torch.no_grad():
-                for name, module in model.named_modules():
-                    if name.endswith("gate_proj") and hasattr(module, "weight") and module.weight is not None:
-                        W = module.weight.data
-                        mu = W.mean()
-                        module.weight.data = mu + s_shift * (W - mu)
-            print(f"[CPT] Applied SpectralShift (s={s_shift:.4f}, L_ref={base_seq_len} -> L_tar={lm_cfg.seq_len}).")
 
     beta_fast = getattr(yarn_cfg, 'beta_fast', 32.0) if yarn_cfg else 32.0
     beta_slow = getattr(yarn_cfg, 'beta_slow', 1.0) if yarn_cfg else 1.0

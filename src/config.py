@@ -23,7 +23,6 @@ class ModelConfig:
     fixed_blend_weight: bool = False # No gating ablation
     attention_scale: float = 1.0 # Base attention scaling factor, overridden by YaRN
     rope_base: float = 10000.0
-    fp32_gates: bool = False # Whether to compute GLA decay/mix gates in float32
 
     @property
     def d_head(self) -> int:

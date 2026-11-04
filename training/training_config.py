@@ -78,7 +78,6 @@ class YaRNConfig:
     beta_slow: float = 1.0
     original_max_seq_len: Optional[int] = None
     base_checkpoint_path: Optional[str] = None
-    use_spectral_shift: bool = False  # Experimental SpectralShift Algorithm 1 (https://arxiv.org/abs/2609.14320)
     yarn_mode: Union[YaRNMode, str] = field(default_factory=YaRNMode.default)
 
     def __post_init__(self):
@@ -411,7 +410,6 @@ def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg.plot_name = "350M HOFA (16k CPT)"
     cfg.seq_len = 16384
     cfg.model_config.block_size = 16384
-    cfg.model_config.fp32_gates = True
     cfg.max_tokens = 100_000_000
     cfg.batch_size = 16
     cfg.micro_batch_size = 1
