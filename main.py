@@ -35,6 +35,7 @@ def main():
     parser_eval.add_argument("--shared", action="store_true", help="Evaluate both HOFA and MHA variants together (e.g. 125M_HOFA & 125M_MHA)")
     parser_eval.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="125M", help="Model scale to evaluate (default: 125M)")
     parser_eval.add_argument("--simple", action="store_true", help="Only run the HellaSwag benchmark instead of the full suite")
+    parser_eval.add_argument("--longbench", action="store_true", help="Run the LongBench-E long-context benchmark")
     parser_eval.add_argument("--limit", type=int, default=None, help="Sample evaluation limit per task (default: None for full evaluation, specify e.g. 1000 for quick testing)")
     parser_eval.add_argument("--force", action="store_true", help="Force rerun evaluation skipping cache")
     
@@ -62,7 +63,6 @@ def main():
     parser_bench.add_argument("--distance", action="store_true", help="Run the Effective Attention Distance benchmark")
     parser_bench.add_argument("--extrapolation", dest="extrapolation", action="store_true", help="Run the context length extrapolation benchmark")
     parser_bench.add_argument("--temp-yarn", dest="temp_yarn", action="store_true", help="Run the position-segment pre-softmax temperature scaling benchmark (YaRN Fig. 5)")
-    parser_bench.add_argument("--entropy-yarn", dest="entropy_yarn", action="store_true", help="Run the normalized attention entropy invariance benchmark (arXiv:2610.10114)")
     parser_bench.add_argument("--model", type=str, choices=["both", "hofa", "mha"], default="both", help="Model variant to evaluate (default: both)")
     parser_bench.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="350M", help="Model scale for benchmark evaluation (default: 350M)")
     parser_bench.add_argument("--length", "--seq-len", dest="length", type=int, nargs="*", default=None, help="Sequence length(s) to evaluate (default: None, auto-inherits model native length)")
@@ -126,23 +126,43 @@ def main():
                 from training.train import train
                 train(config)
     elif args.command == "eval":
-        from benchmarks.benchmarks_configs import EvalExperimentConfig
-        sample_limit = None if args.limit is None or args.limit <= 0 else args.limit
-        eval_cfg = EvalExperimentConfig(limit=sample_limit, force_rerun=args.force)
+        if getattr(args, 'longbench', False):
+            from benchmarks.benchmarks_configs import LongBenchExperimentConfig
+            from benchmarks.benchmark_longbench import run_longbench_experiment
+            scale = args.scale if getattr(args, 'scale', None) in ("70M", "350M") else "350M"
+            model_flag = getattr(args, 'model', 'both').lower()
+            is_cpt = True
+            h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
+            m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
+            h_yarn = h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg)
+            m_yarn = m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg)
 
-        if args.full:
-            from benchmarks.benchmark_zeroshot import evaluate_pretrained_zeroshot
-            evaluate_pretrained_zeroshot(eval_cfg, is_simple=args.simple, scale=args.scale)
-        elif args.shared:
-            from benchmarks.benchmark_zeroshot import evaluate_zeroshot
-            scale = getattr(args, 'scale', '125M')
-            eval_configs = [get_model_config(scale, "hofa"), get_model_config(scale, "mha")]
-            evaluate_zeroshot(eval_configs, eval_cfg, is_simple=args.simple)
+            eval_models = [h_yarn] if model_flag == "hofa" else ([m_yarn] if model_flag == "mha" else [h_yarn, m_yarn])
+            sample_limit = None if args.limit is None or args.limit <= 0 else args.limit
+            lb_cfg = LongBenchExperimentConfig(
+                models=eval_models,
+                limit_per_bucket=sample_limit if sample_limit is not None else LongBenchExperimentConfig.limit_per_bucket,
+                force_rerun=args.force,
+            )
+            run_longbench_experiment(lb_cfg)
         else:
-            from benchmarks.benchmark_zeroshot import evaluate_zeroshot
-            scale = getattr(args, 'scale', '350M')
-            eval_config = get_model_config(scale, getattr(args, 'model', 'hofa'))
-            evaluate_zeroshot(eval_config, eval_cfg, is_simple=args.simple)
+            from benchmarks.benchmarks_configs import EvalExperimentConfig
+            sample_limit = None if args.limit is None or args.limit <= 0 else args.limit
+            eval_cfg = EvalExperimentConfig(limit=sample_limit, force_rerun=args.force)
+
+            if args.full:
+                from benchmarks.benchmark_zeroshot import evaluate_pretrained_zeroshot
+                evaluate_pretrained_zeroshot(eval_cfg, is_simple=args.simple, scale=args.scale)
+            elif args.shared:
+                from benchmarks.benchmark_zeroshot import evaluate_zeroshot
+                scale = getattr(args, 'scale', '125M')
+                eval_configs = [get_model_config(scale, "hofa"), get_model_config(scale, "mha")]
+                evaluate_zeroshot(eval_configs, eval_cfg, is_simple=args.simple)
+            else:
+                from benchmarks.benchmark_zeroshot import evaluate_zeroshot
+                scale = getattr(args, 'scale', '350M')
+                eval_config = get_model_config(scale, getattr(args, 'model', 'hofa'))
+                evaluate_zeroshot(eval_config, eval_cfg, is_simple=args.simple)
     elif args.command == "infer":
         from src.config import InferenceConfig
         import src.inference
@@ -253,7 +273,8 @@ def main():
             else:
                 run_long_context_experiment(extrap_cfg)
         elif getattr(args, 'temp_yarn', False):
-            from benchmarks.benchmark_temperature_YaRN import run_temperature_yarn_experiment, plot_temperature_yarn
+            from benchmarks.benchmark_temperature_YaRN import run_temperature_yarn_experiment
+            from benchmarks.plotting.plot_temperature_YaRN import plot_temperature_yarn
             from benchmarks.benchmarks_configs import TemperatureYaRNConfig
             scale = getattr(args, 'scale', '350M')
             model_flag = getattr(args, 'model', 'both').lower()
@@ -279,36 +300,8 @@ def main():
             else:
                 run_temperature_yarn_experiment(temp_cfg)
                 plot_temperature_yarn(temp_cfg)
-
-        elif getattr(args, 'entropy_yarn', False):
-            from benchmarks.benchmark_entropy_YaRN import run_entropy_yarn_experiment, plot_entropy_yarn
-            from benchmarks.benchmarks_configs import EntropyYaRNConfig
-            scale = getattr(args, 'scale', '350M')
-            model_flag = getattr(args, 'model', 'both').lower()
-            is_cpt = getattr(args, 'cpt', True)
-            h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
-            m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
-            h_yarn = h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg)
-            m_yarn = m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg)
-
-            eval_models = [h_yarn] if model_flag == "hofa" else ([m_yarn] if model_flag == "mha" else [h_yarn, m_yarn])
-            
-            default_cfg = EntropyYaRNConfig()
-            length_arg = getattr(args, 'length', None)
-            seq_lens = tuple(length_arg) if length_arg is not None else default_cfg.seq_lengths
-
-            ent_cfg = EntropyYaRNConfig(
-                models=eval_models,
-                seq_lengths=seq_lens,
-                force_rerun=getattr(args, 'force', False),
-            )
-            if args.plot:
-                plot_entropy_yarn(ent_cfg)
-            else:
-                run_entropy_yarn_experiment(ent_cfg)
-                plot_entropy_yarn(ent_cfg)
         else:
-            print("Please specify a valid benchmark flag (e.g. --induction, --copy, --alpha, --keff, --distance, --extrapolation, --temp-yarn, or --entropy-yarn).")
+            print("Please specify a valid benchmark flag (e.g. --induction, --copy, --alpha, --keff, --distance, --extrapolation, or --temp-yarn).")
     else:
         parser.print_help()
 

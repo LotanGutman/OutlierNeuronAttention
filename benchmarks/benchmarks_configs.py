@@ -245,16 +245,17 @@ class TemperatureYaRNConfig:
 
 
 @dataclass
-class EntropyYaRNConfig:
-    """Attention entropy benchmark configuration."""
+class LongBenchExperimentConfig:
     models: Union[YaRNConfig, List[YaRNConfig]] = field(
         default_factory=lambda: [make_350M_HOFA_cpt(), make_350M_MHA_cpt()]
     )
-    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384)
-    num_sample_queries: int = 64
-    max_books: Optional[int] = 5
-    data_path: str = "data/datasets/pg19_test_books.bin"
-    index_path: str = "data/datasets/pg19_test_books_index.json"
+    tasks: tuple[str, ...] = ("trec", "triviaqa", "multifieldqa_en")
+    limit_per_bucket: Optional[int] = None
+    buckets: tuple[str, ...] = ("0k-4k", "4k-8k", "8k-16k")
+    max_seq_len: int = 16384
+    max_new_tokens: int = 32
+    seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    cache_file_name: str = "entropy_yarn_results.json"
+    cache_file_name: str = "longbench_eval_results.json"
     force_rerun: bool = False
+    use_cache: bool = True

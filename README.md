@@ -40,7 +40,7 @@ bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-s
 | **Checkpoints Eval** | `python main.py train --scale 350M --eval` | Evaluate perplexity on validation splits |
 | **Context Extension** | `python main.py benchmark --extrapolation [--plot]` | Long-context extrapolation evaluation ($1\text{k} \to 64\text{k}$ tokens) |
 | **Temperature Scaling** | `python main.py benchmark --temp-yarn [--plot]` | Position-segment pre-softmax temperature scaling sweep ($1/\sqrt{t}$) |
-| **Attention Entropy** | `python main.py benchmark --entropy-yarn [--plot]` | Normalized attention entropy invariance ($H / \ln N$) across sequence lengths |
+| **Long-Context Benchmark** | `python main.py eval --longbench --scale 350M --shared` | LongBench-E long-context evaluation bucketed by context length |
 | **Induction Retrieval** | `python main.py benchmark --induction [--plot]` | Associative recall on synthetic induction heads |
 | **Capacity Cliff** | `python main.py benchmark --induction-degradation [--plot]` | Phase transition and critical capacity cliff |
 | **Associative Copying** | `python main.py benchmark --copy [--plot]` | Sequence copying capability benchmark |
@@ -70,10 +70,10 @@ OutlierNeuronAttention/
 │   ├── benchmark_K_eff.py
 │   ├── benchmark_copying.py
 │   ├── benchmark_distance.py
-│   ├── benchmark_entropy_YaRN.py
 │   ├── benchmark_induction.py
 │   ├── benchmark_induction_degradation.py
 │   ├── benchmark_long_context.py
+│   ├── benchmark_longbench.py
 │   ├── benchmark_temperature_YaRN.py
 │   ├── benchmark_zeroshot.py
 │   ├── benchmarks_configs.py

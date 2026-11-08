@@ -2,6 +2,12 @@
 
 import os
 import sys
+
+# Ensure repository root is on sys.path when script is executed directly
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+
 import gc
 import json
 import math
@@ -10,10 +16,6 @@ from typing import List, Dict, Optional, Tuple
 import torch
 import torch.nn.functional as F
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 
 from src.yarn import YaRNModel, YaRNMode
 from training.training_config import YaRNConfig
@@ -194,145 +196,8 @@ def run_temperature_yarn_experiment(config: Optional[TemperatureYaRNConfig] = No
     print(f"\nResults saved to {cache_file}")
 
 
-def plot_temperature_yarn(config: Optional[TemperatureYaRNConfig] = None):
-    """Generates two comparative figures: 1) Percentage change replicating YaRN Fig. 5, 2) Raw perplexities."""
-    if config is None:
-        config = TemperatureYaRNConfig()
-
-    cache_file = os.path.join(CACHE_PATH, config.cache_file_name)
-    if not os.path.exists(cache_file):
-        print(f"Cache file {cache_file} not found. Run benchmark first.")
-        return
-
-    with open(cache_file, "r") as f:
-        results = json.load(f)
-
-    seq_len = config.seq_len
-    str_len = str(seq_len)
-
-    available_models = [m for m in results.keys() if str_len in results[m]]
-    if not available_models:
-        print(f"No results found for seq_len={seq_len} in cache.")
-        return
-
-    out_dir = "data/plots/length_extrapolation_temp_scaling"
-    os.makedirs(out_dir, exist_ok=True)
-
-    plt.rcParams.update({
-        'font.family': 'sans-serif',
-        'font.size': 11,
-        'axes.labelsize': 12,
-        'axes.titlesize': 13,
-        'xtick.labelsize': 10,
-        'ytick.labelsize': 10,
-        'legend.fontsize': 9,
-        'figure.titlesize': 14
-    })
-
-    # =========================================================================
-    # PLOT 1: Percentage Change replicating YaRN Fig. 5 (starting from 1.0)
-    # =========================================================================
-    fig1, axes1 = plt.subplots(1, len(available_models), figsize=(7.5 * len(available_models), 6), sharey=True)
-    if len(available_models) == 1:
-        axes1 = [axes1]
-
-    for ax, m_name in zip(axes1, available_models):
-        m_data = results[m_name][str_len]
-        scale_keys = [k for k in sorted(m_data.keys(), key=lambda x: float(x)) if float(k) >= 1.0]
-        if "1.00" not in m_data or len(scale_keys) < 2:
-            print(f"Warning: Baseline 1.00 not found for {m_name}, skipping relative plot.")
-            continue
-
-        base_chunks = m_data["1.00"]["chunk_results"]
-        chunk_names = list(base_chunks.keys())
-        
-        # Subsample to 8-9 evenly spaced segments like YaRN Fig. 5
-        step = max(1, len(chunk_names) // 8)
-        selected_chunk_indices = list(range(0, len(chunk_names), step))
-        if (len(chunk_names) - 1) not in selected_chunk_indices:
-            selected_chunk_indices.append(len(chunk_names) - 1)
-
-        colors = cm.plasma(np.linspace(0.1, 0.9, len(selected_chunk_indices)))
-        x_scales = [float(k) for k in scale_keys]
-
-        for color_i, c_idx in enumerate(selected_chunk_indices):
-            c_lbl = chunk_names[c_idx]
-            base_ppl = base_chunks[c_lbl]["ppl"]
-            deltas = []
-            for sk in scale_keys:
-                cur_ppl = m_data[sk]["chunk_results"][c_lbl]["ppl"]
-                delta_pct = ((cur_ppl - base_ppl) / base_ppl) * 100.0
-                deltas.append(delta_pct)
-
-            ax.plot(x_scales, deltas, marker='o', markersize=4, label=c_lbl, color=colors[color_i], linewidth=2.0)
-
-        ax.axhline(0, color='gray', linestyle='--', alpha=0.7)
-        display_name = "350M MHA (16k CPT)" if "MHA" in m_name else "350M HOFA (16k CPT)"
-        ax.set_title(display_name, fontweight='bold')
-        ax.set_xlabel(r"Attention Pre-Softmax Scaling ($1/\sqrt{t}$)")
-        ax.grid(True, linestyle=":", alpha=0.5)
-        ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(decimals=0))
-        ax.legend(title="Token Segments", loc="lower left", framealpha=0.9)
-
-    axes1[0].set_ylabel(r"Perplexity Change % (from $1/\sqrt{t}=1$ to higher)")
-    fig1.suptitle(f"Perplexity Change % of Token Segments at {seq_len // 1024}k Context", fontweight='bold')
-    plt.tight_layout()
-
-    pdf_pct_path = os.path.join(out_dir, "position_segment_temperature_scaling.pdf")
-    fig1.savefig(pdf_pct_path, dpi=300)
-    plt.close(fig1)
-    print(f"Saved percentage change plot to: {pdf_pct_path}")
-
-    # =========================================================================
-    # PLOT 2: Raw Perplexity vs 1/sqrt(t) (Absolute Values)
-    # =========================================================================
-    fig2, axes2 = plt.subplots(1, len(available_models), figsize=(7.5 * len(available_models), 6))
-    if len(available_models) == 1:
-        axes2 = [axes2]
-
-    for ax, m_name in zip(axes2, available_models):
-        m_data = results[m_name][str_len]
-        scale_keys = sorted(m_data.keys(), key=lambda x: float(x))
-        if not scale_keys:
-            continue
-
-        base_chunks = m_data[scale_keys[0]]["chunk_results"]
-        chunk_names = list(base_chunks.keys())
-        
-        step = max(1, len(chunk_names) // 8)
-        selected_chunk_indices = list(range(0, len(chunk_names), step))
-        if (len(chunk_names) - 1) not in selected_chunk_indices:
-            selected_chunk_indices.append(len(chunk_names) - 1)
-
-        colors = cm.plasma(np.linspace(0.1, 0.9, len(selected_chunk_indices)))
-        x_scales = [float(k) for k in scale_keys]
-
-        for color_i, c_idx in enumerate(selected_chunk_indices):
-            c_lbl = chunk_names[c_idx]
-            ppls = [m_data[sk]["chunk_results"][c_lbl]["ppl"] for sk in scale_keys]
-            ax.plot(x_scales, ppls, marker='o', markersize=4, label=c_lbl, color=colors[color_i], linewidth=1.6, alpha=0.85)
-
-        # Also plot overall document PPL
-        overall_ppls = [m_data[sk].get("overall_ppl", float("nan")) for sk in scale_keys]
-        ax.plot(x_scales, overall_ppls, marker='s', markersize=5, label="Overall Document", color="black", linestyle="--", linewidth=2.2)
-
-        display_name = "350M MHA (16k CPT)" if "MHA" in m_name else "350M HOFA (16k CPT)"
-        ax.set_title(display_name, fontweight='bold')
-        ax.set_xlabel(r"Attention Pre-Softmax Scaling ($1/\sqrt{t}$)")
-        ax.set_ylabel("Perplexity (PPL)")
-        ax.grid(True, linestyle=":", alpha=0.5)
-        ax.legend(title="Segments", loc="upper right", framealpha=0.9)
-
-    fig2.suptitle(f"Raw Perplexity of Token Segments at {seq_len // 1024}k Context", fontweight='bold')
-    plt.tight_layout()
-
-    pdf_raw_path = os.path.join(out_dir, "raw_perplexity_temperature_scaling.pdf")
-    fig2.savefig(pdf_raw_path, dpi=300)
-    plt.close(fig2)
-    print(f"Saved raw perplexity plot to: {pdf_raw_path}")
-
-
 if __name__ == "__main__":
+    from benchmarks.plotting.plot_temperature_YaRN import plot_temperature_yarn
     cfg = TemperatureYaRNConfig()
     if "--plot" in sys.argv:
         plot_temperature_yarn(cfg)
