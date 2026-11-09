@@ -35,10 +35,10 @@ bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-s
 | Workflow | Command | Description |
 | :--- | :--- | :--- |
 | **Data Preparation** | `python main.py train --scale 350M --download-data [--val-only]` (FineWeb-Edu) / `python main.py train --download-data --dataset pg19` (PG19) | Download and tokenize FineWeb-Edu (pretraining) or PG19 (16k continual pretraining). Use `--val-only` to cache validation splits without full training data. |
-| **Pretraining** | `python main.py train --scale 350M` | Run distributed pretraining (`13M`, `70M`, `125M`, or `350M`) |
-| **Continual Pretraining** | `python main.py train --cpt --scale 350M [--model {hofa,mha}]` | Continual pretraining on PG19 at 16k context (`13M` or `350M`, HOFA or MHA) |
+| **Pretraining** | `python main.py train --scale 350M [--alpha]` | Run language model pretraining (`13M`, `30M`, `70M`, `125M`, or `350M`; pass `--alpha` for learnable channel-wise decay) |
+| **Continual Pretraining** | `python main.py train --cpt --scale 350M [--model {hofa,mha,hofa_alpha}] [--alpha]` | Continual pretraining on PG19 at 16k context (`13M`, `30M`, `70M`, `125M`, or `350M`) |
 | **Checkpoints Eval** | `python main.py train --scale 350M --eval` | Evaluate perplexity on validation splits |
-| **Context Extension** | `python main.py benchmark --extrapolation [--plot]` | Long-context extrapolation evaluation ($1\text{k} \to 64\text{k}$ tokens) |
+| **Context Extension** | `python main.py benchmark --extrapolation [--scale {70M,125M,350M,all}] [--no-cpt] [--alpha] [--plot]` | Long-context PG-19 extrapolation evaluation ($1\text{k} \to 32\text{k}/64\text{k}$ tokens, CPT or zero-shot cross-scale) |
 | **Temperature Scaling** | `python main.py benchmark --temp-yarn [--plot]` | Position-segment pre-softmax temperature scaling sweep ($1/\sqrt{t}$) |
 | **Long-Context Benchmark** | `python main.py eval --longbench --scale 350M --shared` | LongBench-E long-context evaluation bucketed by context length |
 | **Induction Retrieval** | `python main.py benchmark --induction [--plot]` | Associative recall on synthetic induction heads |
@@ -82,7 +82,7 @@ OutlierNeuronAttention/
 │   ├── validate_kernels.py
 │   └── plotting/                                 # Plotting utilities
 ├── training/                     # Language modeling training pipeline
-│   ├── train.py                                  # Distributed pretraining loop
+│   ├── train.py, train_cpt.py                    # Pretraining and 16k YaRN continual pretraining loops
 │   ├── download_fineweb.py, download_pg19.py, data_utils.py, training_config.py  # Dataset pipeline & configs
 │   └── plot_training.py, inference.py, modules/  # Loss curves & evaluation utilities
 ├── docs/                         # Technical documentation, preprint PDF, and architecture figures

@@ -13,16 +13,17 @@ class ModelConfig:
     seed: int = 42
     chunk_size: int = 32
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    use_rope: bool = True # make it true by default
+    use_rope: bool = True
     mix_gate_bias_init: float = 0.0
-    initializer_range: float = 0.02 # model weight initialization std    
-    scale_residual_proj: bool = True # Whether to scale down the residual projection (out_proj) initialization by 1/sqrt(2 * num_layers).
+    initializer_range: float = 0.02
+    scale_residual_proj: bool = True
     
-    # Ablation flags
-    mha_heads_for_width_split: int = 0 # For Hymba
-    fixed_blend_weight: bool = False # No gating ablation
-    attention_scale: float = 1.0 # Base attention scaling factor, overridden by YaRN
+    # Ablation & Decay flags
+    mha_heads_for_width_split: int = 0  # Width split baseline control
+    fixed_blend_weight: bool = False  # Fixed blending weight ablation (no dynamic gating)
+    attention_scale: float = 1.0  # Base attention scale factor, calibrated by YaRN
     rope_base: float = 10000.0
+    learnable_alpha: bool = False  # Identity-initialized learnable channel-wise decay multiplier
 
     @property
     def d_head(self) -> int:

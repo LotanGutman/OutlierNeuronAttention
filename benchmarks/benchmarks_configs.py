@@ -11,6 +11,10 @@ from src.modules.benchmark_utils import AttentionType
 from training.training_config import (
     LanguageModelingExperimentConfig,
     YaRNConfig,
+    make_70M_HOFA,
+    make_70M_MHA,
+    make_125M_HOFA,
+    make_125M_MHA,
     make_350M_HOFA,
     make_350M_MHA,
     make_350M_HOFA_cpt,
@@ -216,15 +220,46 @@ class LongContextExtrapolationConfig:
     models: Union[YaRNConfig, List[YaRNConfig]] = field(
         default_factory=lambda: [make_350M_HOFA_cpt(), make_350M_MHA_cpt()]
     )
-    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768, 65536)
-    eval_target_tokens: Optional[int] = 16384
+    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768)
+    eval_target_tokens: Optional[int] = 32768
     max_books: Optional[int] = None
     data_path: str = "data/datasets/pg19_test_books.bin"
     index_path: str = "data/datasets/pg19_test_books_index.json"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     cache_file_name: str = "long_context_extrapolation_results.json"
-    use_fixed_yarn: bool = True
+    plot_file_name: Optional[str] = None
+    use_fixed_yarn: Optional[bool] = None
+    compute_position_buckets: bool = True
     force_rerun: bool = False
+
+
+def make_cross_scale_base_extrapolation_config(
+    scales: tuple[str, ...] = ("70M", "125M", "350M"),
+    max_books: Optional[int] = None,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    cache_file_name: str = "cross_scale_base_extrapolation_32k.json",
+    force_rerun: bool = False,
+) -> LongContextExtrapolationConfig:
+    """Configures standardized cross-scale zero-shot extrapolation across 70M, 125M, and 350M base models."""
+    scale_constructors = {
+        "70M": [make_70M_HOFA(), make_70M_MHA()],
+        "125M": [make_125M_HOFA(), make_125M_MHA()],
+        "350M": [make_350M_HOFA(), make_350M_MHA()],
+    }
+    models = []
+    for s in scales:
+        for m in scale_constructors[s]:
+            models.append(YaRNConfig(model=m, original_max_seq_len=1024))
+
+    return LongContextExtrapolationConfig(
+        models=models,
+        max_books=max_books,
+        device=device,
+        cache_file_name=cache_file_name,
+        plot_file_name="cross_scale_base_extrapolation",
+        use_fixed_yarn=False,
+        force_rerun=force_rerun,
+    )
 
 
 @dataclass
@@ -259,3 +294,4 @@ class LongBenchExperimentConfig:
     cache_file_name: str = "longbench_eval_results.json"
     force_rerun: bool = False
     use_cache: bool = True
+

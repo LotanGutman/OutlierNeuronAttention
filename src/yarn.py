@@ -13,7 +13,6 @@ from training.training_config import YaRNMode, YaRNConfig, get_model_config
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM as TrainSubwordLM
 from src.HybridOutlierFactorizedAttention import SubwordLM as InferenceSubwordLM
 
-
 def yarn_find_correction_dim(beta: float, dim: int, base: float, max_seq_len: float) -> float:
     """Computes the YaRN correction dimension boundary: d(beta) = (dim * ln(L / (2*pi*beta))) / (2 * ln(base))."""
     return (dim * math.log(max_seq_len / (2.0 * math.pi * beta))) / (2.0 * math.log(base))
@@ -64,11 +63,6 @@ def patch_model_yarn(
 
                 if mode_val == YaRNMode.GEOMETRIC.value:
                     inv_freq = inv_freq_extrapolation * (scale ** (-ramp))
-                elif mode_val == YaRNMode.POST_CPT_GEOMETRIC.value:
-                    s_cpt = 16.0
-                    inv_freq_cpt = ramp * (inv_freq_extrapolation / s_cpt) + (1.0 - ramp) * inv_freq_extrapolation
-                    s_ext = max(1.0, scale / s_cpt)
-                    inv_freq = inv_freq_cpt * (s_ext ** (-ramp))
                 else:  # arithmetic (standard)
                     inv_freq_interpolation = inv_freq_extrapolation / scale
                     inv_freq = ramp * inv_freq_interpolation + (1.0 - ramp) * inv_freq_extrapolation
@@ -200,7 +194,13 @@ class YaRNModel(nn.Module):
                             self.original_max_seq_len = get_model_config(base_model_name).seq_len
                         except Exception:
                             self.original_max_seq_len = getattr(yarn_config.model.model_config, "block_size", 1024)
-                self.model.load_state_dict(state_dict)
+                if getattr(yarn_config.model.model_config, "learnable_alpha", False):
+                    load_res = self.model.load_state_dict(state_dict, strict=False)
+                    assert len(load_res.unexpected_keys) == 0, f"Unexpected keys: {load_res.unexpected_keys}"
+                    for missing_k in load_res.missing_keys:
+                        assert missing_k.endswith(".log_alpha"), f"Unexpected missing key: {missing_k}"
+                else:
+                    self.model.load_state_dict(state_dict)
                 del ckpt, state_dict
                 gc.collect()
 

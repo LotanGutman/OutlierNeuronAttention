@@ -21,7 +21,8 @@ def main():
     parser_train = subparsers.add_parser("train", help="Run training, plotting, dataset downloading, or zero-shot evaluation")
     parser_train.add_argument("--scale", type=str, choices=["13M", "30M", "70M", "125M", "350M"], default="350M", help="Model scale to train or evaluate (default: 350M)")
     parser_train.add_argument("--cpt", action="store_true", help="Continual pretraining mode at 16k context on PG19")
-    parser_train.add_argument("--model", type=str, choices=["hofa", "mha"], default="hofa", help="Model variant to train in CPT mode (default: hofa)")
+    parser_train.add_argument("--model", type=str, choices=["hofa", "mha", "hofa_alpha"], default="hofa", help="Model variant to train (default: hofa)")
+    parser_train.add_argument("--alpha", action="store_true", help="Enable identity-initialized learnable channel-wise decay (log_alpha)")
     parser_train.add_argument("--dataset", type=str, choices=[d.value for d in DatasetType], default=None, help="Dataset to download/tokenize (default: fineweb, or pg19 if --cpt is set)")
     parser_train.add_argument("--download-data", action="store_true", help="Download and cache the dataset for training")
     parser_train.add_argument("--val-only", action="store_true", help="Download and cache only the validation dataset")
@@ -58,29 +59,36 @@ def main():
     parser_bench.add_argument("--induction", action="store_true", help="Run the Induction Head capability benchmark")
     parser_bench.add_argument("--induction-degradation", action="store_true", help="Run the r=10 extended context degradation benchmark")
     parser_bench.add_argument("--copy", action="store_true", help="Run the Sequential Copying capability benchmark")
-    parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (gate) distribution analysis")
+    parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (mixing gate) distribution analysis, or include learnable-alpha HOFA with --extrapolation")
     parser_bench.add_argument("--keff", action="store_true", help="Run the K_eff Probability Mass benchmark")
     parser_bench.add_argument("--distance", action="store_true", help="Run the Effective Attention Distance benchmark")
     parser_bench.add_argument("--extrapolation", dest="extrapolation", action="store_true", help="Run the context length extrapolation benchmark")
     parser_bench.add_argument("--temp-yarn", dest="temp_yarn", action="store_true", help="Run the position-segment pre-softmax temperature scaling benchmark (YaRN Fig. 5)")
-    parser_bench.add_argument("--model", type=str, choices=["both", "hofa", "mha"], default="both", help="Model variant to evaluate (default: both)")
-    parser_bench.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="350M", help="Model scale for benchmark evaluation (default: 350M)")
-    parser_bench.add_argument("--length", "--seq-len", dest="length", type=int, nargs="*", default=None, help="Sequence length(s) to evaluate (default: None, auto-inherits model native length)")
-    parser_bench.add_argument("--batch-size", type=int, default=None, help="Batch size for evaluation (default: None, auto-adapts)")
+    parser_bench.add_argument("--model", type=str, choices=["both", "hofa", "mha", "hofa_alpha", "all"], default="both", help="Model variant to evaluate (default: both)")
+    parser_bench.add_argument("--scale", type=str, choices=["70M", "125M", "350M", "all"], default="350M", help="Model scale for benchmark evaluation (default: 350M, or 'all' for cross-scale)")
+    parser_bench.add_argument("--max-books", type=int, default=None, help="Maximum number of eligible PG-19 test books to evaluate (default: None for all eligible books)")
     parser_bench.add_argument("--force", action="store_true", help="Force re-run and bypass cached results")
     parser_bench.add_argument("--cpt", action=argparse.BooleanOptionalAction, default=True, help="Evaluate CPT checkpoints (default: True)")
     parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
 
     args = parser.parse_args()
     model_arg = getattr(args, 'model', 'hofa')
-    if model_arg not in ["hofa", "mha"]:
+    if (args.command == "train" and getattr(args, 'alpha', False)) or (args.command in ("benchmark", "bench") and getattr(args, 'extrapolation', False) and getattr(args, 'alpha', False)) or model_arg == "hofa_alpha":
+        model_arg = "hofa_alpha"
+    elif model_arg not in ["hofa", "mha", "both", "all"]:
         model_arg = "hofa"
 
-    config = get_model_config(
-        scale=getattr(args, 'scale', '350M'),
-        model=model_arg,
-        is_cpt=getattr(args, 'cpt', False)
-    )
+    scale_arg = getattr(args, 'scale', '350M')
+    config = None
+    if scale_arg != "all":
+        try:
+            config = get_model_config(
+                scale=scale_arg,
+                model=model_arg,
+                is_cpt=getattr(args, 'cpt', False)
+            )
+        except Exception:
+            config = None
 
     if args.command == "train":
         if args.download_data:
@@ -113,9 +121,12 @@ def main():
                 scale = getattr(args, 'scale', '350M')
                 is_cpt = getattr(args, 'cpt', False)
                 hofa_cfg = get_model_config(scale=scale, model="hofa", is_cpt=is_cpt)
-                mha_cfg = get_model_config(scale=scale, model="mha", is_cpt=is_cpt)
+                if getattr(args, 'alpha', False):
+                    other_cfg = get_model_config(scale=scale, model="hofa_alpha", is_cpt=is_cpt)
+                else:
+                    other_cfg = get_model_config(scale=scale, model="mha", is_cpt=is_cpt)
                 subdir = f"{scale}_CPT" if is_cpt else scale
-                plot_training_metrics([hofa_cfg, mha_cfg], subdirectory=subdir)
+                plot_training_metrics([hofa_cfg, other_cfg], subdirectory=subdir)
             else:
                 plot_training_metrics(config)
         else:
@@ -224,7 +235,7 @@ def main():
             else:
                 from benchmarks.benchmark_copying import run_copying_experiment
                 run_copying_experiment()
-        elif args.alpha:
+        elif args.alpha and not args.extrapolation:
             from benchmarks.analyze_alpha import run_alpha_analysis
             run_alpha_analysis(config)
         elif args.keff:
@@ -243,31 +254,40 @@ def main():
                 run_distance_experiment()
         elif args.extrapolation:
             from benchmarks.benchmark_long_context import run_long_context_experiment, plot_long_context
-            from benchmarks.benchmarks_configs import LongContextExtrapolationConfig
+            from benchmarks.benchmarks_configs import LongContextExtrapolationConfig, make_cross_scale_base_extrapolation_config
             scale = getattr(args, 'scale', '350M')
             model_flag = getattr(args, 'model', 'both').lower()
             is_cpt = getattr(args, 'cpt', True)
-            h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
-            m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
-            h_yarn = h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg)
-            m_yarn = m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg)
+            max_books = getattr(args, 'max_books', None)
+            force_rerun = getattr(args, 'force', False)
 
-            if model_flag == "hofa":
-                eval_models = [h_yarn]
-            elif model_flag == "mha":
-                eval_models = [m_yarn]
+            if scale == "all":
+                extrap_cfg = make_cross_scale_base_extrapolation_config(
+                    scales=("70M", "125M", "350M"),
+                    max_books=max_books,
+                    force_rerun=force_rerun,
+                )
             else:
-                eval_models = [h_yarn, m_yarn]
+                scale_models = []
+                if model_flag in ["hofa", "both", "all"]:
+                    h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
+                    scale_models.append(h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg, original_max_seq_len=getattr(h_cfg, "seq_len", 1024)))
+                if model_flag in ["mha", "both", "all"]:
+                    m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
+                    scale_models.append(m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg, original_max_seq_len=getattr(m_cfg, "seq_len", 1024)))
+                if model_flag in ["hofa_alpha", "all"] or getattr(args, 'alpha', False):
+                    ha_cfg = get_model_config(scale, "hofa_alpha", is_cpt=is_cpt)
+                    scale_models.append(ha_cfg if isinstance(ha_cfg, YaRNConfig) else YaRNConfig(model=ha_cfg, original_max_seq_len=getattr(ha_cfg, "seq_len", 1024)))
 
-            default_cfg = LongContextExtrapolationConfig()
-            length_arg = getattr(args, 'length', None)
-            seq_lengths = tuple(length_arg) if length_arg is not None else default_cfg.seq_lengths
+                cache_name = "cross_scale_base_extrapolation_32k.json" if not is_cpt else "long_context_extrapolation_results.json"
+                extrap_cfg = LongContextExtrapolationConfig(
+                    models=scale_models,
+                    max_books=max_books,
+                    cache_file_name=cache_name,
+                    use_fixed_yarn=is_cpt,
+                    force_rerun=force_rerun,
+                )
 
-            extrap_cfg = LongContextExtrapolationConfig(
-                models=eval_models,
-                seq_lengths=seq_lengths,
-                force_rerun=getattr(args, 'force', False),
-            )
             if args.plot:
                 plot_long_context(extrap_cfg)
             else:
@@ -285,14 +305,9 @@ def main():
             m_yarn = m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg)
 
             eval_models = [h_yarn] if model_flag == "hofa" else ([m_yarn] if model_flag == "mha" else [h_yarn, m_yarn])
-            
-            default_cfg = TemperatureYaRNConfig()
-            length_arg = getattr(args, 'length', None)
-            target_len = length_arg[0] if (length_arg is not None and len(length_arg) > 0) else default_cfg.seq_len
 
             temp_cfg = TemperatureYaRNConfig(
                 models=eval_models,
-                seq_len=target_len,
                 force_rerun=getattr(args, 'force', False),
             )
             if args.plot:

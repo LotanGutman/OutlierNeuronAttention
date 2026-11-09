@@ -152,7 +152,8 @@ def adjust_learning_rate(optimizer, step, total_steps, base_lr, warmup_steps):
         progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
         lr = base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
     for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+        mult = param_group.get('lr_multiplier', 1.0)
+        param_group['lr'] = lr * mult
 
 def patch_attention_for_debugging(attn_layer):
     """

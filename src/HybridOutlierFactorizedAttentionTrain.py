@@ -37,17 +37,24 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         # Architectural Ablations
         self.forced_mha_heads = getattr(model_cfg, 'mha_heads_for_width_split', 0)
-        self.fixed_blend_weight = getattr(model_cfg, 'fixed_blend_weight', False)
-        self.attention_scale = getattr(model_cfg, 'attention_scale', 1.0)
+        self.fixed_blend_weight = model_cfg.fixed_blend_weight
+        self.attention_scale = model_cfg.attention_scale
 
         # Dynamic mixing gate between exact and linear pathways
         if not self.fixed_blend_weight and self.forced_mha_heads == 0:
             self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
             self.mix_proj._is_gate = True
             nn.init.zeros_(self.mix_proj.weight)
-            nn.init.constant_(self.mix_proj.bias, getattr(model_cfg, 'mix_gate_bias_init', 0.0))
+            nn.init.constant_(self.mix_proj.bias, model_cfg.mix_gate_bias_init)
         elif self.fixed_blend_weight and self.forced_mha_heads == 0:
             self.fixed_mix = nn.Parameter(torch.zeros(1, self.num_heads, 1, 1))
+
+        # Channel-wise learnable decay multiplier
+        self.learnable_alpha = model_cfg.learnable_alpha
+        if self.learnable_alpha:
+            num_decay_channels = self.d_head if self.forced_mha_heads > 0 else (self.d_head if self.r == 0 else self.j)
+            self.log_alpha = nn.Parameter(torch.zeros(1, self.num_heads, 1, num_decay_channels))
+            self.log_alpha._is_alpha = True
 
         # RoPE dedicated strictly to the exact-match routing dimension
         if (self.r > 0 or self.forced_mha_heads > 0) and model_cfg.use_rope:
@@ -139,7 +146,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
             q_gla_t = Q_gla.transpose(1, 2).to(torch.float32).contiguous()
             k_gla_t = K_gla.transpose(1, 2).to(torch.float32).contiguous()
             v_gla_t = V_gla.transpose(1, 2).to(torch.float32).contiguous()
-            g_gla_t = log_gamma.expand(-1, -1, -1, self.d_head).transpose(1, 2).to(torch.float32).contiguous()
+            if self.learnable_alpha:
+                g_gla_t = (log_gamma * self.log_alpha.exp()).transpose(1, 2).to(torch.float32).contiguous()
+            else:
+                g_gla_t = log_gamma.expand(-1, -1, -1, K_gla.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
 
             Y_gla_t, _ = chunk_gla(
                 q_gla_t, k_gla_t, v_gla_t, g=g_gla_t, scale=1.0, output_final_state=False
@@ -159,7 +169,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
             q_gla_t = Q.transpose(1, 2).to(torch.float32).contiguous()
             k_gla_t = K.transpose(1, 2).to(torch.float32).contiguous()
             v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
-            g_gla_t = log_gamma.expand(-1, -1, -1, self.d_head).transpose(1, 2).to(torch.float32).contiguous()
+            if self.learnable_alpha:
+                g_gla_t = (log_gamma * self.log_alpha.exp()).transpose(1, 2).to(torch.float32).contiguous()
+            else:
+                g_gla_t = log_gamma.expand(-1, -1, -1, K.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
             
             assert q_gla_t.is_contiguous() and q_gla_t.dtype == torch.float32, "q_gla_t must be contiguous float32"
             assert k_gla_t.is_contiguous() and k_gla_t.dtype == torch.float32, "k_gla_t must be contiguous float32"
@@ -223,7 +236,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
         q_gla_t = Q_J.transpose(1, 2).to(torch.float32).contiguous()
         k_gla_t = K_J.transpose(1, 2).to(torch.float32).contiguous()
         v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
-        g_gla_t = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
+        if self.learnable_alpha:
+            g_gla_t = (log_gamma * self.log_alpha.exp()).transpose(1, 2).to(torch.float32).contiguous()
+        else:
+            g_gla_t = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
         
         assert q_gla_t.is_contiguous() and q_gla_t.dtype == torch.float32, "q_gla_t must be contiguous float32"
         assert k_gla_t.is_contiguous() and k_gla_t.dtype == torch.float32, "k_gla_t must be contiguous float32"
@@ -258,7 +274,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
-            gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
+            log_gamma = F.logsigmoid(-gate_logits)
+            gamma = torch.exp(log_gamma * self.channel_alpha.transpose(-1, -2)).to(torch.float32)
             if state_I is None:
                 state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
                                       device=x.device, dtype=torch.float32)
@@ -267,7 +284,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
             K_f32 = K_s.to(torch.float32).unsqueeze(-1)
             V_f32 = V_s.to(torch.float32).unsqueeze(-2)
-            state_I_new = gamma.to(torch.float32) * state_I + (K_f32 @ V_f32)
+            state_I_new = gamma * state_I + (K_f32 @ V_f32)
             
             Q_f32 = Q.squeeze(2).to(torch.float32).unsqueeze(-2)
             Y_I = (Q_f32 @ state_I_new).squeeze(-2).unsqueeze(2)
@@ -326,7 +343,9 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Q_J = F.pad(Q_J, (0, self.r))
         K_J = F.pad(K_J, (0, self.r))
 
-        gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
+        log_gamma = F.logsigmoid(-gate_logits)
+        alpha_padded = F.pad(self.channel_alpha, (0, self.r), value=1.0).transpose(-1, -2)
+        gamma = torch.exp(log_gamma * alpha_padded).to(torch.float32)
 
         if state_I is None:
             state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
@@ -337,7 +356,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         K_f32 = K_J_s.to(torch.float32).unsqueeze(-1)
         V_f32 = V_s.to(torch.float32).unsqueeze(-2)
-        state_I = state_I * gamma.to(torch.float32) + (K_f32 @ V_f32)
+        state_I = state_I * gamma + (K_f32 @ V_f32)
         
         Q_f32 = Q_J.squeeze(2).to(torch.float32).unsqueeze(-2)
         Y_I = (Q_f32 @ state_I).squeeze(-2).unsqueeze(2)

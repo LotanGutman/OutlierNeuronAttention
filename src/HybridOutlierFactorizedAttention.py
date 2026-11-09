@@ -36,18 +36,25 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if not self.fixed_blend_weight and self.forced_mha_heads == 0:
             self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
             nn.init.zeros_(self.mix_proj.weight)
-            nn.init.constant_(self.mix_proj.bias, getattr(model_cfg, 'mix_gate_bias_init', 0.0))
+            nn.init.constant_(self.mix_proj.bias, model_cfg.mix_gate_bias_init)
         elif self.fixed_blend_weight and self.forced_mha_heads == 0:
             self.fixed_mix = nn.Parameter(torch.zeros(1, self.num_heads, 1, 1))
 
-        # Shared projections (no bias, standard for attention)
+        # Channel-wise learnable decay multiplier
+        self.learnable_alpha = getattr(model_cfg, 'learnable_alpha', False)
+        if self.learnable_alpha:
+            num_decay_channels = self.d_head if self.forced_mha_heads > 0 else (self.d_head if self.r == 0 else self.j)
+            self.log_alpha = nn.Parameter(torch.zeros(1, self.num_heads, 1, num_decay_channels))
+            self.log_alpha._is_alpha = True
+
+        # Projections
         self.W_q = nn.Linear(self.d_model, self.d_model, bias=False)
         self.W_k = nn.Linear(self.d_model, self.d_model, bias=False)
         self.W_v = nn.Linear(self.d_model, self.d_model, bias=False)
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
-        # RoPE dedicated strictly to the exact-match routing dimension
-        if (self.r > 0 or self.forced_mha_heads > 0) and getattr(model_cfg, 'use_rope', True):
+        # Rotary position embeddings for exact outlier routing
+        if (self.r > 0 or self.forced_mha_heads > 0) and model_cfg.use_rope:
             self.rotary_emb = RotaryEmbedding(
                 dim=self.r if self.r > 0 else self.d_head,
                 base=model_cfg.rope_base
@@ -190,7 +197,18 @@ class HybridOutlierFactorizedAttention(nn.Module):
             K_cache = K[..., :self.r].contiguous()
             V_cache = V.contiguous()
 
-        Y_I, states_out = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
+        if self.learnable_alpha:
+            from fla.ops.gla import chunk_gla
+            Q_J = Q[..., self.r:]
+            K_J = K[..., self.r:]
+            q_gla_t = Q_J.transpose(1, 2).to(torch.float32).contiguous()
+            k_gla_t = K_J.transpose(1, 2).to(torch.float32).contiguous()
+            v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
+            g_gla_t = (log_gamma.unsqueeze(-1) * self.log_alpha.exp()).transpose(1, 2).to(torch.float32).contiguous()
+            Y_I_t, states_out = chunk_gla(q_gla_t, k_gla_t, v_gla_t, g=g_gla_t, scale=1.0, output_final_state=True)
+            Y_I = Y_I_t.transpose(1, 2).to(Q.dtype)
+        else:
+            Y_I, states_out = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
         del gate_logits, log_gamma
 
         sm_scale = (self.d_head / self.r) ** 0.5
