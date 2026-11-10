@@ -275,7 +275,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
             log_gamma = F.logsigmoid(-gate_logits)
-            gamma = torch.exp(log_gamma * self.channel_alpha.transpose(-1, -2)).to(torch.float32)
+            if self.learnable_alpha:
+                gamma = torch.exp(log_gamma * self.log_alpha.exp().transpose(-1, -2)).to(torch.float32)
+            else:
+                gamma = torch.exp(log_gamma).to(torch.float32)
             if state_I is None:
                 state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
                                       device=x.device, dtype=torch.float32)
@@ -344,8 +347,11 @@ class HybridOutlierFactorizedAttention(nn.Module):
         K_J = F.pad(K_J, (0, self.r))
 
         log_gamma = F.logsigmoid(-gate_logits)
-        alpha_padded = F.pad(self.channel_alpha, (0, self.r), value=1.0).transpose(-1, -2)
-        gamma = torch.exp(log_gamma * alpha_padded).to(torch.float32)
+        if self.learnable_alpha:
+            alpha_padded = F.pad(self.log_alpha.exp(), (0, self.r), value=1.0).transpose(-1, -2)
+            gamma = torch.exp(log_gamma * alpha_padded).to(torch.float32)
+        else:
+            gamma = torch.exp(log_gamma).to(torch.float32)
 
         if state_I is None:
             state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,

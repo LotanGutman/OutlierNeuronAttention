@@ -197,33 +197,16 @@ class HybridOutlierFactorizedAttention(nn.Module):
             K_cache = K[..., :self.r].contiguous()
             V_cache = V.contiguous()
 
-        if self.learnable_alpha:
-            from fla.ops.gla import chunk_gla
-            Q_J = Q[..., self.r:]
-            K_J = K[..., self.r:]
-            q_gla_t = Q_J.transpose(1, 2).to(torch.float32).contiguous()
-            k_gla_t = K_J.transpose(1, 2).to(torch.float32).contiguous()
-            v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
-            g_gla_t = (log_gamma.unsqueeze(-1) * self.log_alpha.exp()).transpose(1, 2).to(torch.float32).contiguous()
-            Y_I_t, states_out = chunk_gla(q_gla_t, k_gla_t, v_gla_t, g=g_gla_t, scale=1.0, output_final_state=True)
-            Y_I = Y_I_t.transpose(1, 2).to(Q.dtype)
-        else:
-            Y_I, states_out = chunk_gla_inlier_fwd(Q, K, V, log_gamma, self.r, self.chunk_size)
+        log_alpha = self.log_alpha if self.learnable_alpha else None
+        Y_Final, states_out = chunk_gla_inlier_fwd(
+            Q, K, V, log_gamma, self.r, self.chunk_size,
+            log_alpha=log_alpha, mix_g=mix_g, gla_scale=self.gla_scale
+        )
         del gate_logits, log_gamma
 
         sm_scale = (self.d_head / self.r) ** 0.5
-
-        # Apply inlier norm and scale
-        Y_I_float = Y_I.float()
-        Y_I_float = self.inlier_norm(Y_I_float) * self.gla_scale
-        Y_I = Y_I_float.to(Y_I.dtype)
-
-        # Pre-allocate Final Output and blend the pre-scaled Y_I
-        Y_Final = ((1.0 - mix_g) * Y_I)
-
-        # Run exact attention, adding mix_g * exact directly into Y_Final via True Kernel Fusion
         exact_attention_triton(Q, K, V, self.r, sm_scale, mix_g.squeeze(-1), out=Y_Final)
-        del Q, K, V, Y_I
+        del Q, K, V
 
         Y = Y_Final
 
@@ -314,7 +297,11 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
-            gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
+            log_gamma = F.logsigmoid(-gate_logits)
+            if self.learnable_alpha:
+                gamma = torch.exp(log_gamma * self.log_alpha.exp()).view(B, self.num_heads, self.j, 1)
+            else:
+                gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1).expand(B, self.num_heads, self.j, 1)
             if isinstance(state_I, tuple):
                 state_I = state_I[0]
             if state_I is None:
@@ -327,7 +314,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             k_bmm = K_s.reshape(B * self.num_heads, self.j, 1)
             v_bmm = V_s.reshape(B * self.num_heads, 1, self.d_head)
             state_I_bmm = state_I.reshape(B * self.num_heads, self.j, self.d_head)
-            gamma_bmm = gamma.reshape(B * self.num_heads, 1, 1)
+            gamma_bmm = gamma.reshape(B * self.num_heads, self.j, 1)
 
             # Inclusive Causality: Update state FIRST (matches training kernel's >= mask)
             state_I_new_bmm = torch.baddbmm(state_I_bmm * gamma_bmm, k_bmm, v_bmm)
@@ -417,6 +404,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         sm_scale = (self.d_head / self.r) ** 0.5
         
         norm_w = self.gla_scale.view(self.num_heads, self.d_head)
+        log_alpha = self.log_alpha if self.learnable_alpha else None
         
         Y_out = fused_hofa_decode(
             Q, K, V, 
@@ -426,7 +414,8 @@ class HybridOutlierFactorizedAttention(nn.Module):
             norm_w,
             self.r,
             cache_seq_len + 1,
-            sm_scale
+            sm_scale,
+            log_alpha=log_alpha
         )
 
         Y_out = Y_out.transpose(1, 2).reshape(B, N, D)

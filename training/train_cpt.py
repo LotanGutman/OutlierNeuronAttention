@@ -254,7 +254,7 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
         {'params': gate_params, 'lr': lm_cfg.learning_rate * gate_multiplier, 'weight_decay': 0.0, 'lr_multiplier': gate_multiplier},
     ]
 
-    print(f"[CPT Optimizer] Parameter groups initialized: {len(decay_params)} decay tensors (wd={lm_cfg.weight_decay}), "
+    print(f"[CPT] Parameters initialized: {len(decay_params)} decay tensors (wd={lm_cfg.weight_decay}), "
           f"{len(nodecay_params)} no-decay tensors, {len(gate_params)} gate/alpha tensors (mult={gate_multiplier:.1f}x, wd=0.0).")
 
     optimizer = torch.optim.AdamW(
