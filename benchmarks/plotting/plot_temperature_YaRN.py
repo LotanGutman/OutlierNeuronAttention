@@ -27,8 +27,14 @@ def plot_temperature_segments(config: TemperatureYaRNConfig, results: Dict) -> t
         print(f"[WARNING] No results found for seq_len={seq_len} in cache.")
         return None, None
 
-    # Keep HOFA left, MHA right
-    available_models = sorted(available_models, key=lambda m: 0 if "hofa" in m.lower() else 1)
+    def model_sort_key(m):
+        m_lower = m.lower()
+        if "mha" in m_lower:
+            return 0
+        elif "alpha" in m_lower:
+            return 2
+        return 1
+    available_models = sorted(available_models, key=model_sort_key)
 
     out_dir = "data/plots/length_extrapolation_temp_scaling"
     os.makedirs(out_dir, exist_ok=True)
@@ -44,7 +50,7 @@ def plot_temperature_segments(config: TemperatureYaRNConfig, results: Dict) -> t
         'lines.linewidth': 2.0,
     })
 
-    tab10_colors = plt.cm.tab10.colors
+    cmap = plt.cm.viridis
 
     # 1. Relative perplexity delta from baseline (t=1.0)
     fig1, axes1 = plt.subplots(1, len(available_models), figsize=(6.2 * len(available_models), 4.8), sharey=True, squeeze=False)
@@ -79,15 +85,22 @@ def plot_temperature_segments(config: TemperatureYaRNConfig, results: Dict) -> t
                 delta_pct = ((cur_ppl - base_ppl) / base_ppl) * 100.0
                 deltas.append(delta_pct)
 
-            c = tab10_colors[color_i % len(tab10_colors)]
+            c = cmap(color_i / max(1, len(selected_chunk_indices) - 1))
             line, = ax.plot(x_scales, deltas, label=c_lbl, color=c, linewidth=2.0)
             if p_idx == 0:
                 legend_handles1.append(line)
                 legend_labels1.append(c_lbl)
 
-        ax.axhline(0, color='gray', linestyle=':', alpha=0.6)
+        m_scale = next((s for s in ["70M", "125M", "350M"] if s in m_name), "")
+        if "alpha" in m_name.lower():
+            display_name = f"{m_scale} HOFA (Learnable $\\alpha$)" if m_scale else "HOFA (Learnable $\\alpha$)"
+        elif "hofa" in m_name.lower():
+            display_name = f"{m_scale} HOFA" if m_scale else "HOFA"
+        elif "mha" in m_name.lower():
+            display_name = f"{m_scale} MHA Baseline" if m_scale else "MHA Baseline"
+        else:
+            display_name = m_name
 
-        display_name = "350M HOFA" if "hofa" in m_name.lower() else "350M MHA"
         ax.set_title(display_name, fontweight='bold', pad=8)
         ax.set_xlabel(r"$1/\sqrt{t}$")
         ax.grid(True, linestyle=":", alpha=0.5)
@@ -105,12 +118,15 @@ def plot_temperature_segments(config: TemperatureYaRNConfig, results: Dict) -> t
         )
     plt.tight_layout()
 
-    pdf_pct_path = os.path.join(out_dir, "position_segment_temperature_scaling.pdf")
+    base_prefix = getattr(config, 'plot_file_name', None) or (config.cache_file_name.replace('.json', '') if config and config.cache_file_name else "temperature_scaling")
+    pdf_pct_path = os.path.join(out_dir, f"{base_prefix}_position_segment_temperature_scaling.pdf")
+    png_pct_path = os.path.join(out_dir, f"{base_prefix}_position_segment_temperature_scaling.png")
     fig1.savefig(pdf_pct_path, dpi=300, bbox_inches="tight")
+    fig1.savefig(png_pct_path, dpi=300, bbox_inches="tight")
     plt.close(fig1)
 
     # 2. Raw perplexity vs temperature scale
-    fig2, axes2 = plt.subplots(1, len(available_models), figsize=(6.2 * len(available_models), 4.8), squeeze=False)
+    fig2, axes2 = plt.subplots(1, len(available_models), figsize=(6.2 * len(available_models), 4.8), sharey=True, squeeze=False)
     axes2 = axes2[0]
 
     legend_handles2 = []
@@ -135,17 +151,34 @@ def plot_temperature_segments(config: TemperatureYaRNConfig, results: Dict) -> t
         for color_i, c_idx in enumerate(selected_chunk_indices):
             c_lbl = chunk_names[c_idx]
             ppls = [m_data[sk]["chunk_results"][c_lbl]["ppl"] for sk in scale_keys]
-            c = tab10_colors[color_i % len(tab10_colors)]
+            c = cmap(color_i / max(1, len(selected_chunk_indices) - 1))
             line, = ax.plot(x_scales, ppls, label=c_lbl, color=c, linewidth=2.0)
             if p_idx == 0:
                 legend_handles2.append(line)
                 legend_labels2.append(c_lbl)
 
-        display_name = "350M HOFA" if "hofa" in m_name.lower() else "350M MHA"
+        m_scale = next((s for s in ["70M", "125M", "350M"] if s in m_name), "")
+        if "alpha" in m_name.lower():
+            display_name = f"{m_scale} HOFA (Learnable $\\alpha$)" if m_scale else "HOFA (Learnable $\\alpha$)"
+        elif "hofa" in m_name.lower():
+            display_name = f"{m_scale} HOFA" if m_scale else "HOFA"
+        elif "mha" in m_name.lower():
+            display_name = f"{m_scale} MHA Baseline" if m_scale else "MHA Baseline"
+        else:
+            display_name = m_name
+
         ax.set_title(display_name, fontweight='bold', pad=8)
         ax.set_xlabel(r"$1/\sqrt{t}$")
-        ax.set_ylabel("Perplexity")
-        ax.grid(True, linestyle=":", alpha=0.5)
+        ax.grid(True, which="both", linestyle=":", alpha=0.5)
+
+    from matplotlib.ticker import ScalarFormatter
+    for ax in axes2:
+        ax.set_yscale('log')
+        ax.yaxis.set_major_formatter(ScalarFormatter())
+        ax.set_ylim(25, 180)
+        ax.set_yticks([30, 40, 50, 75, 100, 150])
+
+    axes2[0].set_ylabel("Perplexity (Log Scale)")
 
     if legend_handles2:
         fig2.legend(
@@ -158,8 +191,10 @@ def plot_temperature_segments(config: TemperatureYaRNConfig, results: Dict) -> t
         )
     plt.tight_layout()
 
-    pdf_raw_path = os.path.join(out_dir, "perplexity_temperature_scaling.pdf")
+    pdf_raw_path = os.path.join(out_dir, f"{base_prefix}_perplexity_temperature_scaling.pdf")
+    png_raw_path = os.path.join(out_dir, f"{base_prefix}_perplexity_temperature_scaling.png")
     fig2.savefig(pdf_raw_path, dpi=300, bbox_inches="tight")
+    fig2.savefig(png_raw_path, dpi=300, bbox_inches="tight")
     plt.close(fig2)
 
     return pdf_pct_path, pdf_raw_path
@@ -171,8 +206,12 @@ def plot_temperature_yarn(config: Optional[TemperatureYaRNConfig] = None):
 
     cache_file = os.path.join(CACHE_PATH, config.cache_file_name)
     if not os.path.exists(cache_file):
-        print(f"[ERROR] Cache file {cache_file} not found. Run benchmark first.")
-        return
+        fallback = os.path.join(CACHE_PATH, "temperature_yarn_results.json")
+        if os.path.exists(fallback):
+            cache_file = fallback
+        else:
+            print(f"[ERROR] Cache file {cache_file} not found. Run benchmark first.")
+            return
 
     with open(cache_file, "r") as f:
         results = json.load(f)

@@ -38,9 +38,8 @@ bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-s
 | **Pretraining** | `python main.py train --scale 350M [--alpha]` | Run language model pretraining (`13M`, `30M`, `70M`, `125M`, or `350M`; pass `--alpha` for learnable channel-wise decay) |
 | **Continual Pretraining** | `python main.py train --cpt --scale 350M [--model {hofa,mha,hofa_alpha}] [--alpha]` | Continual pretraining on PG19 at 16k context (`13M`, `30M`, `70M`, `125M`, or `350M`) |
 | **Checkpoints Eval** | `python main.py train --scale 350M --eval` | Evaluate perplexity on validation splits |
-| **Context Extension** | `python main.py benchmark --extrapolation [--scale {70M,125M,350M,all}] [--no-cpt] [--alpha] [--plot]` | Long-context PG-19 extrapolation evaluation ($1\text{k} \to 32\text{k}/64\text{k}$ tokens, CPT or zero-shot cross-scale) |
-| **Temperature Scaling** | `python main.py benchmark --temp-yarn [--plot]` | Position-segment pre-softmax temperature scaling sweep ($1/\sqrt{t}$) |
-| **Long-Context Benchmark** | `python main.py eval --longbench --scale 350M --shared` | LongBench-E long-context evaluation bucketed by context length |
+| **Context Extension** | `python main.py benchmark --extrapolation [--scale {70M,125M,350M,all}] [--model {both,hofa,mha,all}] [--no-cpt] [--alpha] [--plot]` | Long-context PG-19 extrapolation evaluation ($1\text{k} \to 32\text{k}/64\text{k}$ tokens, CPT or zero-shot cross-scale) |
+| **Temperature Scaling** | `python main.py benchmark --temp-yarn [--scale {70M,125M,350M}] [--model {both,hofa,mha,all}] [--plot]` | Position-segment pre-softmax temperature scaling sweep ($1/\sqrt{t}$) |
 | **Induction Retrieval** | `python main.py benchmark --induction [--plot]` | Associative recall on synthetic induction heads |
 | **Capacity Cliff** | `python main.py benchmark --induction-degradation [--plot]` | Phase transition and critical capacity cliff |
 | **Associative Copying** | `python main.py benchmark --copy [--plot]` | Sequence copying capability benchmark |
@@ -73,7 +72,6 @@ OutlierNeuronAttention/
 │   ├── benchmark_induction.py
 │   ├── benchmark_induction_degradation.py
 │   ├── benchmark_long_context.py
-│   ├── benchmark_longbench.py
 │   ├── benchmark_temperature_YaRN.py
 │   ├── benchmark_zeroshot.py
 │   ├── benchmarks_configs.py

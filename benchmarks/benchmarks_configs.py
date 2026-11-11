@@ -220,8 +220,8 @@ class LongContextExtrapolationConfig:
     models: Union[YaRNConfig, List[YaRNConfig]] = field(
         default_factory=lambda: [make_350M_HOFA_cpt(), make_350M_MHA_cpt()]
     )
-    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768)
-    eval_target_tokens: Optional[int] = 32768
+    seq_lengths: tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768, 65536)
+    eval_target_tokens: Optional[int] = 65536
     max_books: Optional[int] = None
     data_path: str = "data/datasets/pg19_test_books.bin"
     index_path: str = "data/datasets/pg19_test_books_index.json"
@@ -276,22 +276,9 @@ class TemperatureYaRNConfig:
     index_path: str = "data/datasets/pg19_test_books_index.json"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     cache_file_name: str = "temperature_yarn_results.json"
+    plot_file_name: Optional[str] = None
     force_rerun: bool = False
 
 
-@dataclass
-class LongBenchExperimentConfig:
-    models: Union[YaRNConfig, List[YaRNConfig]] = field(
-        default_factory=lambda: [make_350M_HOFA_cpt(), make_350M_MHA_cpt()]
-    )
-    tasks: tuple[str, ...] = ("trec", "triviaqa", "multifieldqa_en")
-    limit_per_bucket: Optional[int] = None
-    buckets: tuple[str, ...] = ("0k-4k", "4k-8k", "8k-16k")
-    max_seq_len: int = 16384
-    max_new_tokens: int = 32
-    seed: int = 42
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    cache_file_name: str = "longbench_eval_results.json"
-    force_rerun: bool = False
-    use_cache: bool = True
+
 

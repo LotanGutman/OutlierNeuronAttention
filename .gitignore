@@ -6,3 +6,4 @@ data/
 .agents/
 temp.py
 TODO.md
+*.zip

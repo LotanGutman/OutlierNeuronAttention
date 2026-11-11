@@ -36,7 +36,6 @@ def main():
     parser_eval.add_argument("--shared", action="store_true", help="Evaluate both HOFA and MHA variants together (e.g. 125M_HOFA & 125M_MHA)")
     parser_eval.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="125M", help="Model scale to evaluate (default: 125M)")
     parser_eval.add_argument("--simple", action="store_true", help="Only run the HellaSwag benchmark instead of the full suite")
-    parser_eval.add_argument("--longbench", action="store_true", help="Run the LongBench-E long-context benchmark")
     parser_eval.add_argument("--limit", type=int, default=None, help="Sample evaluation limit per task (default: None for full evaluation, specify e.g. 1000 for quick testing)")
     parser_eval.add_argument("--force", action="store_true", help="Force rerun evaluation skipping cache")
     
@@ -120,13 +119,11 @@ def main():
             elif args.shared:
                 scale = getattr(args, 'scale', '350M')
                 is_cpt = getattr(args, 'cpt', False)
-                hofa_cfg = get_model_config(scale=scale, model="hofa", is_cpt=is_cpt)
-                if getattr(args, 'alpha', False):
-                    other_cfg = get_model_config(scale=scale, model="hofa_alpha", is_cpt=is_cpt)
-                else:
-                    other_cfg = get_model_config(scale=scale, model="mha", is_cpt=is_cpt)
+                h_name = "hofa_alpha" if getattr(args, 'alpha', False) else "hofa"
+                h_cfg = get_model_config(scale=scale, model=h_name, is_cpt=is_cpt)
+                m_cfg = get_model_config(scale=scale, model="mha", is_cpt=is_cpt)
                 subdir = f"{scale}_CPT" if is_cpt else scale
-                plot_training_metrics([hofa_cfg, other_cfg], subdirectory=subdir)
+                plot_training_metrics([h_cfg, m_cfg], subdirectory=subdir)
             else:
                 plot_training_metrics(config)
         else:
@@ -137,43 +134,23 @@ def main():
                 from training.train import train
                 train(config)
     elif args.command == "eval":
-        if getattr(args, 'longbench', False):
-            from benchmarks.benchmarks_configs import LongBenchExperimentConfig
-            from benchmarks.benchmark_longbench import run_longbench_experiment
-            scale = args.scale if getattr(args, 'scale', None) in ("70M", "350M") else "350M"
-            model_flag = getattr(args, 'model', 'both').lower()
-            is_cpt = True
-            h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
-            m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
-            h_yarn = h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg)
-            m_yarn = m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg)
+        from benchmarks.benchmarks_configs import EvalExperimentConfig
+        sample_limit = None if args.limit is None or args.limit <= 0 else args.limit
+        eval_cfg = EvalExperimentConfig(limit=sample_limit, force_rerun=args.force)
 
-            eval_models = [h_yarn] if model_flag == "hofa" else ([m_yarn] if model_flag == "mha" else [h_yarn, m_yarn])
-            sample_limit = None if args.limit is None or args.limit <= 0 else args.limit
-            lb_cfg = LongBenchExperimentConfig(
-                models=eval_models,
-                limit_per_bucket=sample_limit if sample_limit is not None else LongBenchExperimentConfig.limit_per_bucket,
-                force_rerun=args.force,
-            )
-            run_longbench_experiment(lb_cfg)
+        if args.full:
+            from benchmarks.benchmark_zeroshot import evaluate_pretrained_zeroshot
+            evaluate_pretrained_zeroshot(eval_cfg, is_simple=args.simple, scale=args.scale)
+        elif args.shared:
+            from benchmarks.benchmark_zeroshot import evaluate_zeroshot
+            scale = getattr(args, 'scale', '125M')
+            eval_configs = [get_model_config(scale, "hofa"), get_model_config(scale, "mha")]
+            evaluate_zeroshot(eval_configs, eval_cfg, is_simple=args.simple)
         else:
-            from benchmarks.benchmarks_configs import EvalExperimentConfig
-            sample_limit = None if args.limit is None or args.limit <= 0 else args.limit
-            eval_cfg = EvalExperimentConfig(limit=sample_limit, force_rerun=args.force)
-
-            if args.full:
-                from benchmarks.benchmark_zeroshot import evaluate_pretrained_zeroshot
-                evaluate_pretrained_zeroshot(eval_cfg, is_simple=args.simple, scale=args.scale)
-            elif args.shared:
-                from benchmarks.benchmark_zeroshot import evaluate_zeroshot
-                scale = getattr(args, 'scale', '125M')
-                eval_configs = [get_model_config(scale, "hofa"), get_model_config(scale, "mha")]
-                evaluate_zeroshot(eval_configs, eval_cfg, is_simple=args.simple)
-            else:
-                from benchmarks.benchmark_zeroshot import evaluate_zeroshot
-                scale = getattr(args, 'scale', '350M')
-                eval_config = get_model_config(scale, getattr(args, 'model', 'hofa'))
-                evaluate_zeroshot(eval_config, eval_cfg, is_simple=args.simple)
+            from benchmarks.benchmark_zeroshot import evaluate_zeroshot
+            scale = getattr(args, 'scale', '350M')
+            eval_config = get_model_config(scale, getattr(args, 'model', 'hofa'))
+            evaluate_zeroshot(eval_config, eval_cfg, is_simple=args.simple)
     elif args.command == "infer":
         from src.config import InferenceConfig
         import src.inference
@@ -269,21 +246,27 @@ def main():
                 )
             else:
                 scale_models = []
-                if model_flag in ["hofa", "both", "all"]:
-                    h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
+                use_alpha = getattr(args, 'alpha', False) or model_flag == "hofa_alpha"
+                h_name = "hofa_alpha" if use_alpha else "hofa"
+
+                if model_flag in ["hofa", "hofa_alpha", "both", "all"]:
+                    h_cfg = get_model_config(scale, h_name, is_cpt=is_cpt)
                     scale_models.append(h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg, original_max_seq_len=getattr(h_cfg, "seq_len", 1024)))
                 if model_flag in ["mha", "both", "all"]:
                     m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
                     scale_models.append(m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg, original_max_seq_len=getattr(m_cfg, "seq_len", 1024)))
-                if model_flag in ["hofa_alpha", "all"] or getattr(args, 'alpha', False):
-                    ha_cfg = get_model_config(scale, "hofa_alpha", is_cpt=is_cpt)
+                if model_flag == "all":
+                    other_h = "hofa" if use_alpha else "hofa_alpha"
+                    ha_cfg = get_model_config(scale, other_h, is_cpt=is_cpt)
                     scale_models.append(ha_cfg if isinstance(ha_cfg, YaRNConfig) else YaRNConfig(model=ha_cfg, original_max_seq_len=getattr(ha_cfg, "seq_len", 1024)))
 
-                cache_name = "cross_scale_base_extrapolation_32k.json" if not is_cpt else "long_context_extrapolation_results.json"
+                cache_name = f"{scale}_long_context_extrapolation_results.json" if is_cpt else f"{scale}_cross_scale_base_extrapolation_32k.json"
+                plot_name = f"{scale}_long_context_extrapolation_results" if is_cpt else f"{scale}_cross_scale_base_extrapolation_32k"
                 extrap_cfg = LongContextExtrapolationConfig(
                     models=scale_models,
                     max_books=max_books,
                     cache_file_name=cache_name,
+                    plot_file_name=plot_name,
                     use_fixed_yarn=is_cpt,
                     force_rerun=force_rerun,
                 )
@@ -299,15 +282,27 @@ def main():
             scale = getattr(args, 'scale', '350M')
             model_flag = getattr(args, 'model', 'both').lower()
             is_cpt = getattr(args, 'cpt', True)
-            h_cfg = get_model_config(scale, "hofa", is_cpt=is_cpt)
-            m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
-            h_yarn = h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg)
-            m_yarn = m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg)
+            use_alpha = getattr(args, 'alpha', False) or model_flag == "hofa_alpha"
 
-            eval_models = [h_yarn] if model_flag == "hofa" else ([m_yarn] if model_flag == "mha" else [h_yarn, m_yarn])
+            eval_models = []
+            h_name = "hofa_alpha" if use_alpha else "hofa"
+            if model_flag in ["hofa", "hofa_alpha", "both", "all"]:
+                h_cfg = get_model_config(scale, h_name, is_cpt=is_cpt)
+                eval_models.append(h_cfg if isinstance(h_cfg, YaRNConfig) else YaRNConfig(model=h_cfg))
+            if model_flag in ["mha", "both", "all"]:
+                m_cfg = get_model_config(scale, "mha", is_cpt=is_cpt)
+                eval_models.append(m_cfg if isinstance(m_cfg, YaRNConfig) else YaRNConfig(model=m_cfg))
+            if model_flag == "all":
+                other_h = "hofa" if use_alpha else "hofa_alpha"
+                ha_cfg = get_model_config(scale, other_h, is_cpt=is_cpt)
+                eval_models.append(ha_cfg if isinstance(ha_cfg, YaRNConfig) else YaRNConfig(model=ha_cfg))
 
+            cache_name = f"{scale}_temperature_yarn_results.json"
+            plot_name = f"{scale}_temperature_scaling"
             temp_cfg = TemperatureYaRNConfig(
                 models=eval_models,
+                cache_file_name=cache_name,
+                plot_file_name=plot_name,
                 force_rerun=getattr(args, 'force', False),
             )
             if args.plot:

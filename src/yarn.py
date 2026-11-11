@@ -203,6 +203,9 @@ class YaRNModel(nn.Module):
                     self.model.load_state_dict(state_dict)
                 del ckpt, state_dict
                 gc.collect()
+            else:
+                import warnings
+                warnings.warn(f"[YaRNModel] Checkpoint not found at '{path}' for '{yarn_config.model.model_name}'. Model is using UNINITIALIZED random weights!")
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)

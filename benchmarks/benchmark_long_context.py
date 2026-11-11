@@ -528,13 +528,17 @@ def plot_long_context(config: Optional[LongContextExtrapolationConfig] = None, r
     cache_file = os.path.join(CACHE_PATH, config.cache_file_name)
     if results is None:
         if not os.path.exists(cache_file):
-            raise FileNotFoundError(f"Cache file {cache_file} not found.")
+            legacy_file = os.path.join(CACHE_PATH, "long_context_extrapolation_results.json")
+            if os.path.exists(legacy_file):
+                cache_file = legacy_file
+            else:
+                raise FileNotFoundError(f"Cache file {cache_file} not found.")
         with open(cache_file, "r") as f:
             results = json.load(f)
 
     plot_dir = "data/plots/length_extrapolation"
     os.makedirs(plot_dir, exist_ok=True)
-    base_name = getattr(config, 'plot_file_name', config.cache_file_name.replace('.json', '') if config else "yarn_length_extrapolation")
+    base_name = getattr(config, 'plot_file_name', None) or (config.cache_file_name.replace('.json', '') if config and config.cache_file_name else "yarn_length_extrapolation")
 
     # If all three scales are present, generate the publication 3-panel Figures (Figures 1, 2, 3)
     has_cross_scale = all(f"{s}_HOFA" in results and f"{s}_MHA" in results for s in ["70M", "125M", "350M"])
@@ -592,9 +596,7 @@ def _plot_cross_scale_figures(results: dict, plot_dir: str, base_name: str):
         ax.legend(loc="upper left", frameon=True)
 
     fig1_pdf = os.path.join(plot_dir, "Figure1_cross_scale_extrapolation.pdf")
-    fig1_png = os.path.join(plot_dir, "Figure1_cross_scale_extrapolation.png")
     fig1.savefig(fig1_pdf, bbox_inches="tight")
-    fig1.savefig(fig1_png, bbox_inches="tight", dpi=300)
     plt.close(fig1)
     print(f"Saved Figure 1 to {fig1_pdf}")
 
@@ -627,9 +629,7 @@ def _plot_cross_scale_figures(results: dict, plot_dir: str, base_name: str):
         ax.legend(loc="lower left", frameon=True)
 
     fig2_pdf = os.path.join(plot_dir, "Figure2_position_dependent_loss.pdf")
-    fig2_png = os.path.join(plot_dir, "Figure2_position_dependent_loss.png")
     fig2.savefig(fig2_pdf, bbox_inches="tight")
-    fig2.savefig(fig2_png, bbox_inches="tight", dpi=300)
     plt.close(fig2)
     print(f"Saved Figure 2 to {fig2_pdf}")
 
@@ -674,47 +674,99 @@ def _plot_cross_scale_figures(results: dict, plot_dir: str, base_name: str):
         ax.legend(loc="lower left", frameon=True)
 
     fig3_pdf = os.path.join(plot_dir, "Figure3_per_book_robustness.pdf")
-    fig3_png = os.path.join(plot_dir, "Figure3_per_book_robustness.png")
     fig3.savefig(fig3_pdf, bbox_inches="tight")
-    fig3.savefig(fig3_png, bbox_inches="tight", dpi=300)
     plt.close(fig3)
     print(f"Saved Figure 3 to {fig3_pdf}")
 
 
 def _plot_standard_extrapolation(results: dict, config: LongContextExtrapolationConfig, plot_dir: str, base_name: str):
     fig, ax = plt.subplots(figsize=(8.0, 5.0), dpi=300)
-    palette = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e"]
-    markers = ["o-", "s--", "^-.", "d:"]
 
-    for idx, (m_name, m_results) in enumerate(results.items()):
+    target_models = []
+    if config and config.models:
+        model_list = config.models if isinstance(config.models, list) else [config.models]
+        for m in model_list:
+            if isinstance(m, YaRNConfig):
+                target_models.append(getattr(m.model, "model_name", str(m)))
+            else:
+                target_models.append(getattr(m, "model_name", str(m)))
+
+    # Determine scale for title/labels if available
+    scale_label = ""
+    if base_name and any(s in base_name for s in ["70M", "125M", "350M"]):
+        for s in ["70M", "125M", "350M"]:
+            if s in base_name:
+                scale_label = f" ({s})"
+                break
+
+    def model_sort_key(m):
+        m_lower = m.lower()
+        if "mha" in m_lower:
+            return 0
+        elif "alpha" in m_lower:
+            return 2
+        return 1
+
+    sorted_models = sorted(results.keys(), key=model_sort_key)
+
+    plotted_count = 0
+    for idx, m_name in enumerate(sorted_models):
+        m_results = results[m_name]
         if not isinstance(m_results, dict) or m_name.startswith("paired_"):
+            continue
+        if target_models and m_name not in target_models:
             continue
         lengths = sorted([int(k) for k in m_results.keys() if k.isdigit()])
         if not lengths:
             continue
+
+        # Skip uninitialized / diverged runs (e.g. PPL > 500)
+        first_len = lengths[0]
+        if m_results.get(str(first_len), {}).get("ppl_mean", 0) > 500:
+            continue
+
         vals = [m_results[str(n)]['ppl_mean'] for n in lengths]
         lows = [m_results[str(n)]['ppl_ci_95'][0] for n in lengths]
         highs = [m_results[str(n)]['ppl_ci_95'][1] for n in lengths]
 
-        color = palette[idx % len(palette)]
-        marker = markers[idx % len(markers)]
-        ax.plot(lengths, vals, marker, color=color, linewidth=2.0, markersize=7, label=m_name)
-        ax.errorbar(lengths, vals, yerr=[[v - l for v, l in zip(vals, lows)], [h - v for v, h in zip(vals, highs)]],
-                    fmt='none', ecolor=color, elinewidth=1.2, capsize=3.5, alpha=0.7)
+        # Style based on model identity
+        if "alpha" in m_name.lower():
+            color = "#1f77b4"  # Primary blue
+            marker = "o-"
+            label = "HOFA (Learnable $\\alpha$)"
+        elif "hofa" in m_name.lower():
+            color = "#2ca02c"  # Distinct green for base HOFA
+            marker = "^-."
+            label = "HOFA"
+        elif "mha" in m_name.lower():
+            color = "#d62728"  # Crimson red
+            marker = "s--"
+            label = "MHA Baseline"
+        else:
+            palette = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e"]
+            color = palette[idx % len(palette)]
+            marker = "o-"
+            label = m_name
+
+        ax.plot(lengths, vals, marker, color=color, linewidth=2.0, markersize=7, label=label, zorder=3)
+        plotted_count += 1
 
     ax.set_xscale("log", base=2)
-    ax.set_xlabel("Context Length N (Tokens)", fontsize=11)
-    ax.set_ylabel("Perplexity on PG-19 Test", fontsize=11)
-    ax.set_title("PG-19 Context Extrapolation", fontsize=12, fontweight="bold", pad=12)
+    ax.set_xticks([1024, 2048, 4096, 8192, 16384, 32768, 65536])
+    ax.get_xaxis().set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x/1024)}k" if x >= 1024 else str(int(x))))
+    ax.set_xlabel("Context Length (Tokens)", fontsize=11, fontweight="bold")
+    ax.set_ylabel("Perplexity on PG-19 Test", fontsize=11, fontweight="bold")
+    ax.set_title(f"PG-19 Context Extrapolation{scale_label}", fontsize=12, fontweight="bold", pad=12)
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
-    ax.legend(frameon=True, fontsize=10.0, loc="upper left")
+    ax.legend(frameon=True, fontsize=10.5, loc="upper left")
     fig.tight_layout()
 
     plot_pdf = os.path.join(plot_dir, f"{base_name}.pdf")
+    plot_png = os.path.join(plot_dir, f"{base_name}.png")
     fig.savefig(plot_pdf, bbox_inches="tight")
-    fig.savefig(plot_png, bbox_inches="tight", dpi=300)
+    fig.savefig(plot_png, bbox_inches="tight")
     plt.close(fig)
-    print(f"Plot saved to {plot_pdf}")
+    print(f"Plot saved to {plot_pdf} and {plot_png}")
 
 
 if __name__ == "__main__":
