@@ -6,7 +6,10 @@ from typing import Optional, Union
 import numpy as np
 
 from src.HybridOutlierFactorizedAttentionTrain import HybridOutlierFactorizedAttention
-from fla.layers import DeltaNet, GatedLinearAttention as GLA
+try:
+    from fla.layers import DeltaNet, GatedLinearAttention as GLA
+except ImportError:
+    DeltaNet, GLA = None, None
 from src.modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 

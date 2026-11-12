@@ -225,6 +225,19 @@ def make_70M_HOFA_fixed_blend() -> LanguageModelingExperimentConfig:
         use_rope=True, block_size=1024,
     ))
 
+def make_70M_MHA_low_rank_k() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_MHA_low_rank_k", plot_name="MHA (r=32 Keys)", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=32,
+        pure_mha_low_rank_k=True,
+        use_rope=True, block_size=1024,
+    ))
+
+def make_70M_HOFA_increasing() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_HOFA_increasing", plot_name="Increasing HOFA", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=[16, 16, 16, 16, 32, 48, 48, 64],
+        use_rope=True, block_size=1024,
+    ))
+
 def make_13M_HOFA_alpha() -> LanguageModelingExperimentConfig:
     cfg = make_13M_HOFA()
     cfg.model_name = "13M_HOFA_alpha"
@@ -632,6 +645,8 @@ MODEL_CONFIG_REGISTRY = {
     ("30M", "MHA", False): make_30M_MHA,
     ("70M", "HOFA", False): make_70M_HOFA,
     ("70M", "MHA", False): make_70M_MHA,
+    ("70M", "MHA_LOW_RANK_K", False): make_70M_MHA_low_rank_k,
+    ("70M", "HOFA_INCREASING", False): make_70M_HOFA_increasing,
     ("125M", "HOFA", False): make_125M_HOFA,
     ("125M", "HOFA_ALPHA", False): make_125M_HOFA_alpha,
     ("125M", "MHA", False): make_125M_MHA,
@@ -659,7 +674,9 @@ MODEL_CONFIG_REGISTRY = {
     "30M_HOFA": make_30M_HOFA,
     "30M_MHA": make_30M_MHA,
     "70M_HOFA": make_70M_HOFA,
+    "70M_HOFA_INCREASING": make_70M_HOFA_increasing,
     "70M_MHA": make_70M_MHA,
+    "70M_MHA_LOW_RANK_K": make_70M_MHA_low_rank_k,
     "125M_HOFA": make_125M_HOFA,
     "125M_HOFA_ALPHA": make_125M_HOFA_alpha,
     "125M_MHA": make_125M_MHA,

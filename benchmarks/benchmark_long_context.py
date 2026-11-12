@@ -15,7 +15,10 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-from src.yarn import YaRNModel, YaRNMode
+try:
+    from src.yarn import YaRNModel, YaRNMode
+except ImportError:
+    YaRNModel, YaRNMode = None, None
 from training.training_config import YaRNConfig
 from benchmarks.benchmarks_configs import LongContextExtrapolationConfig, CACHE_PATH
 

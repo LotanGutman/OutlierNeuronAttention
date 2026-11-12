@@ -21,6 +21,7 @@ class ModelConfig:
     # Ablation & Decay flags
     mha_heads_for_width_split: int = 0  # Width split baseline control
     fixed_blend_weight: bool = False  # Fixed blending weight ablation (no dynamic gating)
+    pure_mha_low_rank_k: bool = False  # Missing control: MHA with r keys and full d_h values (no GLA recurrence)
     attention_scale: float = 1.0  # Base attention scale factor, calibrated by YaRN
     rope_base: float = 10000.0
     learnable_alpha: bool = False  # Identity-initialized learnable channel-wise decay multiplier

@@ -4,7 +4,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from src.config import ModelConfig
-from fla.ops.gla import chunk_gla
+try:
+    from fla.ops.gla import chunk_gla
+except ImportError:
+    chunk_gla = None
 from src.modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 class HybridOutlierFactorizedAttention(nn.Module):
@@ -36,6 +39,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
         # Architectural Ablations
+        self.pure_mha_low_rank_k = getattr(model_cfg, 'pure_mha_low_rank_k', False)
         self.forced_mha_heads = getattr(model_cfg, 'mha_heads_for_width_split', 0)
         self.fixed_blend_weight = model_cfg.fixed_blend_weight
         self.attention_scale = model_cfg.attention_scale
@@ -161,6 +165,27 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out)
 
+        # ----- Missing Control: Pure MHA with r-dimensional Keys and d_head Values -----
+        if self.pure_mha_low_rank_k:
+            Q_r = Q[..., :self.r]
+            K_r = K[..., :self.r]
+            if getattr(self, 'rotary_emb', None) is not None:
+                cos, sin = self.rotary_emb(N)
+                Q_r, K_r = apply_rotary_pos_emb(Q_r, K_r, cos, sin)
+
+            sm_scale = ((self.d_head / self.r) ** 0.5) * self.attention_scale
+            pad_len = (8 - (self.r % 8)) % 8
+            if pad_len > 0:
+                Q_r_padded = F.pad(Q_r, (0, pad_len))
+                K_r_padded = F.pad(K_r, (0, pad_len))
+            else:
+                Q_r_padded, K_r_padded = Q_r, K_r
+
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+                Y = F.scaled_dot_product_attention(Q_r_padded, K_r_padded, V, is_causal=True, scale=sm_scale)
+            Y = Y.transpose(1, 2).reshape(B, N, D)
+            return self.out_proj(Y)
+
         # ----- special cases: r = 0 or r = d_head -----
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
@@ -271,6 +296,37 @@ class HybridOutlierFactorizedAttention(nn.Module):
         dtype_in = Q.dtype
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
+
+        if self.pure_mha_low_rank_k:
+            curr_len = 1 if cache_O is None else cache_O[0].shape[2] + 1
+            Q_r = Q[..., :self.r]
+            K_r = K[..., :self.r]
+            if getattr(self, 'rotary_emb', None) is not None:
+                cos, sin = self.rotary_emb(curr_len)
+                cos = cos[-1:]
+                sin = sin[-1:]
+                Q_r, K_r = apply_rotary_pos_emb(Q_r, K_r, cos, sin)
+
+            if cache_O is None:
+                K_past, V_past = K_r, V
+            else:
+                K_past = torch.cat([cache_O[0], K_r], dim=2)
+                V_past = torch.cat([cache_O[1], V], dim=2)
+
+            sm_scale = ((self.d_head / self.r) ** 0.5) * self.attention_scale
+            pad_len = (8 - (self.r % 8)) % 8
+            if pad_len > 0:
+                Q_padded = F.pad(Q_r, (0, pad_len))
+                K_padded = F.pad(K_past, (0, pad_len))
+            else:
+                Q_padded = Q_r
+                K_padded = K_past
+
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+                Y = F.scaled_dot_product_attention(Q_padded, K_padded, V_past, is_causal=False, scale=sm_scale)
+            cache_new = (K_past, V_past)
+            Y_out = Y.transpose(1, 2).reshape(B, N, D)
+            return self.out_proj(Y_out), cache_new, None
 
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)

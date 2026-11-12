@@ -62,9 +62,7 @@ def plot_shared_profiling():
     style_mha = {'marker': 'o', 'color': '#d62728', 'linewidth': 2.0, 'markersize': 6}
     style_hyb = {'marker': 's', 'color': '#1f77b4', 'linewidth': 2.0, 'markersize': 6}
     
-    # ==========================================
     # TOP ROW: DECODE (Throughput, KV Cache, Speedup)
-    # ==========================================
     ax_dec_thru = axs[0, 0]
     ax_dec_mem = axs[0, 1]
     ax_dec_spd = axs[0, 2]
@@ -199,9 +197,7 @@ def plot_shared_profiling():
     ax_dec_spd.set_title('Decoding Speedup over MHA')
     ax_dec_spd.grid(True, linestyle=':', alpha=0.3, color='#e0e0e0')
 
-    # ==========================================
     # BOTTOM ROW: PREFILL (Latency, FLOPs, Speedup)
-    # ==========================================
     ax_pre_lat = axs[1, 0]
     ax_pre_flop = axs[1, 1]
     ax_pre_spd = axs[1, 2]

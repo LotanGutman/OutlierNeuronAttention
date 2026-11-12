@@ -170,9 +170,11 @@ class CopyingExperimentConfig:
 
 @dataclass
 class KEffExperimentConfig:
-    num_sequences: int = 100
+    num_sequences: int = 50
     seq_len: int = 1024
     batch_size: int = 1
+    eval_start_token: int = 512
+    random_seed: int = 42
     models_to_test: tuple[str, ...] = (
         "gpt2",
         "EleutherAI/pythia-410m",
@@ -186,7 +188,7 @@ class KEffExperimentConfig:
     dataset_name: str = "HuggingFaceFW/fineweb-edu"
     dataset_config: str = "sample-10BT"
     dataset_split: str = "train"
-    cache_file_name: str = "layerwise_cumsum_results.pkl"
+    cache_file_name: str = "channel_power_entropy_results.pkl"
 
 @dataclass
 class DistanceExperimentConfig:

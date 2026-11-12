@@ -9,7 +9,8 @@ from training.training_config import (
     YaRNConfig,
     get_model_config,
     make_70M_MHA, make_70M_HOFA, make_70M_HOFA_flat32, 
-    make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend
+    make_70M_HOFA_depth_axis, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend,
+    make_70M_MHA_low_rank_k, make_70M_HOFA_increasing
 )
 
 
@@ -21,7 +22,7 @@ def main():
     parser_train = subparsers.add_parser("train", help="Run training, plotting, dataset downloading, or zero-shot evaluation")
     parser_train.add_argument("--scale", type=str, choices=["13M", "30M", "70M", "125M", "350M"], default="350M", help="Model scale to train or evaluate (default: 350M)")
     parser_train.add_argument("--cpt", action="store_true", help="Continual pretraining mode at 16k context on PG19")
-    parser_train.add_argument("--model", type=str, choices=["hofa", "mha", "hofa_alpha"], default="hofa", help="Model variant to train (default: hofa)")
+    parser_train.add_argument("--model", type=str, choices=["hofa", "mha", "hofa_alpha", "mha_low_rank_k", "hofa_increasing"], default="hofa", help="Model variant to train (default: hofa)")
     parser_train.add_argument("--alpha", action="store_true", help="Enable identity-initialized learnable channel-wise decay (log_alpha)")
     parser_train.add_argument("--dataset", type=str, choices=[d.value for d in DatasetType], default=None, help="Dataset to download/tokenize (default: fineweb, or pg19 if --cpt is set)")
     parser_train.add_argument("--download-data", action="store_true", help="Download and cache the dataset for training")
@@ -32,6 +33,7 @@ def main():
     parser_train.add_argument("--eval", action="store_true", help="Run zero-shot reasoning evaluation on the active trained model checkpoint")
 
     parser_eval = subparsers.add_parser("eval", help="Run zero-shot reasoning benchmark evaluations")
+    parser_eval.add_argument("--model", type=str, choices=["hofa", "mha", "hofa_alpha", "mha_low_rank_k", "hofa_increasing"], default="hofa", help="Model variant to evaluate (default: hofa)")
     parser_eval.add_argument("--full", action="store_true", help="Evaluate pretrained baseline models from Hugging Face")
     parser_eval.add_argument("--shared", action="store_true", help="Evaluate both HOFA and MHA variants together (e.g. 125M_HOFA & 125M_MHA)")
     parser_eval.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="125M", help="Model scale to evaluate (default: 125M)")
@@ -60,6 +62,7 @@ def main():
     parser_bench.add_argument("--copy", action="store_true", help="Run the Sequential Copying capability benchmark")
     parser_bench.add_argument("--alpha", action="store_true", help="Run the Alpha (mixing gate) distribution analysis, or include learnable-alpha HOFA with --extrapolation")
     parser_bench.add_argument("--keff", action="store_true", help="Run the K_eff Probability Mass benchmark")
+    parser_bench.add_argument("--models", type=str, default=None, help="Comma-separated list of HuggingFace models for keff benchmark")
     parser_bench.add_argument("--distance", action="store_true", help="Run the Effective Attention Distance benchmark")
     parser_bench.add_argument("--extrapolation", dest="extrapolation", action="store_true", help="Run the context length extrapolation benchmark")
     parser_bench.add_argument("--temp-yarn", dest="temp_yarn", action="store_true", help="Run the position-segment pre-softmax temperature scaling benchmark (YaRN Fig. 5)")
@@ -74,7 +77,7 @@ def main():
     model_arg = getattr(args, 'model', 'hofa')
     if (args.command == "train" and getattr(args, 'alpha', False)) or (args.command in ("benchmark", "bench") and getattr(args, 'extrapolation', False) and getattr(args, 'alpha', False)) or model_arg == "hofa_alpha":
         model_arg = "hofa_alpha"
-    elif model_arg not in ["hofa", "mha", "both", "all"]:
+    elif model_arg not in ["hofa", "mha", "both", "all", "mha_low_rank_k", "hofa_increasing"]:
         model_arg = "hofa"
 
     scale_arg = getattr(args, 'scale', '350M')
@@ -114,7 +117,8 @@ def main():
             if args.plot_70m:
                 plot_training_metrics([
                     make_70M_MHA(), make_70M_HOFA(), make_70M_HOFA_flat32(),
-                    make_70M_HOFA_depth_axis(), make_70M_HOFA_width_axis(), make_70M_HOFA_fixed_blend()
+                    make_70M_HOFA_depth_axis(), make_70M_HOFA_width_axis(), make_70M_HOFA_fixed_blend(),
+                    make_70M_MHA_low_rank_k(), make_70M_HOFA_increasing()
                 ], subdirectory="70M")
             elif args.shared:
                 scale = getattr(args, 'scale', '350M')
@@ -216,12 +220,18 @@ def main():
             from benchmarks.analyze_alpha import run_alpha_analysis
             run_alpha_analysis(config)
         elif args.keff:
+            from benchmarks.benchmarks_configs import KEffExperimentConfig
+            from benchmarks.plotting.plot_K_eff import run_plot_k_eff
+            
+            keff_cfg = KEffExperimentConfig()
+            if getattr(args, 'models', None):
+                keff_cfg.models = [m.strip() for m in args.models.split(",") if m.strip()]
+            
             if args.plot:
-                from benchmarks.plotting.plot_K_eff import run_plot_k_eff
-                run_plot_k_eff()
+                run_plot_k_eff(keff_cfg)
             else:
                 from benchmarks.benchmark_K_eff import run_k_eff_experiment
-                run_k_eff_experiment()
+                run_k_eff_experiment(keff_cfg)
         elif args.distance:
             if args.plot:
                 from benchmarks.plotting.plot_distance import run_plot_distance
