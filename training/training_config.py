@@ -1,8 +1,16 @@
 from dataclasses import dataclass, field
-from typing import Union, List, Tuple, Optional, Callable
+from typing import Union, List, Tuple, Optional, Callable, Any
 from enum import Enum
 import torch
 from src.config import ModelConfig
+
+class YaRNMode(str, Enum):
+    GEOMETRIC = "geometric"
+    ARITHMETIC = "arithmetic"
+
+    @classmethod
+    def default(cls) -> "YaRNMode":
+        return cls.GEOMETRIC
 
 class DatasetType(str, Enum):
     FINEWEB = "fineweb"
@@ -69,6 +77,7 @@ class YaRNConfig:
     beta_slow: float = 1.0
     original_max_seq_len: Optional[int] = None
     base_checkpoint_path: Optional[str] = None
+    yarn_mode: Union[YaRNMode, str] = field(default_factory=YaRNMode.default)
 
     def __post_init__(self):
         if self.base_checkpoint_path is None:
@@ -215,6 +224,136 @@ def make_70M_HOFA_fixed_blend() -> LanguageModelingExperimentConfig:
         fixed_blend_weight=True,
         use_rope=True, block_size=1024,
     ))
+
+def make_70M_MHA_low_rank_k() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_MHA_low_rank_k", plot_name="MHA (r=32 Keys)", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=32,
+        pure_mha_low_rank_k=True,
+        use_rope=True, block_size=1024,
+    ))
+
+def make_70M_HOFA_increasing() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_HOFA_increasing", plot_name="Increasing HOFA", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=[16, 16, 16, 16, 32, 48, 48, 64],
+        use_rope=True, block_size=1024,
+    ))
+
+def make_13M_HOFA_alpha() -> LanguageModelingExperimentConfig:
+    cfg = make_13M_HOFA()
+    cfg.model_name = "13M_HOFA_alpha"
+    cfg.plot_name = "13M HOFA (Learnable Alpha)"
+    cfg.model_config.learnable_alpha = True
+    return cfg
+
+
+def make_13M_HOFA_alpha_cpt() -> YaRNConfig:
+    cfg = make_13M_HOFA_alpha()
+    cfg.model_name = "13M_HOFA_alpha_cpt"
+    cfg.plot_name = "13M HOFA Alpha (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 1
+    cfg.gradient_accumulation_steps = 16
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
+    cfg.learning_rate = 5e-5
+    cfg.gate_lr_multiplier = 10.0
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 30
+    cfg.val_every = 50
+    cfg.val_num_batches = 16
+    cfg.save_every = 50
+    cfg.print_every = 10
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg)
+
+
+def make_125M_HOFA_alpha() -> LanguageModelingExperimentConfig:
+    cfg = make_125M_HOFA()
+    cfg.model_name = "125M_HOFA_alpha"
+    cfg.plot_name = "125M HOFA (Learnable Alpha)"
+    cfg.model_config.learnable_alpha = True
+    return cfg
+
+
+def make_125M_HOFA_cpt() -> YaRNConfig:
+    cfg = make_125M_HOFA()
+    base_seq_len = cfg.seq_len
+    cfg.model_name = "125M_HOFA_cpt"
+    cfg.plot_name = "125M HOFA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 2
+    cfg.gradient_accumulation_steps = 8
+    cfg.train_steps = 100
+    cfg.learning_rate = 3e-5
+    cfg.gate_lr_multiplier = 10.0
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 20
+    cfg.val_every = 20
+    cfg.val_num_batches = 8
+    cfg.save_every = 50
+    cfg.print_every = 5
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg, original_max_seq_len=base_seq_len)
+
+
+def make_125M_HOFA_alpha_cpt() -> YaRNConfig:
+    cfg = make_125M_HOFA_alpha()
+    base_seq_len = cfg.seq_len
+    cfg.model_name = "125M_HOFA_alpha_cpt"
+    cfg.plot_name = "125M HOFA Alpha (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 2
+    cfg.gradient_accumulation_steps = 8
+    cfg.train_steps = 100
+    cfg.learning_rate = 3e-5
+    cfg.gate_lr_multiplier = 10.0
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 20
+    cfg.val_every = 20
+    cfg.val_num_batches = 8
+    cfg.save_every = 50
+    cfg.print_every = 5
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg, original_max_seq_len=base_seq_len)
+
+
+def make_125M_MHA_cpt() -> YaRNConfig:
+    cfg = make_125M_MHA()
+    base_seq_len = cfg.seq_len
+    cfg.model_name = "125M_MHA_cpt"
+    cfg.plot_name = "125M MHA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 2
+    cfg.gradient_accumulation_steps = 8
+    cfg.train_steps = 100
+    cfg.learning_rate = 3e-5
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 20
+    cfg.val_every = 20
+    cfg.val_num_batches = 8
+    cfg.save_every = 50
+    cfg.print_every = 5
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg, original_max_seq_len=base_seq_len)
 
 
 # 125M models (Main)
@@ -393,6 +532,57 @@ def make_30M_MHA_cpt() -> YaRNConfig:
     return YaRNConfig(model=cfg)
 
 
+def make_70M_HOFA_cpt() -> YaRNConfig:
+    cfg = make_70M_HOFA()
+    base_seq_len = cfg.seq_len
+    cfg.model_name = "70M_HOFA_cpt"
+    cfg.plot_name = "70M HOFA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 2
+    cfg.gradient_accumulation_steps = 8
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
+    cfg.learning_rate = 3e-5
+    cfg.gate_lr_multiplier = 10.0
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 20
+    cfg.val_every = 50
+    cfg.val_num_batches = 8
+    cfg.save_every = 50
+    cfg.print_every = 10
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg, original_max_seq_len=base_seq_len)
+
+
+def make_70M_MHA_cpt() -> YaRNConfig:
+    cfg = make_70M_MHA()
+    base_seq_len = cfg.seq_len
+    cfg.model_name = "70M_MHA_cpt"
+    cfg.plot_name = "70M MHA (16k CPT)"
+    cfg.seq_len = 16384
+    cfg.model_config.block_size = 16384
+    cfg.max_tokens = 100_000_000
+    cfg.batch_size = 16
+    cfg.micro_batch_size = 2
+    cfg.gradient_accumulation_steps = 8
+    cfg.train_steps = _compute_steps(100_000_000, 16, 16384)
+    cfg.learning_rate = 3e-5
+    cfg.weight_decay = 0.0
+    cfg.warmup_steps = 20
+    cfg.val_every = 50
+    cfg.val_num_batches = 8
+    cfg.save_every = 50
+    cfg.print_every = 10
+    cfg.dataset_name = DatasetType.PG19
+    cfg.train_cache_path = "data/datasets/pg19_16k_train.bin"
+    cfg.val_cache_path = "data/datasets/pg19_16k_val.bin"
+    return YaRNConfig(model=cfg, original_max_seq_len=base_seq_len)
+
+
 def make_350M_HOFA_cpt() -> YaRNConfig:
     cfg = make_350M_HOFA()
     base_seq_len = cfg.seq_len
@@ -449,40 +639,60 @@ def make_350M_MHA_cpt() -> YaRNConfig:
 MODEL_CONFIG_REGISTRY = {
     # Pretraining configs
     ("13M", "HOFA", False): make_13M_HOFA,
+    ("13M", "HOFA_ALPHA", False): make_13M_HOFA_alpha,
     ("13M", "MHA", False): make_13M_MHA,
     ("30M", "HOFA", False): make_30M_HOFA,
     ("30M", "MHA", False): make_30M_MHA,
     ("70M", "HOFA", False): make_70M_HOFA,
     ("70M", "MHA", False): make_70M_MHA,
+    ("70M", "MHA_LOW_RANK_K", False): make_70M_MHA_low_rank_k,
+    ("70M", "HOFA_INCREASING", False): make_70M_HOFA_increasing,
     ("125M", "HOFA", False): make_125M_HOFA,
+    ("125M", "HOFA_ALPHA", False): make_125M_HOFA_alpha,
     ("125M", "MHA", False): make_125M_MHA,
     ("350M", "HOFA", False): make_350M_HOFA,
     ("350M", "MHA", False): make_350M_MHA,
 
     # Continual Pretraining (YaRN) configs
     ("13M", "HOFA", True): make_13M_HOFA_cpt,
+    ("13M", "HOFA_ALPHA", True): make_13M_HOFA_alpha_cpt,
     ("13M", "MHA", True): make_13M_MHA_cpt,
     ("30M", "HOFA", True): make_30M_HOFA_cpt,
     ("30M", "MHA", True): make_30M_MHA_cpt,
+    ("70M", "HOFA", True): make_70M_HOFA_cpt,
+    ("70M", "MHA", True): make_70M_MHA_cpt,
+    ("125M", "HOFA", True): make_125M_HOFA_cpt,
+    ("125M", "HOFA_ALPHA", True): make_125M_HOFA_alpha_cpt,
+    ("125M", "MHA", True): make_125M_MHA_cpt,
     ("350M", "HOFA", True): make_350M_HOFA_cpt,
     ("350M", "MHA", True): make_350M_MHA_cpt,
 
     # Direct string name lookups
     "13M_HOFA": make_13M_HOFA,
+    "13M_HOFA_ALPHA": make_13M_HOFA_alpha,
     "13M_MHA": make_13M_MHA,
     "30M_HOFA": make_30M_HOFA,
     "30M_MHA": make_30M_MHA,
     "70M_HOFA": make_70M_HOFA,
+    "70M_HOFA_INCREASING": make_70M_HOFA_increasing,
     "70M_MHA": make_70M_MHA,
+    "70M_MHA_LOW_RANK_K": make_70M_MHA_low_rank_k,
     "125M_HOFA": make_125M_HOFA,
+    "125M_HOFA_ALPHA": make_125M_HOFA_alpha,
     "125M_MHA": make_125M_MHA,
     "350M_HOFA": make_350M_HOFA,
     "350M_MHA": make_350M_MHA,
 
     "13M_HOFA_CPT": make_13M_HOFA_cpt,
+    "13M_HOFA_ALPHA_CPT": make_13M_HOFA_alpha_cpt,
     "13M_MHA_CPT": make_13M_MHA_cpt,
     "30M_HOFA_CPT": make_30M_HOFA_cpt,
     "30M_MHA_CPT": make_30M_MHA_cpt,
+    "70M_HOFA_CPT": make_70M_HOFA_cpt,
+    "70M_MHA_CPT": make_70M_MHA_cpt,
+    "125M_HOFA_CPT": make_125M_HOFA_cpt,
+    "125M_HOFA_ALPHA_CPT": make_125M_HOFA_alpha_cpt,
+    "125M_MHA_CPT": make_125M_MHA_cpt,
     "350M_HOFA_CPT": make_350M_HOFA_cpt,
     "350M_MHA_CPT": make_350M_MHA_cpt,
 }

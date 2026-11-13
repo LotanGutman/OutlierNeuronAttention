@@ -1,34 +1,35 @@
 #!/bin/bash
 set -e
 
-echo "[INFO] Upgrading pip and build tools..."
-python -m pip install --upgrade pip setuptools wheel ninja packaging
+python -m pip install --upgrade "pip<26.3" setuptools wheel ninja packaging
+python -m pip uninstall -y torchvision torchaudio causal-conv1d mamba-ssm tensorflow tensorflow-cpu tf-keras || true
 
-echo "[INFO] Installing PyTorch 2.6.0 + CUDA 12.4..."
-python -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
-# note: in some systems, we may need to install one version higher and than downgrade for some reason. Uncomment the following line and comment the one above, and after full instalation, rerun the torch 2.6.0 instalation.
-# python -m pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+IS_BLACKWELL=false
+if command -v nvidia-smi &> /dev/null; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n 1)
+    if echo "$GPU_NAME" | grep -qiE "RTX 50|B100|B200|Blackwell"; then
+        IS_BLACKWELL=true
+    fi
+fi
 
-echo "[INFO] Removing any stray/mismatched causal-conv1d or mamba-ssm..."
-python -m pip uninstall -y causal-conv1d mamba-ssm || true
+if [ "$IS_BLACKWELL" = true ]; then
+    python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+else
+    python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+fi
 
-echo "[INFO] Installing Flash Linear Attention WITHOUT letting it touch torch..."
-python -m pip install -U "flash-linear-attention[cuda]"
-python -m pip install einops  # fla's own light deps, installed manually so torch stays untouched
+python -m pip install "fla-core==0.5.1" "flash-linear-attention==0.5.1" --no-deps
+python -m pip install einops
 
-echo "[INFO] Installing remaining requirements..."
-python -m pip install "datasets>=5.0.0" matplotlib==3.11.0 numpy==2.4.6 seaborn==0.13.2 tiktoken==0.13.0 tqdm==4.67.3 transformers==4.52.4 lm-eval accelerate
+python -m pip install \
+    "datasets>=5.0.0" \
+    matplotlib==3.11.0 \
+    numpy==2.4.6 \
+    seaborn==0.13.2 \
+    tiktoken==0.13.0 \
+    tqdm==4.67.3 \
+    transformers==4.52.4 \
+    lm-eval \
+    accelerate
 
-echo "[INFO] uninstalling torchvision (doesn't work well with our version combination)"
-pip uninstall torchvision -y
-
-echo "============================================="
-echo "[INFO] Verifying core imports..."
-python -c "import torch; print('torch', torch.__version__, '| CUDA:', torch.cuda.is_available())"
-python -c "
-try:
-    from fla.ops.gla import chunk_gla
-    print('chunk_gla import OK')
-except Exception as e:
-    print('Error occurred checking chunk_gla:', e)
-"
+python -c "import torch, fla; print('PyTorch:', torch.__version__, '| CUDA:', torch.cuda.is_available(), '| FLA OK')"

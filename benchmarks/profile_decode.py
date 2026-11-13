@@ -113,7 +113,7 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                     K = torch.randn(B, H, 1, D_head, device=device, dtype=torch.bfloat16)
                     V = torch.randn(B, H, 1, D_head, device=device, dtype=torch.bfloat16)
                     
-                    k_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
+                    k_cache = torch.randn(B, H, sl, r, device=device, dtype=torch.bfloat16)
                     v_cache = torch.randn(B, H, sl, D_head, device=device, dtype=torch.bfloat16)
                     
                     state_I = torch.randn(B, H, j, D_head, device=device, dtype=torch.float32)

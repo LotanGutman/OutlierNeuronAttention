@@ -23,9 +23,7 @@ def run_induction_degradation_experiment(config=None):
     seq_lengths = config.seq_lengths
     
     target_r = models_to_test[0][2] if models_to_test and models_to_test[0][2] is not None else config.model_config.r
-    print(f"\n========================================")
     print(f" Starting r={target_r} Context Length Degradation Experiment")
-    print(f"========================================")
     
     for seq_len in seq_lengths:
         config.seq_len = seq_len
@@ -147,9 +145,7 @@ def fit_theory(N_vals, acc_vals, r=8, N_range=None, measured_shift=None):
         N_dense = np.linspace(max(10.0, min_x - 0.05 * x_span), max_x + 0.05 * x_span, 400)
         acc_dense = model_fn(N_dense, gamma_fit, sigma_fit)
         
-        print(f"\n========================================")
-        print(f" THEORY FIT RESULTS (r={r})")
-        print(f"========================================")
+        print(f"\n THEORY FIT RESULTS (r={r}):")
         print(f" Points fitted: {len(N_fit)}")
         print(f" Sequence Lengths: {N_fit.astype(int).tolist()}")
         print(f" Empirical Accuracies: {[round(a, 2) for a in acc_fit.tolist()]}")
@@ -165,8 +161,7 @@ def fit_theory(N_vals, acc_vals, r=8, N_range=None, measured_shift=None):
         print(f" Fitted Phase Transition Sharpness (σ): {sigma_fit:.6f}")
         print(f" Mean Absolute Error (MAE): {mae:.3f}%")
         print(f" Root Mean Square Error (RMSE): {rmse:.3f}%")
-        print(f" Theoretical R^2 Score: {r2:.4f}")
-        print(f"========================================\n")
+        print(f" Theoretical R^2 Score: {r2:.4f}\n")
         
         return gamma_fit, c_fit, r2, mae, N_dense, acc_dense
     except Exception as e:

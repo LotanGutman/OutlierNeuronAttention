@@ -4,7 +4,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from src.config import ModelConfig
-from fla.ops.gla import chunk_gla
+try:
+    from fla.ops.gla import chunk_gla
+except ImportError:
+    chunk_gla = None
 from src.modules.modules import RotaryEmbedding, apply_rotary_pos_emb
 
 class HybridOutlierFactorizedAttention(nn.Module):
@@ -36,18 +39,26 @@ class HybridOutlierFactorizedAttention(nn.Module):
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
         # Architectural Ablations
+        self.pure_mha_low_rank_k = getattr(model_cfg, 'pure_mha_low_rank_k', False)
         self.forced_mha_heads = getattr(model_cfg, 'mha_heads_for_width_split', 0)
-        self.fixed_blend_weight = getattr(model_cfg, 'fixed_blend_weight', False)
-        self.attention_scale = getattr(model_cfg, 'attention_scale', 1.0)
+        self.fixed_blend_weight = model_cfg.fixed_blend_weight
+        self.attention_scale = model_cfg.attention_scale
 
         # Dynamic mixing gate between exact and linear pathways
         if not self.fixed_blend_weight and self.forced_mha_heads == 0:
             self.mix_proj = nn.Linear(2 * self.d_head, self.num_heads, bias=True)
             self.mix_proj._is_gate = True
             nn.init.zeros_(self.mix_proj.weight)
-            nn.init.constant_(self.mix_proj.bias, getattr(model_cfg, 'mix_gate_bias_init', 0.0))
+            nn.init.constant_(self.mix_proj.bias, model_cfg.mix_gate_bias_init)
         elif self.fixed_blend_weight and self.forced_mha_heads == 0:
             self.fixed_mix = nn.Parameter(torch.zeros(1, self.num_heads, 1, 1))
+
+        # Channel-wise learnable decay multiplier
+        self.learnable_alpha = model_cfg.learnable_alpha
+        if self.learnable_alpha:
+            num_decay_channels = self.d_head if self.forced_mha_heads > 0 else (self.d_head if self.r == 0 else self.j)
+            self.log_alpha = nn.Parameter(torch.zeros(1, self.num_heads, 1, num_decay_channels))
+            self.log_alpha._is_alpha = True
 
         # RoPE dedicated strictly to the exact-match routing dimension
         if (self.r > 0 or self.forced_mha_heads > 0) and model_cfg.use_rope:
@@ -73,20 +84,27 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
     def _compute_gates_optimized(self, Q, K):
         # Q, K: (B, H, N, d_head)
-        W_g = self.gate_proj.weight  # (H, 2*d_head)
+        W_g = self.gate_proj.weight
         W_g_q, W_g_k = W_g.chunk(2, dim=1)
+        bias = self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
 
-        gate_logits = torch.einsum('bhnf,hf->bhn', Q, W_g_q) + \
-                      torch.einsum('bhnf,hf->bhn', K, W_g_k) + \
-                      self.gate_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+        gate_logits = (
+            torch.einsum('bhnf,hf->bhn', Q, W_g_q)
+            + torch.einsum('bhnf,hf->bhn', K, W_g_k)
+            + bias
+        )
 
         if hasattr(self, 'mix_proj'):
             W_m = self.mix_proj.weight
             W_m_q, W_m_k = W_m.chunk(2, dim=-1)
-            mix_logits = torch.einsum('bhnf,hf->bhn', Q, W_m_q) + \
-                         torch.einsum('bhnf,hf->bhn', K, W_m_k) + \
-                         self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
-            mix_g = torch.sigmoid(mix_logits).unsqueeze(-1)
+            bias_m = self.mix_proj.bias.view(1, self.num_heads, 1).to(Q.dtype)
+
+            mix_logits = (
+                torch.einsum('bhnf,hf->bhn', Q, W_m_q)
+                + torch.einsum('bhnf,hf->bhn', K, W_m_k)
+                + bias_m
+            )
+            mix_g = torch.sigmoid(mix_logits).to(Q.dtype).unsqueeze(-1)
         elif hasattr(self, 'fixed_mix'):
             mix_g = torch.sigmoid(self.fixed_mix).to(Q.dtype).expand(Q.shape[0], -1, Q.shape[2], -1)
         else:
@@ -120,17 +138,22 @@ class HybridOutlierFactorizedAttention(nn.Module):
             W_g_q, W_g_k = W_g.chunk(2, dim=-1)
             W_g_q_gla = W_g_q[self.forced_mha_heads:]
             W_g_k_gla = W_g_k[self.forced_mha_heads:]
-            b_g_gla = self.gate_proj.bias[self.forced_mha_heads:]
+            b_g_gla = self.gate_proj.bias[self.forced_mha_heads:].view(1, -1, 1).to(dtype_in)
             
-            gate_logits = torch.einsum('bhnf,hf->bhn', Q_gla, W_g_q_gla) + \
-                          torch.einsum('bhnf,hf->bhn', K_gla, W_g_k_gla) + \
-                          b_g_gla.view(1, -1, 1).to(dtype_in)
+            gate_logits = (
+                torch.einsum('bhnf,hf->bhn', Q_gla, W_g_q_gla)
+                + torch.einsum('bhnf,hf->bhn', K_gla, W_g_k_gla)
+                + b_g_gla
+            )
             log_gamma = F.logsigmoid(-gate_logits).unsqueeze(-1)
 
             q_gla_t = Q_gla.transpose(1, 2).to(torch.float32).contiguous()
             k_gla_t = K_gla.transpose(1, 2).to(torch.float32).contiguous()
             v_gla_t = V_gla.transpose(1, 2).to(torch.float32).contiguous()
-            g_gla_t = log_gamma.expand(-1, -1, -1, self.d_head).transpose(1, 2).to(torch.float32).contiguous()
+            if self.learnable_alpha:
+                g_gla_t = (log_gamma * self.log_alpha.exp()).transpose(1, 2).to(torch.float32).contiguous()
+            else:
+                g_gla_t = log_gamma.expand(-1, -1, -1, K_gla.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
 
             Y_gla_t, _ = chunk_gla(
                 q_gla_t, k_gla_t, v_gla_t, g=g_gla_t, scale=1.0, output_final_state=False
@@ -142,6 +165,27 @@ class HybridOutlierFactorizedAttention(nn.Module):
             Y_out = Y_out.transpose(1, 2).reshape(B, N, D)
             return self.out_proj(Y_out)
 
+        # ----- Missing Control: Pure MHA with r-dimensional Keys and d_head Values -----
+        if self.pure_mha_low_rank_k:
+            Q_r = Q[..., :self.r]
+            K_r = K[..., :self.r]
+            if getattr(self, 'rotary_emb', None) is not None:
+                cos, sin = self.rotary_emb(N)
+                Q_r, K_r = apply_rotary_pos_emb(Q_r, K_r, cos, sin)
+
+            sm_scale = ((self.d_head / self.r) ** 0.5) * self.attention_scale
+            pad_len = (8 - (self.r % 8)) % 8
+            if pad_len > 0:
+                Q_r_padded = F.pad(Q_r, (0, pad_len))
+                K_r_padded = F.pad(K_r, (0, pad_len))
+            else:
+                Q_r_padded, K_r_padded = Q_r, K_r
+
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+                Y = F.scaled_dot_product_attention(Q_r_padded, K_r_padded, V, is_causal=True, scale=sm_scale)
+            Y = Y.transpose(1, 2).reshape(B, N, D)
+            return self.out_proj(Y)
+
         # ----- special cases: r = 0 or r = d_head -----
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
@@ -150,7 +194,10 @@ class HybridOutlierFactorizedAttention(nn.Module):
             q_gla_t = Q.transpose(1, 2).to(torch.float32).contiguous()
             k_gla_t = K.transpose(1, 2).to(torch.float32).contiguous()
             v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
-            g_gla_t = log_gamma.expand(-1, -1, -1, self.d_head).transpose(1, 2).to(torch.float32).contiguous()
+            if self.learnable_alpha:
+                g_gla_t = (log_gamma * self.log_alpha.exp()).transpose(1, 2).to(torch.float32).contiguous()
+            else:
+                g_gla_t = log_gamma.expand(-1, -1, -1, K.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
             
             assert q_gla_t.is_contiguous() and q_gla_t.dtype == torch.float32, "q_gla_t must be contiguous float32"
             assert k_gla_t.is_contiguous() and k_gla_t.dtype == torch.float32, "k_gla_t must be contiguous float32"
@@ -211,10 +258,25 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Q_J = Q[..., self.r:]
         K_J = K[..., self.r:]
 
+        # fla chunk_gla requires K dimension to be at least 32 (its minimum Triton warp tile BK=32)
+        j_dim = K_J.shape[-1]
+        pad_j = max(0, 32 - j_dim)
+        if pad_j > 0:
+            Q_J = F.pad(Q_J, (0, pad_j))
+            K_J = F.pad(K_J, (0, pad_j))
+
         q_gla_t = Q_J.transpose(1, 2).to(torch.float32).contiguous()
         k_gla_t = K_J.transpose(1, 2).to(torch.float32).contiguous()
         v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
-        g_gla_t = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
+        if self.learnable_alpha:
+            g_gla_t = (log_gamma * self.log_alpha.exp()).transpose(1, 2).to(torch.float32).contiguous()
+            if pad_j > 0:
+                g_gla_t = F.pad(g_gla_t, (0, pad_j), value=-1e4)
+        else:
+            if pad_j > 0:
+                g_gla_t = F.pad(log_gamma.expand(-1, -1, -1, j_dim), (0, pad_j), value=-1e4).transpose(1, 2).to(torch.float32).contiguous()
+            else:
+                g_gla_t = log_gamma.expand(-1, -1, -1, j_dim).transpose(1, 2).to(torch.float32).contiguous()
         
         assert q_gla_t.is_contiguous() and q_gla_t.dtype == torch.float32, "q_gla_t must be contiguous float32"
         assert k_gla_t.is_contiguous() and k_gla_t.dtype == torch.float32, "k_gla_t must be contiguous float32"
@@ -247,9 +309,44 @@ class HybridOutlierFactorizedAttention(nn.Module):
         K = (self.W_k(x) / scale_factor).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
         V = self.W_v(x).view(B, N, self.num_heads, self.d_head).transpose(1, 2)
 
+        if self.pure_mha_low_rank_k:
+            curr_len = 1 if cache_O is None else cache_O[0].shape[2] + 1
+            Q_r = Q[..., :self.r]
+            K_r = K[..., :self.r]
+            if getattr(self, 'rotary_emb', None) is not None:
+                cos, sin = self.rotary_emb(curr_len)
+                cos = cos[-1:]
+                sin = sin[-1:]
+                Q_r, K_r = apply_rotary_pos_emb(Q_r, K_r, cos, sin)
+
+            if cache_O is None:
+                K_past, V_past = K_r, V
+            else:
+                K_past = torch.cat([cache_O[0], K_r], dim=2)
+                V_past = torch.cat([cache_O[1], V], dim=2)
+
+            sm_scale = ((self.d_head / self.r) ** 0.5) * self.attention_scale
+            pad_len = (8 - (self.r % 8)) % 8
+            if pad_len > 0:
+                Q_padded = F.pad(Q_r, (0, pad_len))
+                K_padded = F.pad(K_past, (0, pad_len))
+            else:
+                Q_padded = Q_r
+                K_padded = K_past
+
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+                Y = F.scaled_dot_product_attention(Q_padded, K_padded, V_past, is_causal=False, scale=sm_scale)
+            cache_new = (K_past, V_past)
+            Y_out = Y.transpose(1, 2).reshape(B, N, D)
+            return self.out_proj(Y_out), cache_new, None
+
         if self.r == 0:
             gate_logits, _ = self._compute_gates_optimized(Q, K)
-            gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
+            log_gamma = F.logsigmoid(-gate_logits)
+            if self.learnable_alpha:
+                gamma = torch.exp(log_gamma * self.log_alpha.exp().transpose(-1, -2)).to(torch.float32)
+            else:
+                gamma = torch.exp(log_gamma).to(torch.float32)
             if state_I is None:
                 state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
                                       device=x.device, dtype=torch.float32)
@@ -258,7 +355,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
             K_f32 = K_s.to(torch.float32).unsqueeze(-1)
             V_f32 = V_s.to(torch.float32).unsqueeze(-2)
-            state_I_new = gamma.to(torch.float32) * state_I + (K_f32 @ V_f32)
+            state_I_new = gamma * state_I + (K_f32 @ V_f32)
             
             Q_f32 = Q.squeeze(2).to(torch.float32).unsqueeze(-2)
             Y_I = (Q_f32 @ state_I_new).squeeze(-2).unsqueeze(2)
@@ -317,7 +414,12 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Q_J = F.pad(Q_J, (0, self.r))
         K_J = F.pad(K_J, (0, self.r))
 
-        gamma = torch.sigmoid(-gate_logits).view(B, self.num_heads, 1, 1)
+        log_gamma = F.logsigmoid(-gate_logits)
+        if self.learnable_alpha:
+            alpha_padded = F.pad(self.log_alpha.exp(), (0, self.r), value=1.0).transpose(-1, -2)
+            gamma = torch.exp(log_gamma * alpha_padded).to(torch.float32)
+        else:
+            gamma = torch.exp(log_gamma).to(torch.float32)
 
         if state_I is None:
             state_I = torch.zeros(B, self.num_heads, self.d_head, self.d_head,
@@ -328,7 +430,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         K_f32 = K_J_s.to(torch.float32).unsqueeze(-1)
         V_f32 = V_s.to(torch.float32).unsqueeze(-2)
-        state_I = state_I * gamma.to(torch.float32) + (K_f32 @ V_f32)
+        state_I = state_I * gamma + (K_f32 @ V_f32)
         
         Q_f32 = Q_J.squeeze(2).to(torch.float32).unsqueeze(-2)
         Y_I = (Q_f32 @ state_I).squeeze(-2).unsqueeze(2)

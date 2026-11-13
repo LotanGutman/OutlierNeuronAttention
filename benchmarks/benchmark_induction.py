@@ -16,7 +16,7 @@ from src.config import ModelConfig
 from src.modules.benchmark_utils import GenericBenchmarkLM, AttentionType, adjust_learning_rate
 from benchmarks.benchmarks_configs import InductionExperimentConfig
 from src.modules.checkpointing import save_checkpoint, load_checkpoint
-from interrupt_util.interrupts import GracefulInterruptHandler
+from src.utils.interrupts import GracefulInterruptHandler
 
 def generate_induction_seqs(batch_size, seq_len, vocab_size, device, pattern_len=None, pin_to_end=False):
     """
@@ -277,9 +277,7 @@ def run_induction_experiment():
     
     for seq_len in seq_lengths:
         config.seq_len = seq_len
-        print(f"\n========================================")
-        print(f" Starting sequence length: {seq_len}")
-        print(f"========================================")
+        print(f" Starting sequence length: {seq_len}...")
         
         all_histories = {}
         for name, attn_type, r_val in models_to_test:

@@ -170,7 +170,7 @@ def plot_training_metrics(configs: Union[Any, List[Any]], subdirectory: str = ""
                         fw_s, fw_l = zip(*valid_fw)
                         plt.plot(fw_s, fw_l, color="tab:purple", marker="s", markersize=5, linewidth=1.8, linestyle="--", label="FineWeb 1k Loss")
 
-            plt.title(f"{plot_name}: Training & Validation Loss", fontsize=14, fontweight="bold")
+            plt.title(f"{plot_name}: PG-19 Continual Pretraining (Loss)", fontsize=14, fontweight="bold")
             plt.xlabel("Steps", fontsize=12)
             plt.ylabel("Loss", fontsize=12)
             plt.grid(True, linestyle="--", alpha=0.4)
@@ -190,7 +190,7 @@ def plot_training_metrics(configs: Union[Any, List[Any]], subdirectory: str = ""
                         fw_s, fw_p = zip(*valid_fw_ppl)
                         plt.plot(fw_s, fw_p, color="tab:purple", marker="s", markersize=5, linewidth=1.8, linestyle="--", label="FineWeb 1k PPL")
 
-                plt.title(f"{plot_name}: Validation Perplexity", fontsize=14, fontweight="bold")
+                plt.title(f"{plot_name}: PG-19 Continual Pretraining (Perplexity)", fontsize=14, fontweight="bold")
                 plt.xlabel("Steps", fontsize=12)
                 plt.ylabel("Perplexity", fontsize=12)
                 plt.grid(True, linestyle=":", alpha=0.6)
@@ -318,64 +318,140 @@ def plot_training_metrics(configs: Union[Any, List[Any]], subdirectory: str = ""
 
         if is_any_cpt:
             # CPT shared curves
+            def clean_label(raw_name):
+                if "hofa" in raw_name.lower():
+                    return "350M HOFA (16k)"
+                elif "mha" in raw_name.lower():
+                    return "350M MHA (16k)"
+                return raw_name
+
             for x_axis in ["flops", "tokens"]:
-                # PPL vs x
+                title_x = "Total FLOPs" if x_axis == "flops" else "Processed Tokens"
+
+                # 1. 2-panel figure: Left = Continual Pretraining (PPL), Right = In-Domain Retention (PPL)
+                fig, (ax_cpt, ax_ret) = plt.subplots(1, 2, figsize=(13.5, 4.8), dpi=300)
+
+                # Left: Continual Pretraining Perplexity
+                ax_cpt.set_title("Continual Pretraining", fontsize=13, fontweight='bold', pad=10)
+                for i, (name, data) in enumerate(all_data.items()):
+                    color = colors[i]
+                    lbl = clean_label(name)
+                    marker = 's' if "hofa" in name.lower() else 'o'
+                    if data["has_val"]:
+                        x_val = data["val_flops_x"] if x_axis == "flops" else data["val_tokens"]
+                        y_val = data["val_ppl"]
+                        ax_cpt.plot(x_val, y_val, color=color, label=lbl, marker=marker, markersize=6, linewidth=2.2)
+
+                ax_cpt.set_xlabel(title_x, fontsize=12)
+                ax_cpt.set_ylabel("Validation Perplexity", fontsize=12)
+                ax_cpt.grid(True, linestyle=':', alpha=0.5)
+
+                # Cap Y-axis to magnify the convergence region (excluding massive Step 0 spike)
+                all_cpt_ppls = [d["val_ppl"] for d in all_data.values() if d.get("has_val") and len(d.get("val_ppl", [])) > 1]
+                if all_cpt_ppls:
+                    cpt_post_step0 = [p for ppls in all_cpt_ppls for p in ppls[1:] if p is not None and p > 0]
+                    cpt_step0 = [ppls[0] for ppls in all_cpt_ppls if ppls[0] is not None and ppls[0] > 0]
+                    if cpt_post_step0:
+                        y_bottom = max(0, min(cpt_post_step0) * 0.95)
+                        y_top = max(cpt_post_step0) * 1.06
+                        ax_cpt.set_ylim(bottom=y_bottom, top=y_top)
+
+                # Right: In-Domain Retention (FineWeb 1k)
+                ax_ret.set_title("In-Domain Retention", fontsize=13, fontweight='bold', pad=10)
+                has_retention_data = False
+                for i, (name, data) in enumerate(all_data.items()):
+                    color = colors[i]
+                    lbl = clean_label(name)
+                    marker = 's' if "hofa" in name.lower() else 'o'
+                    x_val = data["val_flops_x"] if x_axis == "flops" else data["val_tokens"]
+                    fw_ppls = data.get("val_fineweb_ppl_yarn") or data.get("val_fineweb_ppl_native") or []
+                    valid_fw = [(x, p) for x, p in zip(x_val, fw_ppls) if p is not None and p > 0]
+                    if valid_fw:
+                        has_retention_data = True
+                        fw_x, fw_y = zip(*valid_fw)
+                        ax_ret.plot(fw_x, fw_y, color=color, label=lbl, marker=marker, markersize=6, linewidth=2.2)
+
+                if not has_retention_data:
+                    ax_ret.text(0.5, 0.5, "FineWeb 1k retention metrics not recorded", horizontalalignment='center', verticalalignment='center', transform=ax_ret.transAxes, fontsize=11, color='gray')
+
+                ax_ret.set_xlabel(title_x, fontsize=12)
+                ax_ret.set_ylabel("Validation Perplexity", fontsize=12)
+                ax_ret.grid(True, linestyle=':', alpha=0.5)
+
+                # Shared Legend centered above both subplots
+                handles, labels = ax_cpt.get_legend_handles_labels()
+                fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.05), ncol=2, frameon=False, fontsize=12)
+
+                plt.tight_layout()
+                plt.subplots_adjust(top=0.88)
+                dyn_pdf = os.path.join(shared_dir, f"{combined_name}_cpt_dynamics_{x_axis}.pdf")
+                fig.savefig(dyn_pdf, bbox_inches='tight', format='pdf')
+                plt.close(fig)
+
+                # 2. PPL vs x
                 plt.figure(figsize=(10, 6))
                 for i, (name, data) in enumerate(all_data.items()):
                     color = colors[i]
+                    lbl = clean_label(name)
+                    marker = 's' if "hofa" in name.lower() else 'o'
                     if data["has_val"]:
                         x_vals = data["val_flops_x"] if x_axis == "flops" else data["val_tokens"]
                         y_vals = data["val_ppl"]
-                        plt.plot(x_vals, y_vals, color=color, label=name, marker='o', markersize=5, linewidth=2.5)
+                        plt.plot(x_vals, y_vals, color=color, label=lbl, marker=marker, markersize=5, linewidth=2.5)
 
-                title_x = "Total FLOPs" if x_axis == "flops" else "Processed Tokens"
-                plt.title(f"CPT PG-19 16k Validation Perplexity vs. {title_x}", fontsize=14, fontweight='bold', pad=10)
-                plt.xlabel("Total FLOPs" if x_axis == "flops" else "Processed Tokens", fontsize=12)
-                plt.ylabel("Validation Perplexity (PG-19 16k)", fontsize=12)
+                plt.title(f"PG-19 Continual Pretraining: Validation Perplexity vs. {title_x}", fontsize=14, fontweight='bold', pad=10)
+                plt.xlabel(title_x, fontsize=12)
+                plt.ylabel("Validation Perplexity", fontsize=12)
+                if all_cpt_ppls and cpt_post_step0:
+                    plt.ylim(bottom=y_bottom, top=y_top)
                 plt.grid(True, linestyle=':', alpha=0.5)
                 plt.legend(frameon=True, framealpha=0.9, fontsize=11)
                 plt.tight_layout()
-                out_path = os.path.join(shared_dir, f"{combined_name}_ppl_vs_{x_axis}.pdf")
-                plt.savefig(out_path, bbox_inches='tight', format='pdf')
+                out_path_pdf = os.path.join(shared_dir, f"{combined_name}_ppl_vs_{x_axis}.pdf")
+                plt.savefig(out_path_pdf, bbox_inches='tight', format='pdf')
                 plt.close()
 
-                # PPL vs x (log)
+                # 3. PPL vs x (log)
                 plt.figure(figsize=(10, 6))
                 for i, (name, data) in enumerate(all_data.items()):
                     color = colors[i]
+                    lbl = clean_label(name)
+                    marker = 's' if "hofa" in name.lower() else 'o'
                     if data["has_val"]:
                         x_vals = data["val_flops_x"] if x_axis == "flops" else data["val_tokens"]
                         y_vals = data["val_ppl"]
-                        plt.plot(x_vals, y_vals, color=color, label=name, marker='o', markersize=5, linewidth=2.5)
+                        plt.plot(x_vals, y_vals, color=color, label=lbl, marker=marker, markersize=5, linewidth=2.5)
 
-                plt.title(f"CPT PG-19 16k Validation Perplexity vs. {title_x} (Log X)", fontsize=14, fontweight='bold', pad=10)
+                plt.title(f"PG-19 Continual Pretraining: Validation Perplexity vs. {title_x} (Log X)", fontsize=14, fontweight='bold', pad=10)
                 plt.xlabel(f"{title_x} (log scale)", fontsize=12)
-                plt.ylabel("Validation Perplexity (PG-19 16k)", fontsize=12)
+                plt.ylabel("Validation Perplexity", fontsize=12)
                 plt.xscale('log')
                 plt.grid(True, which="both", linestyle=':', alpha=0.5)
                 plt.legend(frameon=True, framealpha=0.9, fontsize=11)
                 plt.tight_layout()
-                out_path = os.path.join(shared_dir, f"{combined_name}_ppl_vs_{x_axis}_log.pdf")
-                plt.savefig(out_path, bbox_inches='tight', format='pdf')
+                out_log_pdf = os.path.join(shared_dir, f"{combined_name}_ppl_vs_{x_axis}_log.pdf")
+                plt.savefig(out_log_pdf, bbox_inches='tight', format='pdf')
                 plt.close()
 
-                # Loss vs x
+                # 4. Loss vs x
                 plt.figure(figsize=(10, 6))
                 for i, (name, data) in enumerate(all_data.items()):
                     color = colors[i]
+                    lbl = clean_label(name)
+                    marker = 's' if "hofa" in name.lower() else 'o'
                     if data["has_val"]:
                         x_vals = data["val_flops_x"] if x_axis == "flops" else data["val_tokens"]
                         y_vals = data["val_loss"]
-                        plt.plot(x_vals, y_vals, color=color, label=name, marker='o', markersize=5, linewidth=2.5)
+                        plt.plot(x_vals, y_vals, color=color, label=lbl, marker=marker, markersize=5, linewidth=2.5)
 
-                plt.title(f"CPT PG-19 16k Validation Loss vs. {title_x}", fontsize=14, fontweight='bold', pad=10)
-                plt.xlabel("Total FLOPs" if x_axis == "flops" else "Processed Tokens", fontsize=12)
-                plt.ylabel("Cross Entropy Loss (PG-19 16k)", fontsize=12)
+                plt.title(f"PG-19 Continual Pretraining: Validation Loss vs. {title_x}", fontsize=14, fontweight='bold', pad=10)
+                plt.xlabel(title_x, fontsize=12)
+                plt.ylabel("Cross Entropy Loss", fontsize=12)
                 plt.grid(True, linestyle=':', alpha=0.5)
                 plt.legend(frameon=True, framealpha=0.9, fontsize=11)
                 plt.tight_layout()
-                out_path = os.path.join(shared_dir, f"{combined_name}_loss_vs_{x_axis}.pdf")
-                plt.savefig(out_path, bbox_inches='tight', format='pdf')
+                out_loss_pdf = os.path.join(shared_dir, f"{combined_name}_loss_vs_{x_axis}.pdf")
+                plt.savefig(out_loss_pdf, bbox_inches='tight', format='pdf')
                 plt.close()
 
             print(f"Saved CPT shared plots to {shared_dir}")

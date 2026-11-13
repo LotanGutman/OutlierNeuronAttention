@@ -18,8 +18,8 @@ torch.set_float32_matmul_precision('high')
 
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM
 from src.yarn import patch_model_yarn, swap_rotary_to_native, restore_rotary_from_saved
-from training.training_config import LanguageModelingExperimentConfig, YaRNConfig, get_model_config
-from interrupt_util.interrupts import GracefulInterruptHandler
+from training.training_config import LanguageModelingExperimentConfig, YaRNConfig, YaRNMode, get_model_config
+from src.utils.interrupts import GracefulInterruptHandler
 from training.data_utils import FastTokenLoader
 
 
@@ -208,45 +208,60 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
     model.to(device)
 
     gate_multiplier = getattr(lm_cfg, 'gate_lr_multiplier', None)
-    if gate_multiplier is not None and gate_multiplier != 1.0:
-        gate_param_ids = set()
-        gate_params = []
-        for name, module in model.named_modules():
-            if getattr(module, '_is_gate', False) or name.endswith('gate_proj') or name.endswith('mix_proj'):
-                for p in module.parameters():
-                    if id(p) not in gate_param_ids:
-                        gate_param_ids.add(id(p))
-                        gate_params.append(p)
-            elif hasattr(module, 'fixed_mix') and isinstance(module.fixed_mix, torch.nn.Parameter):
-                p = module.fixed_mix
-                if id(p) not in gate_param_ids:
-                    gate_param_ids.add(id(p))
-                    gate_params.append(p)
-            elif hasattr(module, 'gla_scale') and isinstance(module.gla_scale, torch.nn.Parameter):
-                p = module.gla_scale
-                if id(p) not in gate_param_ids:
-                    gate_param_ids.add(id(p))
-                    gate_params.append(p)
+    if gate_multiplier is None:
+        gate_multiplier = 1.0
 
-        base_params = [p for p in model.parameters() if id(p) not in gate_param_ids]
-        print(f"[CPT Optimizer] Decoupled gate optimization enabled: {len(gate_params)} gate tensors (multiplier={gate_multiplier:.1f}x, peak_lr={lm_cfg.learning_rate * gate_multiplier:.1e}), {len(base_params)} base tensors.")
-        
-        optimizer = torch.optim.AdamW(
-            [
-                {'params': base_params, 'lr': lm_cfg.learning_rate, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': 1.0},
-                {'params': gate_params, 'lr': lm_cfg.learning_rate * gate_multiplier, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': gate_multiplier},
-            ],
-            betas=(0.9, 0.95),
-            fused=True
-        )
-    else:
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=lm_cfg.learning_rate,
-            weight_decay=lm_cfg.weight_decay,
-            betas=(0.9, 0.95),
-            fused=True
-        )
+    # Build optimizer parameter groups with zero weight decay for biases and log_alpha
+    decay_params = []
+    nodecay_params = []
+    gate_params = []
+
+    gate_param_ids = set()
+    nodecay_param_ids = set()
+
+    for name, module in model.named_modules():
+        if getattr(module, '_is_gate', False) or name.endswith('gate_proj') or name.endswith('mix_proj'):
+            for p_name, p in module.named_parameters(recurse=False):
+                gate_param_ids.add(id(p))
+                gate_params.append(p)
+        if hasattr(module, 'fixed_mix') and isinstance(module.fixed_mix, torch.nn.Parameter):
+            p = module.fixed_mix
+            if id(p) not in gate_param_ids:
+                gate_param_ids.add(id(p))
+                gate_params.append(p)
+        if hasattr(module, 'gla_scale') and isinstance(module.gla_scale, torch.nn.Parameter):
+            p = module.gla_scale
+            if id(p) not in gate_param_ids:
+                gate_param_ids.add(id(p))
+                gate_params.append(p)
+        if hasattr(module, 'log_alpha') and isinstance(module.log_alpha, torch.nn.Parameter):
+            p = module.log_alpha
+            if id(p) not in gate_param_ids:
+                gate_param_ids.add(id(p))
+                gate_params.append(p)
+
+    for name, p in model.named_parameters():
+        if id(p) in gate_param_ids:
+            continue
+        if p.dim() < 2 or name.endswith('.bias') or 'norm' in name.lower() or 'scale' in name.lower():
+            nodecay_params.append(p)
+        else:
+            decay_params.append(p)
+
+    param_groups = [
+        {'params': decay_params, 'lr': lm_cfg.learning_rate, 'weight_decay': lm_cfg.weight_decay, 'lr_multiplier': 1.0},
+        {'params': nodecay_params, 'lr': lm_cfg.learning_rate, 'weight_decay': 0.0, 'lr_multiplier': 1.0},
+        {'params': gate_params, 'lr': lm_cfg.learning_rate * gate_multiplier, 'weight_decay': 0.0, 'lr_multiplier': gate_multiplier},
+    ]
+
+    print(f"[CPT] Parameters initialized: {len(decay_params)} decay tensors (wd={lm_cfg.weight_decay}), "
+          f"{len(nodecay_params)} no-decay tensors, {len(gate_params)} gate/alpha tensors (mult={gate_multiplier:.1f}x, wd=0.0).")
+
+    optimizer = torch.optim.AdamW(
+        param_groups,
+        betas=(0.9, 0.95),
+        fused=True
+    )
 
     metrics = {
         'processed_tokens': [],
@@ -254,6 +269,13 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
         'learning_rate': [],
         'gate_alpha': [],
         'gate_decay': [],
+        'alpha_min': [],
+        'alpha_max': [],
+        'alpha_mean': [],
+        'alpha_std': [],
+        'alpha_grad_norm': [],
+        'alpha_update_norm': [],
+        'alpha_per_layer_head': {},
         'step_times': [],
         'val_steps': [],
         'val_pg19_ppl': [],
@@ -269,6 +291,11 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
     base_seq_len = 1024
 
     cpt_ckpt_path = os.path.join(checkpoint_dir, "checkpoint.pt")
+    if not os.path.exists(cpt_ckpt_path):
+        fallback_path = os.path.join(checkpoint_dir, "checkpoint_best_val.pt")
+        if os.path.exists(fallback_path):
+            cpt_ckpt_path = fallback_path
+
     if os.path.exists(cpt_ckpt_path):
         print(f"Resuming CPT from existing checkpoint: {cpt_ckpt_path}")
         ckpt = torch.load(cpt_ckpt_path, map_location=device, weights_only=False)
@@ -322,6 +349,7 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
         print(f"Initializing CPT from pretrained base checkpoint: {chosen_base_ckpt}")
         ckpt = torch.load(chosen_base_ckpt, map_location=device, weights_only=False)
         state_dict = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+
         model.load_state_dict(state_dict)
 
         if isinstance(ckpt, dict) and 'config' in ckpt:
@@ -348,6 +376,7 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
     beta_fast = getattr(yarn_cfg, 'beta_fast', 32.0) if yarn_cfg else 32.0
     beta_slow = getattr(yarn_cfg, 'beta_slow', 1.0) if yarn_cfg else 1.0
 
+    ymode = getattr(yarn_cfg, 'yarn_mode', None) or YaRNMode.default()
     n_patched = patch_model_yarn(
         model,
         target_seq_len=lm_cfg.seq_len,
@@ -355,9 +384,10 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
         beta_fast=beta_fast,
         beta_slow=beta_slow,
         dtype=torch.bfloat16,
+        yarn_mode=ymode,
     )
     s = lm_cfg.seq_len / base_seq_len
-    print(f"Patched {n_patched} layers with canonical YaRN RoPE (s={s:.1f}x, {base_seq_len} -> {lm_cfg.seq_len}).")
+    print(f"Patched {n_patched} layers with canonical YaRN RoPE (s={s:.1f}x, mode={ymode}, {base_seq_len} -> {lm_cfg.seq_len}).")
 
     interrupt_handler = GracefulInterruptHandler()
     interrupt_handler.attach()
@@ -456,11 +486,27 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
                 )
                 accum_loss += step_loss / lm_cfg.gradient_accumulation_steps
 
+            # Telemetry for alpha gradients before clipping
+            log_alpha_params = [p for name, p in model.named_parameters() if name.endswith('.log_alpha')]
+            if log_alpha_params:
+                total_alpha_grad_sq = sum(p.grad.pow(2).sum().item() for p in log_alpha_params if p.grad is not None)
+                alpha_grad_norm = math.sqrt(total_alpha_grad_sq)
+                old_alpha_values = [p.detach().clone() for p in log_alpha_params]
+            else:
+                alpha_grad_norm = None
+                old_alpha_values = None
+
             if lm_cfg.grad_clip_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), lm_cfg.grad_clip_norm)
 
             optimizer.step()
             last_completed_step = step + 1
+
+            if log_alpha_params and old_alpha_values:
+                total_update_sq = sum((p.detach() - old_p).pow(2).sum().item() for p, old_p in zip(log_alpha_params, old_alpha_values))
+                alpha_update_norm = math.sqrt(total_update_sq)
+            else:
+                alpha_update_norm = None
 
             step_time = time.time() - t0
             step_tokens = global_batch_size * lm_cfg.seq_len
@@ -506,36 +552,98 @@ def train_cpt(config: Union[YaRNConfig, LanguageModelingExperimentConfig]):
             gate_stats = ""
             mean_alpha = None
             mean_decay = None
+            a_min, a_max, a_mean, a_std = None, None, None, None
             is_pure_mha = "MHA" in lm_cfg.model_name or (hasattr(model.config, 'r') and model.config.r == model.config.d_head)
-            if not is_pure_mha: # = HOFA. TODO make tihs more robust
+            if not is_pure_mha: # = HOFA.
                 mix_biases = [layer.attn.mix_proj.bias for layer in model.layers if hasattr(layer, 'attn') and hasattr(layer.attn, 'mix_proj') and layer.attn.mix_proj.bias is not None]
                 decay_biases = [layer.attn.gate_proj.bias for layer in model.layers if hasattr(layer, 'attn') and hasattr(layer.attn, 'gate_proj') and layer.attn.gate_proj.bias is not None]
                 if mix_biases and decay_biases:
                     mean_alpha = torch.sigmoid(torch.cat(mix_biases)).mean().item()
                     mean_decay = torch.sigmoid(-torch.cat(decay_biases)).mean().item()
-                    gate_stats = f" [alpha: {mean_alpha:.3f}, gamma: {mean_decay:.3f}]"
+                    gate_stats = f" [alpha_mix: {mean_alpha:.3f}, gamma: {mean_decay:.3f}]"
+
+                if log_alpha_params:
+                    all_alphas = torch.cat([p.detach().exp().view(-1) for p in log_alpha_params])
+                    a_min = all_alphas.min().item()
+                    a_max = all_alphas.max().item()
+                    a_mean = all_alphas.mean().item()
+                    a_std = all_alphas.std().item()
+                    gate_stats += f" [alpha_decay: min={a_min:.3f}, max={a_max:.3f}, std={a_std:.4f}]"
 
             metrics['gate_alpha'].append(mean_alpha)
             metrics['gate_decay'].append(mean_decay)
+            metrics['alpha_min'].append(a_min)
+            metrics['alpha_max'].append(a_max)
+            metrics['alpha_mean'].append(a_mean)
+            metrics['alpha_std'].append(a_std)
+            metrics['alpha_grad_norm'].append(alpha_grad_norm)
+            metrics['alpha_update_norm'].append(alpha_update_norm)
+
+            if log_alpha_params and ((step > 0 and step % lm_cfg.val_every == 0) or is_last_step):
+                eval_step_key = str((step + 1) if is_last_step else step)
+                layer_head_dict = {}
+                for l_idx, layer in enumerate(model.layers):
+                    if hasattr(layer, 'attn') and hasattr(layer.attn, 'log_alpha') and layer.attn.log_alpha is not None:
+                        # (1, H, 1, J)
+                        a_lh = layer.attn.log_alpha.detach().exp().squeeze(0).squeeze(1) # (H, J)
+                        for h_idx in range(a_lh.shape[0]):
+                            vals = a_lh[h_idx]
+                            layer_head_dict[f"L{l_idx}_H{h_idx}"] = {
+                                "min": vals.min().item(),
+                                "mean": vals.mean().item(),
+                                "max": vals.max().item(),
+                                "std": vals.std().item(),
+                            }
+                metrics['alpha_per_layer_head'][eval_step_key] = layer_head_dict
 
             print(f"\rStep {step}/{lm_cfg.train_steps} - loss: {accum_loss:.4f}{gate_stats} ({avg_step_time:.2f}s/step, ETA: H: {eta_hours}, M: {eta_minutes})", end="", flush=True)
 
             if step > 0 and step % lm_cfg.save_every == 0:
-                temp_path = cpt_ckpt_path + ".tmp"
-                torch.save({
-                    'step': step + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'metrics': metrics,
-                    'config': config,
-                    'total_processed_tokens': total_processed_tokens,
-                    'best_val_ppl': best_val_ppl,
-                    'start_idx': start_idx,
-                    'rng_state': torch.get_rng_state(),
-                    'cuda_rng_state': torch.cuda.get_rng_state_all(),
-                    'starting_base_ckpt_info': starting_base_ckpt_info,
-                }, temp_path)
-                os.replace(temp_path, cpt_ckpt_path)
+                best_ckpt_path = os.path.join(checkpoint_dir, "checkpoint_best_val.pt")
+                # If checkpoint_best_val.pt was just written at this exact step, link it instead of duplicating 3.5GB
+                if os.path.exists(best_ckpt_path) and ((step % lm_cfg.val_every == 0) or is_last_step):
+                    try:
+                        temp_link = cpt_ckpt_path + ".link"
+                        if os.path.exists(temp_link):
+                            os.remove(temp_link)
+                        os.link(best_ckpt_path, temp_link)
+                        os.replace(temp_link, cpt_ckpt_path)
+                    except OSError:
+                        pass
+                if not os.path.exists(cpt_ckpt_path) or (os.path.exists(cpt_ckpt_path) and os.path.samefile(cpt_ckpt_path, best_ckpt_path) if os.path.exists(best_ckpt_path) else False):
+                    # Link already established or need normal save
+                    if not os.path.exists(cpt_ckpt_path):
+                        temp_path = cpt_ckpt_path + ".tmp"
+                        torch.save({
+                            'step': step + 1,
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'metrics': metrics,
+                            'config': config,
+                            'total_processed_tokens': total_processed_tokens,
+                            'best_val_ppl': best_val_ppl,
+                            'start_idx': start_idx,
+                            'rng_state': torch.get_rng_state(),
+                            'cuda_rng_state': torch.cuda.get_rng_state_all(),
+                            'starting_base_ckpt_info': starting_base_ckpt_info,
+                        }, temp_path)
+                        os.replace(temp_path, cpt_ckpt_path)
+                else:
+                    temp_path = cpt_ckpt_path + ".tmp"
+                    torch.save({
+                        'step': step + 1,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'metrics': metrics,
+                        'config': config,
+                        'total_processed_tokens': total_processed_tokens,
+                        'best_val_ppl': best_val_ppl,
+                        'start_idx': start_idx,
+                        'rng_state': torch.get_rng_state(),
+                        'cuda_rng_state': torch.cuda.get_rng_state_all(),
+                        'starting_base_ckpt_info': starting_base_ckpt_info,
+                    }, temp_path)
+                    os.replace(temp_path, cpt_ckpt_path)
 
             if interrupt_handler.stop_requested:
                 print(f"\nGraceful stop requested. Saving checkpoint and exiting...")

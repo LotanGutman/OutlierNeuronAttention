@@ -35,14 +35,16 @@ bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-s
 | Workflow | Command | Description |
 | :--- | :--- | :--- |
 | **Data Preparation** | `python main.py train --scale 350M --download-data [--val-only]` (FineWeb-Edu) / `python main.py train --download-data --dataset pg19` (PG19) | Download and tokenize FineWeb-Edu (pretraining) or PG19 (16k continual pretraining). Use `--val-only` to cache validation splits without full training data. |
-| **Pretraining** | `python main.py train --scale 350M` | Run distributed pretraining (`13M`, `70M`, `125M`, or `350M`) |
-| **Continual Pretraining** | `python main.py train --cpt --scale 350M [--model {hofa,mha}]` | Continual pretraining on PG19 at 16k context (`13M` or `350M`, HOFA or MHA) |
+| **Pretraining** | `python main.py train --scale 350M [--alpha]` | Run language model pretraining (`13M`, `30M`, `70M`, `125M`, or `350M`; pass `--alpha` for learnable channel-wise decay) |
+| **Continual Pretraining** | `python main.py train --cpt --scale 350M [--model {hofa,mha,hofa_alpha}] [--alpha]` | Continual pretraining on PG19 at 16k context (`13M`, `30M`, `70M`, `125M`, or `350M`) |
 | **Checkpoints Eval** | `python main.py train --scale 350M --eval` | Evaluate perplexity on validation splits |
-| **Context Extension** | `python main.py benchmark --extrapolation` | Training-free extension diagnostics ($1\text{k} \to 16\text{k}$ tokens) |
+| **Context Extension** | `python main.py benchmark --extrapolation [--scale {70M,125M,350M,all}] [--model {both,hofa,mha,all}] [--no-cpt] [--alpha] [--plot]` | Long-context PG-19 extrapolation evaluation ($1\text{k} \to 32\text{k}/64\text{k}$ tokens, CPT or zero-shot cross-scale) |
+| **Temperature Scaling** | `python main.py benchmark --temp-yarn [--scale {70M,125M,350M}] [--model {both,hofa,mha,all}] [--plot]` | Position-segment pre-softmax temperature scaling sweep ($1/\sqrt{t}$) |
 | **Induction Retrieval** | `python main.py benchmark --induction [--plot]` | Associative recall on synthetic induction heads |
 | **Capacity Cliff** | `python main.py benchmark --induction-degradation [--plot]` | Phase transition and critical capacity cliff |
 | **Associative Copying** | `python main.py benchmark --copy [--plot]` | Sequence copying capability benchmark |
-| **Mass Decomposition** | `python main.py benchmark --keff [--plot]` | $K_{\text{eff}}$ outlier probability mass distribution |
+| **Channel Power & $d_{\text{eff}}$** | `python main.py benchmark --keff [--models <list>] [--plot]` | Pretrained latent channel power distribution $\mathcal{C}(r)$ and entropic effective dimension $d_{\text{eff}}$ |
+| **Architectural Ablations** | `python main.py train --70m --plot` | Multi-model 70M ablation comparisons (U-shaped vs. Flat, Increasing schedule, Thin-keys MHA control, hybrid axes) |
 | **Effective Distance** | `python main.py benchmark --distance [--plot]` | Effective attention context distance benchmark |
 | **Gate Blending** | `python main.py benchmark --alpha` | Learned mixing gate distribution analysis |
 | **Zero-Shot Reasoning** | `python main.py eval --shared --scale 350M` | Zero-shot reasoning benchmarks (ARC, HellaSwag, PIQA) |
@@ -71,6 +73,7 @@ OutlierNeuronAttention/
 │   ├── benchmark_induction.py
 │   ├── benchmark_induction_degradation.py
 │   ├── benchmark_long_context.py
+│   ├── benchmark_temperature_YaRN.py
 │   ├── benchmark_zeroshot.py
 │   ├── benchmarks_configs.py
 │   ├── profile_decode.py
@@ -78,7 +81,7 @@ OutlierNeuronAttention/
 │   ├── validate_kernels.py
 │   └── plotting/                                 # Plotting utilities
 ├── training/                     # Language modeling training pipeline
-│   ├── train.py                                  # Distributed pretraining loop
+│   ├── train.py, train_cpt.py                    # Pretraining and 16k YaRN continual pretraining loops
 │   ├── download_fineweb.py, download_pg19.py, data_utils.py, training_config.py  # Dataset pipeline & configs
 │   └── plot_training.py, inference.py, modules/  # Loss curves & evaluation utilities
 ├── docs/                         # Technical documentation, preprint PDF, and architecture figures

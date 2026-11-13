@@ -1,18 +1,17 @@
 """
-Deciding on what the original base seq length is a bit messy, so working that out is a big TODO ;)
+YaRN Context Extension module with multi-mode frequency scaling.
 """
 
 import os
 import math
+from typing import Optional, Union
+import gc
 import torch
 import torch.nn as nn
-from typing import Optional
-import gc
 
-from training.training_config import YaRNConfig, get_model_config
+from training.training_config import YaRNMode, YaRNConfig, get_model_config
 from src.HybridOutlierFactorizedAttentionTrain import SubwordLM as TrainSubwordLM
 from src.HybridOutlierFactorizedAttention import SubwordLM as InferenceSubwordLM
-
 
 def yarn_find_correction_dim(beta: float, dim: int, base: float, max_seq_len: float) -> float:
     """Computes the YaRN correction dimension boundary: d(beta) = (dim * ln(L / (2*pi*beta))) / (2 * ln(base))."""
@@ -27,7 +26,11 @@ def patch_model_yarn(
     beta_slow: float = 1.0,
     dtype: torch.dtype = torch.bfloat16,
     scale: Optional[float] = None,
+    yarn_mode: Optional[Union[YaRNMode, str]] = None,
+    mscale_coeff: float = 0.1,
+    mscale: Optional[float] = None,
 ) -> int:
+    mode = YaRNMode.default() if yarn_mode is None else (yarn_mode.value if isinstance(yarn_mode, YaRNMode) else str(yarn_mode).lower())
     if scale is None:
         scale = max(1.0, float(target_seq_len) / float(original_seq_len))
     patched = 0
@@ -55,12 +58,19 @@ def patch_model_yarn(
                 if high <= low:
                     high = low + 1e-3
                 ramp = ((freq_idx - low) / (high - low)).clamp(0.0, 1.0)
-                inv_freq_interpolation = inv_freq_extrapolation / scale
-                inv_freq = ramp * inv_freq_interpolation + (1.0 - ramp) * inv_freq_extrapolation
-                effective_mscale = 1.0 + 0.1 * math.log(scale)
+
+                mode_val = mode.value if isinstance(mode, YaRNMode) else str(mode).lower()
+
+                if mode_val == YaRNMode.GEOMETRIC.value:
+                    inv_freq = inv_freq_extrapolation * (scale ** (-ramp))
+                else:  # arithmetic (standard)
+                    inv_freq_interpolation = inv_freq_extrapolation / scale
+                    inv_freq = ramp * inv_freq_interpolation + (1.0 - ramp) * inv_freq_extrapolation
+
+                effective_mscale = float(mscale) if mscale is not None else (1.0 + mscale_coeff * math.log(scale))
             else:
                 inv_freq = inv_freq_extrapolation
-                effective_mscale = 1.0
+                effective_mscale = float(mscale) if mscale is not None else 1.0
 
             rot.inv_freq = inv_freq
             cache_len = max(rot.max_seq_len_cached, target_seq_len)
@@ -184,9 +194,18 @@ class YaRNModel(nn.Module):
                             self.original_max_seq_len = get_model_config(base_model_name).seq_len
                         except Exception:
                             self.original_max_seq_len = getattr(yarn_config.model.model_config, "block_size", 1024)
-                self.model.load_state_dict(state_dict)
+                if getattr(yarn_config.model.model_config, "learnable_alpha", False):
+                    load_res = self.model.load_state_dict(state_dict, strict=False)
+                    assert len(load_res.unexpected_keys) == 0, f"Unexpected keys: {load_res.unexpected_keys}"
+                    for missing_k in load_res.missing_keys:
+                        assert missing_k.endswith(".log_alpha"), f"Unexpected missing key: {missing_k}"
+                else:
+                    self.model.load_state_dict(state_dict)
                 del ckpt, state_dict
                 gc.collect()
+            else:
+                import warnings
+                warnings.warn(f"[YaRNModel] Checkpoint not found at '{path}' for '{yarn_config.model.model_name}'. Model is using UNINITIALIZED random weights!")
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
@@ -196,7 +215,15 @@ class YaRNModel(nn.Module):
             return self.model.forward_step(*args, **kwargs)
         return self.forward(*args, **kwargs)
 
-    def set_context_length(self, seq_len: int, scale: Optional[float] = None) -> int:
+    def set_context_length(
+        self,
+        seq_len: int,
+        scale: Optional[float] = None,
+        yarn_mode: Optional[Union[YaRNMode, str]] = None,
+        mscale_coeff: float = 0.1,
+        mscale: Optional[float] = None,
+    ) -> int:
+        mode = yarn_mode or getattr(self.yarn_config, "yarn_mode", None) or YaRNMode.default()
         return patch_model_yarn(
             self.model,
             target_seq_len=seq_len,
@@ -205,6 +232,9 @@ class YaRNModel(nn.Module):
             beta_slow=float(self.yarn_config.beta_slow),
             dtype=self.dtype,
             scale=scale,
+            yarn_mode=mode,
+            mscale_coeff=mscale_coeff,
+            mscale=mscale,
         )
 
     def __getattr__(self, name: str):

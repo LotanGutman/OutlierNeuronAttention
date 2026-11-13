@@ -47,7 +47,7 @@ def validate_inference(config: LanguageModelingExperimentConfig, verbose: bool =
         _orig = _dm.fused_hofa_decode
         
         def _hook(q, k, v, cache_k, cache_v, state_in, state_out,
-                  log_gamma, mix_g, norm_w, R, seq_len, sm_scale):
+                  log_gamma, mix_g, norm_w, R, seq_len, sm_scale, **kwargs):
             if 'q' not in _cap:
                 _cap['q']         = q.clone()
                 _cap['k']         = k.clone()
@@ -62,7 +62,7 @@ def validate_inference(config: LanguageModelingExperimentConfig, verbose: bool =
                 _cap['seq_len']   = seq_len
                 _cap['sm_scale']  = sm_scale
             result = _orig(q, k, v, cache_k, cache_v, state_in, state_out,
-                           log_gamma, mix_g, norm_w, R, seq_len, sm_scale)
+                           log_gamma, mix_g, norm_w, R, seq_len, sm_scale, **kwargs)
             if 'Y' not in _cap:
                 _cap['Y']         = result.clone()
                 _cap['state_out'] = state_out.clone()
@@ -105,10 +105,10 @@ def validate_inference(config: LanguageModelingExperimentConfig, verbose: bool =
             except Exception:
                 from src.chunk_gla_inlier import chunk_gla_inlier_fwd as chunk_gla
             
-            q_gla_t = Q_J.to(torch.bfloat16).contiguous()
-            k_gla_t = K_J.to(torch.bfloat16).contiguous()
-            v_gla_t = V.to(torch.bfloat16).contiguous()
-            g_gla_t = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).to(torch.bfloat16).contiguous()
+            q_gla_t = Q_J.transpose(1, 2).to(torch.float32).contiguous()
+            k_gla_t = K_J.transpose(1, 2).to(torch.float32).contiguous()
+            v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
+            g_gla_t = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
             
             Y_I_raw_ref_t, state_I_ref_final = chunk_gla(
                 q_gla_t,
@@ -129,7 +129,8 @@ def validate_inference(config: LanguageModelingExperimentConfig, verbose: bool =
             while isinstance(s_inf, (tuple, list)):
                 s_inf = s_inf[0]
             s_ref = state_I_ref_final
-            print_metrics("BF16 Prefill State", s_ref, s_inf)
+            if s_inf is not None and s_ref is not None:
+                print_metrics("BF16 Prefill State", s_ref, s_inf)
             
             # --- Decode Phase ---
             Q_O = Q[..., :hofa_train.r]

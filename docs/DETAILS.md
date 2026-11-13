@@ -24,9 +24,9 @@ This codebase uses two execution pipelines optimized for different workloads:
 
 ---
 
-## Training-Free Extension Diagnostics (YaRN)
+## Hardware Architecture Detection
 
-Training-free context extension diagnostics use YaRN implemented in `src/yarn.py` with canonical LLaMA defaults ($\alpha=1.0, \beta=32.0$).
+`install.sh` detects GPU architecture via `nvidia-smi` to prevent SM capability mismatches, installing the proper PyTorch version and ensuring custom Triton kernels and FLA JIT compilers build properly.
 
 ---
 
