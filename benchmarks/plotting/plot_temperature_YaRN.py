@@ -93,7 +93,7 @@ def plot_temperature_segments(config: TemperatureYaRNConfig, results: Dict) -> t
 
         m_scale = next((s for s in ["70M", "125M", "350M"] if s in m_name), "")
         if "alpha" in m_name.lower():
-            display_name = f"{m_scale} HOFA (Learnable $\\alpha$)" if m_scale else "HOFA (Learnable $\\alpha$)"
+            display_name = f"{m_scale} HOFA (Learnable $\\beta$)" if m_scale else "HOFA (Learnable $\\beta$)"
         elif "hofa" in m_name.lower():
             display_name = f"{m_scale} HOFA" if m_scale else "HOFA"
         elif "mha" in m_name.lower():
@@ -159,7 +159,7 @@ def plot_temperature_segments(config: TemperatureYaRNConfig, results: Dict) -> t
 
         m_scale = next((s for s in ["70M", "125M", "350M"] if s in m_name), "")
         if "alpha" in m_name.lower():
-            display_name = f"{m_scale} HOFA (Learnable $\\alpha$)" if m_scale else "HOFA (Learnable $\\alpha$)"
+            display_name = f"{m_scale} HOFA (Learnable $\\beta$)" if m_scale else "HOFA (Learnable $\\beta$)"
         elif "hofa" in m_name.lower():
             display_name = f"{m_scale} HOFA" if m_scale else "HOFA"
         elif "mha" in m_name.lower():

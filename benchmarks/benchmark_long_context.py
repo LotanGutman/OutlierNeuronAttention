@@ -736,7 +736,7 @@ def _plot_standard_extrapolation(results: dict, config: LongContextExtrapolation
         if "alpha" in m_name.lower():
             color = "#1f77b4"  # Primary blue
             marker = "o-"
-            label = "HOFA (Learnable $\\alpha$)"
+            label = "HOFA (Learnable $\\beta$)"
         elif "hofa" in m_name.lower():
             color = "#2ca02c"  # Distinct green for base HOFA
             marker = "^-."

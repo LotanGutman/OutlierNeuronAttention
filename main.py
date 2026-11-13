@@ -71,7 +71,9 @@ def main():
     parser_bench.add_argument("--max-books", type=int, default=None, help="Maximum number of eligible PG-19 test books to evaluate (default: None for all eligible books)")
     parser_bench.add_argument("--force", action="store_true", help="Force re-run and bypass cached results")
     parser_bench.add_argument("--cpt", action=argparse.BooleanOptionalAction, default=True, help="Evaluate CPT checkpoints (default: True)")
+    parser_bench.add_argument("--base", action="store_true", help="Evaluate base (non-CPT) checkpoints (equivalent to --no-cpt)")
     parser_bench.add_argument("--plot", action="store_true", help="Plot benchmark results")
+    parser_bench.add_argument("--combined", action="store_true", help="With --extrapolation: plot base vs. extended-pretraining (CPT) side by side from caches")
 
     args = parser.parse_args()
     model_arg = getattr(args, 'model', 'hofa')
@@ -87,7 +89,7 @@ def main():
             config = get_model_config(
                 scale=scale_arg,
                 model=model_arg,
-                is_cpt=getattr(args, 'cpt', False)
+                is_cpt=getattr(args, 'cpt', False) and not getattr(args, 'base', False)
             )
         except Exception:
             config = None
@@ -239,12 +241,15 @@ def main():
             else:
                 from benchmarks.benchmark_distance import run_distance_experiment
                 run_distance_experiment()
+        elif args.extrapolation and getattr(args, 'combined', False):
+            from benchmarks.plotting.plot_extensions import plot_extensions
+            plot_extensions(scale=getattr(args, 'scale', '125M'))
         elif args.extrapolation:
             from benchmarks.benchmark_long_context import run_long_context_experiment, plot_long_context
             from benchmarks.benchmarks_configs import LongContextExtrapolationConfig, make_cross_scale_base_extrapolation_config
             scale = getattr(args, 'scale', '350M')
             model_flag = getattr(args, 'model', 'both').lower()
-            is_cpt = getattr(args, 'cpt', True)
+            is_cpt = getattr(args, 'cpt', True) and not getattr(args, 'base', False)
             max_books = getattr(args, 'max_books', None)
             force_rerun = getattr(args, 'force', False)
 
@@ -270,8 +275,8 @@ def main():
                     ha_cfg = get_model_config(scale, other_h, is_cpt=is_cpt)
                     scale_models.append(ha_cfg if isinstance(ha_cfg, YaRNConfig) else YaRNConfig(model=ha_cfg, original_max_seq_len=getattr(ha_cfg, "seq_len", 1024)))
 
-                cache_name = f"{scale}_long_context_extrapolation_results.json" if is_cpt else f"{scale}_cross_scale_base_extrapolation_32k.json"
-                plot_name = f"{scale}_long_context_extrapolation_results" if is_cpt else f"{scale}_cross_scale_base_extrapolation_32k"
+                cache_name = f"{scale}_long_context_extrapolation_results.json" if is_cpt else f"{scale}_base_extrapolation_64k.json"
+                plot_name = f"{scale}_long_context_extrapolation_results" if is_cpt else f"{scale}_base_extrapolation_64k"
                 extrap_cfg = LongContextExtrapolationConfig(
                     models=scale_models,
                     max_books=max_books,
@@ -291,7 +296,7 @@ def main():
             from benchmarks.benchmarks_configs import TemperatureYaRNConfig
             scale = getattr(args, 'scale', '350M')
             model_flag = getattr(args, 'model', 'both').lower()
-            is_cpt = getattr(args, 'cpt', True)
+            is_cpt = getattr(args, 'cpt', True) and not getattr(args, 'base', False)
             use_alpha = getattr(args, 'alpha', False) or model_flag == "hofa_alpha"
 
             eval_models = []

@@ -258,13 +258,25 @@ class HybridOutlierFactorizedAttention(nn.Module):
         Q_J = Q[..., self.r:]
         K_J = K[..., self.r:]
 
+        # fla chunk_gla requires K dimension to be at least 32 (its minimum Triton warp tile BK=32)
+        j_dim = K_J.shape[-1]
+        pad_j = max(0, 32 - j_dim)
+        if pad_j > 0:
+            Q_J = F.pad(Q_J, (0, pad_j))
+            K_J = F.pad(K_J, (0, pad_j))
+
         q_gla_t = Q_J.transpose(1, 2).to(torch.float32).contiguous()
         k_gla_t = K_J.transpose(1, 2).to(torch.float32).contiguous()
         v_gla_t = V.transpose(1, 2).to(torch.float32).contiguous()
         if self.learnable_alpha:
             g_gla_t = (log_gamma * self.log_alpha.exp()).transpose(1, 2).to(torch.float32).contiguous()
+            if pad_j > 0:
+                g_gla_t = F.pad(g_gla_t, (0, pad_j), value=-1e4)
         else:
-            g_gla_t = log_gamma.expand(-1, -1, -1, K_J.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
+            if pad_j > 0:
+                g_gla_t = F.pad(log_gamma.expand(-1, -1, -1, j_dim), (0, pad_j), value=-1e4).transpose(1, 2).to(torch.float32).contiguous()
+            else:
+                g_gla_t = log_gamma.expand(-1, -1, -1, j_dim).transpose(1, 2).to(torch.float32).contiguous()
         
         assert q_gla_t.is_contiguous() and q_gla_t.dtype == torch.float32, "q_gla_t must be contiguous float32"
         assert k_gla_t.is_contiguous() and k_gla_t.dtype == torch.float32, "k_gla_t must be contiguous float32"
