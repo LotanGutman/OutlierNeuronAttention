@@ -81,7 +81,7 @@ def plot_heatmap_cumsum_all():
         X_edges = np.linspace(0, 100, num_layers + 1)
         Y_edges = np.arange(1, d_h + 2)
         
-        # 1. Base Heatmap: Cumulative power fraction C(r)
+        # 1. Base Heatmap: Cumulative channel power C(r)
         mesh = ax.pcolormesh(X_edges, Y_edges, C_matrix, cmap='magma', vmin=0.0, vmax=1.0, shading='auto')
         ax.set_yscale('log')
         ax.set_xlim(0, 100)
@@ -98,7 +98,7 @@ def plot_heatmap_cumsum_all():
             ax.tick_params(axis='y', pad=3)
         
         # 2. Reference line at r = 16 (Exact Softmax allocation)
-        line_ref = ax.axhline(y=16, color='white', linestyle='--', alpha=0.9, linewidth=1.8, label=r'$r = 16$')
+        line_ref = ax.axhline(y=16, color='#222222', linestyle='--', alpha=0.9, linewidth=1.6, label=r'$r = 16$')
         
         # 3. OVERLAY: d_eff(l) entropic effective channels (standard filled squares 's' with black edge)
         depth_centers = (np.arange(num_layers) + 0.5) / num_layers * 100

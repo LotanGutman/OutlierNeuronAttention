@@ -44,7 +44,7 @@ bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-s
 | **Capacity Cliff** | `python main.py benchmark --induction-degradation [--plot]` | Phase transition and critical capacity cliff |
 | **Associative Copying** | `python main.py benchmark --copy [--plot]` | Sequence copying capability benchmark |
 | **Channel Power & $d_{\text{eff}}$** | `python main.py benchmark --keff [--models <list>] [--plot]` | Pretrained latent channel power distribution $\mathcal{C}(r)$ and entropic effective dimension $d_{\text{eff}}$ |
-| **Architectural Ablations** | `python main.py train --70m --plot` | Multi-model 70M ablation comparisons (U-shaped vs. Flat, Increasing schedule, Thin-keys MHA control, hybrid axes) |
+| **Architectural Ablations** | `python main.py train --70m --plot` | Multi-model 70M ablation comparisons (U-shaped vs. Flat, Increasing schedule, Reduced-QK MHA control, hybrid axes) |
 | **Effective Distance** | `python main.py benchmark --distance [--plot]` | Effective attention context distance benchmark |
 | **Gate Blending** | `python main.py benchmark --alpha` | Learned mixing gate distribution analysis |
 | **Zero-Shot Reasoning** | `python main.py eval --shared --scale 350M` | Zero-shot reasoning benchmarks (ARC, HellaSwag, PIQA) |

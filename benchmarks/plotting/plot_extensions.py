@@ -34,7 +34,7 @@ def plot_extensions(scale: str = "125M", out_dir: str = "data/plots/length_extra
         ("PG19 extrapolation (base models)", f"{scale}_base_extrapolation_64k.json"),
         ("PG19 extrapolation (extended pretraining)", f"{scale}_long_context_extrapolation_results.json"),
     ]
-    fig, axs = plt.subplots(1, 2, figsize=(12, 4.6))
+    fig, axs = plt.subplots(1, 2, figsize=(12, 3.1))
 
     for ax, (title, cache) in zip(axs, panels):
         data = _load(cache, scale)
@@ -57,8 +57,8 @@ def plot_extensions(scale: str = "125M", out_dir: str = "data/plots/length_extra
     axs[0].set_ylabel("Perplexity on PG-19 Test")
 
     handles, labels = axs[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.03), ncol=len(labels), frameon=False)
-    fig.subplots_adjust(top=0.86, wspace=0.18)
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.05), ncol=len(labels), frameon=False)
+    fig.subplots_adjust(top=0.83, wspace=0.18)
 
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, f"{scale}_extrapolation_combined.pdf")

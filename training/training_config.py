@@ -211,6 +211,12 @@ def make_70M_HOFA_depth_axis() -> LanguageModelingExperimentConfig:
         use_rope=True, block_size=1024,
     ))
 
+def make_70M_HOFA_depth_axis_boundary() -> LanguageModelingExperimentConfig:
+    return _70M_base(model_name="70M_HOFA_depth_axis_boundary", plot_name="Depth-Axis Hybrid (Boundary)", model_config=ModelConfig(
+        d_model=512, num_heads=8, num_layers=8, r=[64, 0, 64, 0, 0, 64, 0, 64],
+        use_rope=True, block_size=1024,
+    ))
+
 def make_70M_HOFA_width_axis() -> LanguageModelingExperimentConfig:
     return _70M_base(model_name="70M_HOFA_width_axis", plot_name="Width-Axis Hybrid", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=0,
@@ -226,7 +232,7 @@ def make_70M_HOFA_fixed_blend() -> LanguageModelingExperimentConfig:
     ))
 
 def make_70M_MHA_low_rank_k() -> LanguageModelingExperimentConfig:
-    return _70M_base(model_name="70M_MHA_low_rank_k", plot_name="MHA (r=32 Keys)", model_config=ModelConfig(
+    return _70M_base(model_name="70M_MHA_low_rank_k", plot_name="Reduced-QK MHA (d_QK=32)", model_config=ModelConfig(
         d_model=512, num_heads=8, num_layers=8, r=32,
         pure_mha_low_rank_k=True,
         use_rope=True, block_size=1024,
@@ -647,6 +653,7 @@ MODEL_CONFIG_REGISTRY = {
     ("70M", "MHA", False): make_70M_MHA,
     ("70M", "MHA_LOW_RANK_K", False): make_70M_MHA_low_rank_k,
     ("70M", "HOFA_INCREASING", False): make_70M_HOFA_increasing,
+    ("70M", "DEPTH_AXIS_BOUNDARY", False): make_70M_HOFA_depth_axis_boundary,
     ("125M", "HOFA", False): make_125M_HOFA,
     ("125M", "HOFA_ALPHA", False): make_125M_HOFA_alpha,
     ("125M", "MHA", False): make_125M_MHA,
@@ -675,6 +682,7 @@ MODEL_CONFIG_REGISTRY = {
     "30M_MHA": make_30M_MHA,
     "70M_HOFA": make_70M_HOFA,
     "70M_HOFA_INCREASING": make_70M_HOFA_increasing,
+    "70M_HOFA_DEPTH_AXIS_BOUNDARY": make_70M_HOFA_depth_axis_boundary,
     "70M_MHA": make_70M_MHA,
     "70M_MHA_LOW_RANK_K": make_70M_MHA_low_rank_k,
     "125M_HOFA": make_125M_HOFA,

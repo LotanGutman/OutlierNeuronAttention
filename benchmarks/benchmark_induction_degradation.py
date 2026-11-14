@@ -114,14 +114,13 @@ def fit_theory(N_vals, acc_vals, r=8, N_range=None, measured_shift=None):
     # Pure Section 2.3 theoretical model: P = 100 * Phi((mu - b_n) / sigma)
     def model_fn(N, gamma, sigma):
         c = 1.0 / 32.0  # Fixed theoretical capacity bound c = 1/d_h
-        n = np.maximum(np.e, c * N - r)
-        log_n = np.log(n)
-        b_n = np.sqrt(2.0 * log_n) - (np.log(log_n) + np.log(4.0 * np.pi)) / (2.0 * np.sqrt(2.0 * log_n))
-        mu = np.sqrt(gamma * r / (N - r))
+        n = np.maximum(np.e, c * N - 1.0)
+        b_n = np.sqrt(2.0 * np.log(n))
+        mu = np.sqrt(gamma * r / np.maximum(1e-6, c * N - r))
         return 100.0 * phi((mu - b_n) / sigma)
         
     try:
-        popt, _ = curve_fit(model_fn, N_fit, acc_fit, p0=[250.0, 0.1], bounds=([0.0, 0.0001], [np.inf, 10.0]), maxfev=10000)
+        popt, _ = curve_fit(model_fn, N_fit, acc_fit, p0=[16.0, 0.15], bounds=([0.0, 0.0001], [np.inf, 10.0]), maxfev=10000)
         gamma_fit, sigma_fit = popt[0], popt[1]
         c_fit = 1.0 / 32.0
         
@@ -274,7 +273,7 @@ def plot_induction_degradation(config=None):
             x_range = (min(N_vals), max(N_vals))
             gamma_fit, c_fit, r2, mae, N_dense, acc_dense = fit_theory(N_vals, acc_vals, r=r_target, N_range=x_range, measured_shift=measured_shift)
             if mae is not None:
-                ax.plot(N_dense, acc_dense, '--', color='tab:red', linewidth=2, zorder=2, label="Theory")
+                ax.plot(N_dense, acc_dense, '--', color='tab:red', linewidth=2, zorder=2, label="Fit")
             
     if not has_data:
         print("No degradation checkpoints found to plot.")

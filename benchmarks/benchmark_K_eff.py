@@ -220,7 +220,7 @@ def run_k_eff_experiment(models_override=None, plot_after=False):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Cumulative Channel Power & Entropic N_eff Analysis")
+    parser = argparse.ArgumentParser(description="Per-Channel QK-Power Proxy & Entropic d_eff Analysis")
     parser.add_argument("--models", type=str, default=None, help="Comma-separated model names to run")
     parser.add_argument("--plot", action="store_true", help="Generate plots after measurement")
     args = parser.parse_args()

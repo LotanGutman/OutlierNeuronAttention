@@ -53,7 +53,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         elif self.fixed_blend_weight and self.forced_mha_heads == 0:
             self.fixed_mix = nn.Parameter(torch.zeros(1, self.num_heads, 1, 1))
 
-        # Channel-wise learnable decay multiplier
+        # Channel-wise learnable decay exponent (corresponds to \beta_h in the paper; \alpha_h is the mixing gate)
         self.learnable_alpha = model_cfg.learnable_alpha
         if self.learnable_alpha:
             num_decay_channels = self.d_head if self.forced_mha_heads > 0 else (self.d_head if self.r == 0 else self.j)

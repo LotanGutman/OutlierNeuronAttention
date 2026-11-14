@@ -77,10 +77,8 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
         j = D_head - r
 
         for sl in seq_lengths:
+            torch.cuda.synchronize()
             torch.cuda.empty_cache()
-            
-            mha_gb = (2 * (B * H * sl * D_head) * 2) / (1024**3)
-            hyb_gb = ((B * H * sl * r * 2) + (B * H * sl * D_head * 2) + (B * H * j * D_head * 4)) / (1024**3)
             
             try:
                 with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
@@ -92,6 +90,8 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                     for _ in range(config.warmup_steps):
                         _ = mha_decode_step(q_mha, k_mha_cache, v_mha_cache, seq_idx)
                     torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    torch.cuda.reset_peak_memory_stats()
 
                     start = torch.cuda.Event(enable_timing=True)
                     end = torch.cuda.Event(enable_timing=True)
@@ -102,10 +102,15 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                     torch.cuda.synchronize()
                     
                     # Multiply by B to get total tokens per second
-                    tok_s_mha = (B * 1000.0) / (start.elapsed_time(end) / config.active_steps) 
+                    tok_s_mha = (B * 1000.0) / (start.elapsed_time(end) / config.active_steps)
+                    mha_gb = torch.cuda.max_memory_allocated() / (1024**3)
                     del q_mha, k_mha_cache, v_mha_cache
             except torch.cuda.OutOfMemoryError:
                 tok_s_mha = float('nan')
+                mha_gb = float('nan')
+
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
 
             try:
                 with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
@@ -130,7 +135,11 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                     for _ in range(config.warmup_steps):
                         _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, state_I_out, log_gamma, mix_g, norm_weight, r, sl, sm_scale)
                     torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    torch.cuda.reset_peak_memory_stats()
 
+                    start = torch.cuda.Event(enable_timing=True)
+                    end = torch.cuda.Event(enable_timing=True)
                     start.record()
                     for _ in range(config.active_steps):
                         _ = fused_hofa_decode(Q, K, V, k_cache, v_cache, state_I, state_I_out, log_gamma, mix_g, norm_weight, r, sl, sm_scale)
@@ -138,9 +147,11 @@ def run_decode_profiling(config: DecodeExperimentConfig = DecodeExperimentConfig
                     torch.cuda.synchronize()
                     
                     tok_s_hyb = (B * 1000.0) / (start.elapsed_time(end) / config.active_steps)
-                    del Q, K, V, k_cache, v_cache, state_I
+                    hyb_gb = torch.cuda.max_memory_allocated() / (1024**3)
+                    del Q, K, V, k_cache, v_cache, state_I, state_I_out, norm_weight, log_gamma, mix_g
             except torch.cuda.OutOfMemoryError:
                 tok_s_hyb = float('nan')
+                hyb_gb = float('nan')
 
             times_mha.append(tok_s_mha)
             times_hyb.append(tok_s_hyb)
