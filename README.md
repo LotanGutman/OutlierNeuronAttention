@@ -4,7 +4,6 @@
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![PyTorch 2.6.0](https://img.shields.io/badge/PyTorch-2.6.0-ee4c2c.svg?logo=pytorch)](https://pytorch.org)
-[![Paper](https://img.shields.io/badge/Paper-PDF-red.svg)](docs/preprint.pdf)
 
 **Decoupling associative recall from linear recurrence via channel-wise outlier factorization**
 
@@ -23,8 +22,8 @@
 ## Quickstart
 
 ```bash
-git clone https://github.com/LotanGutman/OutlierNeuronAttention.git
-cd OutlierNeuronAttention
+git clone <anonymous-repo-url>
+cd HOFA
 bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-ssm, which is only used for comparison benchmarks)
 ```
 
@@ -56,7 +55,7 @@ bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-s
 ## Repository Structure
 
 ```text
-OutlierNeuronAttention/
+HOFA/
 ├── src/                          # Core model layers and Triton kernels
 │   ├── HybridOutlierFactorizedAttention.py       # Inference module
 │   ├── HybridOutlierFactorizedAttentionTrain.py  # Training model
