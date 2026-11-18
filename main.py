@@ -9,7 +9,7 @@ from training.training_config import (
     YaRNConfig,
     get_model_config,
     make_70M_MHA, make_70M_HOFA, make_70M_HOFA_flat32, 
-    make_70M_HOFA_depth_axis, make_70M_HOFA_depth_axis_boundary, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend,
+    make_70M_HOFA_depth_axis, make_70M_HOFA_depth_axis_boundary, make_70M_HOFA_depth_axis_75, make_70M_HOFA_width_axis, make_70M_HOFA_fixed_blend,
     make_70M_MHA_low_rank_k, make_70M_HOFA_increasing
 )
 
@@ -22,7 +22,7 @@ def main():
     parser_train = subparsers.add_parser("train", help="Run training, plotting, dataset downloading, or zero-shot evaluation")
     parser_train.add_argument("--scale", type=str, choices=["13M", "30M", "70M", "125M", "350M"], default="350M", help="Model scale to train or evaluate (default: 350M)")
     parser_train.add_argument("--cpt", action="store_true", help="Continual pretraining mode at 16k context on PG19")
-    parser_train.add_argument("--model", type=str, choices=["hofa", "mha", "hofa_alpha", "mha_low_rank_k", "hofa_increasing", "depth_axis_boundary"], default="hofa", help="Model variant to train (default: hofa)")
+    parser_train.add_argument("--model", type=str, choices=["hofa", "mha", "hofa_alpha", "mha_low_rank_k", "hofa_increasing", "depth_axis_boundary", "depth_axis_75"], default="hofa", help="Model variant to train (default: hofa)")
     parser_train.add_argument("--alpha", action="store_true", help="Enable identity-initialized learnable channel-wise decay (log_alpha)")
     parser_train.add_argument("--dataset", type=str, choices=[d.value for d in DatasetType], default=None, help="Dataset to download/tokenize (default: fineweb, or pg19 if --cpt is set)")
     parser_train.add_argument("--download-data", action="store_true", help="Download and cache the dataset for training")
@@ -33,7 +33,7 @@ def main():
     parser_train.add_argument("--eval", action="store_true", help="Run zero-shot reasoning evaluation on the active trained model checkpoint")
 
     parser_eval = subparsers.add_parser("eval", help="Run zero-shot reasoning benchmark evaluations")
-    parser_eval.add_argument("--model", type=str, choices=["hofa", "mha", "hofa_alpha", "mha_low_rank_k", "hofa_increasing", "depth_axis_boundary"], default="hofa", help="Model variant to evaluate (default: hofa)")
+    parser_eval.add_argument("--model", type=str, choices=["hofa", "mha", "hofa_alpha", "mha_low_rank_k", "hofa_increasing", "depth_axis_boundary", "depth_axis_75"], default="hofa", help="Model variant to evaluate (default: hofa)")
     parser_eval.add_argument("--full", action="store_true", help="Evaluate pretrained baseline models from Hugging Face")
     parser_eval.add_argument("--shared", action="store_true", help="Evaluate both HOFA and MHA variants together (e.g. 125M_HOFA & 125M_MHA)")
     parser_eval.add_argument("--scale", type=str, choices=["70M", "125M", "350M"], default="125M", help="Model scale to evaluate (default: 125M)")
@@ -52,6 +52,8 @@ def main():
     parser_profile = subparsers.add_parser("profile", help="Run profiling benchmarks")
     parser_profile.add_argument("--prefill", action="store_true", help="Profile prefill (MHA vs HOFA)")
     parser_profile.add_argument("--decode", action="store_true", help="Profile decode throughput and memory")
+    parser_profile.add_argument("--full-decode", dest="full_decode", action="store_true", help="Profile end-to-end 350M decoding (B=1 & B=4)")
+    parser_profile.add_argument("--plot", action="store_true", help="With --full-decode: plot directly from caches")
     parser_profile.add_argument("--save", action=argparse.BooleanOptionalAction, default=True, help="Save plotting results (default: True)")
     parser_profile.add_argument("--use-cache", action=argparse.BooleanOptionalAction, default=True, help="Use cached results if available (default: True)")
     parser_profile.add_argument("--plot-shared", action="store_true", help="Plot a shared 2x3 figure of both prefill and decode results")
@@ -79,7 +81,7 @@ def main():
     model_arg = getattr(args, 'model', 'hofa')
     if (args.command == "train" and getattr(args, 'alpha', False)) or (args.command in ("benchmark", "bench") and getattr(args, 'extrapolation', False) and getattr(args, 'alpha', False)) or model_arg == "hofa_alpha":
         model_arg = "hofa_alpha"
-    elif model_arg not in ["hofa", "mha", "both", "all", "mha_low_rank_k", "hofa_increasing", "depth_axis_boundary"]:
+    elif model_arg not in ["hofa", "mha", "both", "all", "mha_low_rank_k", "hofa_increasing", "depth_axis_boundary", "depth_axis_75"]:
         model_arg = "hofa"
 
     scale_arg = getattr(args, 'scale', '350M')
@@ -119,7 +121,7 @@ def main():
             if args.plot_70m:
                 plot_training_metrics([
                     make_70M_MHA(), make_70M_HOFA(), make_70M_HOFA_flat32(),
-                    make_70M_HOFA_depth_axis(), make_70M_HOFA_depth_axis_boundary(), make_70M_HOFA_width_axis(), make_70M_HOFA_fixed_blend(),
+                    make_70M_HOFA_depth_axis(), make_70M_HOFA_depth_axis_boundary(), make_70M_HOFA_depth_axis_75(), make_70M_HOFA_width_axis(), make_70M_HOFA_fixed_blend(),
                     make_70M_MHA_low_rank_k(), make_70M_HOFA_increasing()
                 ], subdirectory="70M")
             elif args.shared:
@@ -193,8 +195,17 @@ def main():
             from benchmarks.profile_decode import run_decode_profiling
             from benchmarks.benchmarks_configs import DecodeExperimentConfig
             run_decode_profiling(config=DecodeExperimentConfig(), force_rerun=force_rerun, save_results=args.save)
+        elif getattr(args, 'full_decode', False):
+            from benchmarks.profile_full_decode import run_full_decode_profiling
+            from benchmarks.benchmarks_configs import FullDecodeProfilingConfig
+            run_full_decode_profiling(
+                config=FullDecodeProfilingConfig(),
+                force_rerun=force_rerun,
+                save_results=args.save,
+                plot_only=getattr(args, 'plot', False),
+            )
         else:
-            print("Please specify either --prefill or --decode to profile.")
+            print("Please specify --prefill, --decode, --full-decode, or --plot-shared to profile.")
     elif args.command in ("benchmark", "bench"):
         if args.induction:
             if args.plot:

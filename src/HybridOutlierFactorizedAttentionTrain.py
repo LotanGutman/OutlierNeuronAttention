@@ -112,6 +112,19 @@ class HybridOutlierFactorizedAttention(nn.Module):
 
         return gate_logits.unsqueeze(-1), mix_g
 
+    @staticmethod
+    def _run_chunk_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
+        """Run chunk_gla, padding T to a multiple of 64 to avoid Triton tail-chunk misalignment."""
+        T = q.shape[1]
+        pad_t = (64 - (T % 64)) % 64
+        if pad_t > 0:
+            q = F.pad(q, (0, 0, 0, 0, 0, pad_t)).contiguous()
+            k = F.pad(k, (0, 0, 0, 0, 0, pad_t)).contiguous()
+            v = F.pad(v, (0, 0, 0, 0, 0, pad_t)).contiguous()
+            g = F.pad(g, (0, 0, 0, 0, 0, pad_t)).contiguous()
+        out, _ = chunk_gla(q, k, v, g=g, scale=scale, output_final_state=False)
+        return out[:, :T] if pad_t > 0 else out
+
     def forward(self, x):
         B, N, D = x.shape
         scale_factor = self.d_head ** 0.25
@@ -155,9 +168,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             else:
                 g_gla_t = log_gamma.expand(-1, -1, -1, K_gla.shape[-1]).transpose(1, 2).to(torch.float32).contiguous()
 
-            Y_gla_t, _ = chunk_gla(
-                q_gla_t, k_gla_t, v_gla_t, g=g_gla_t, scale=1.0, output_final_state=False
-            )
+            Y_gla_t = self._run_chunk_gla(q_gla_t, k_gla_t, v_gla_t, g_gla_t, scale=1.0)
             Y_gla = Y_gla_t.transpose(1, 2)
             Y_gla = (self.inlier_norm(Y_gla.float()) * self.gla_scale[:, self.forced_mha_heads:]).to(dtype_in)
 
@@ -204,14 +215,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
             assert v_gla_t.is_contiguous() and v_gla_t.dtype == torch.float32, "v_gla_t must be contiguous float32"
             assert g_gla_t.is_contiguous() and g_gla_t.dtype == torch.float32, "g_gla_t must be contiguous float32"
 
-            Y_I_t, _ = chunk_gla(
-                q_gla_t, 
-                k_gla_t, 
-                v_gla_t, 
-                g=g_gla_t,
-                scale=1.0, 
-                output_final_state=False
-            )
+            Y_I_t = self._run_chunk_gla(q_gla_t, k_gla_t, v_gla_t, g_gla_t, scale=1.0)
             Y_I = Y_I_t.transpose(1, 2)
             Y_I = (self.inlier_norm(Y_I.float()) * self.gla_scale).to(dtype_in)
 
@@ -283,14 +287,7 @@ class HybridOutlierFactorizedAttention(nn.Module):
         assert v_gla_t.is_contiguous() and v_gla_t.dtype == torch.float32, "v_gla_t must be contiguous float32"
         assert g_gla_t.is_contiguous() and g_gla_t.dtype == torch.float32, "g_gla_t must be contiguous float32"
 
-        Y_I_t, _ = chunk_gla(
-            q_gla_t, 
-            k_gla_t, 
-            v_gla_t, 
-            g=g_gla_t,
-            scale=1.0, 
-            output_final_state=False
-        )
+        Y_I_t = self._run_chunk_gla(q_gla_t, k_gla_t, v_gla_t, g_gla_t, scale=1.0)
         Y_I = Y_I_t.transpose(1, 2)
         Y_I = (self.inlier_norm(Y_I.float()) * self.gla_scale).to(dtype_in)
 

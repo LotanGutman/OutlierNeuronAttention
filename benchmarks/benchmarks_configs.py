@@ -282,5 +282,20 @@ class TemperatureYaRNConfig:
     force_rerun: bool = False
 
 
+@dataclass
+class FullDecodeProfilingConfig:
+    """End-to-end 350M decoding profiling configuration across batch sizes (CUDA Graph)."""
+    vocab_size: int = 50257
+    seq_lengths: tuple[int, ...] = (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072)
+    batch_sizes: tuple[int, ...] = (1, 4)
+    warmup_steps: int = 5
+    active_steps: int = 50
+    cache_b1_name: str = "profile_350M_decode_b1_results.pt"
+    cache_b4_name: str = "profile_350M_decode_b4_results.pt"
+    out_pdf: str = "data/plots/profiling/profile_350M_full_decoding.pdf"
+    vram_gb: float = 32.0
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+
 
 

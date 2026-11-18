@@ -49,7 +49,8 @@ bash install.sh  # or bash install_no_mamba.sh (for environments without mamba-s
 | **Gate Blending** | `python main.py benchmark --alpha` | Learned mixing gate distribution analysis |
 | **Zero-Shot Reasoning** | `python main.py eval --shared --scale 350M` | Zero-shot reasoning benchmarks (ARC, HellaSwag, PIQA) |
 | **Kernel Verification** | `python main.py infer --validate` | Verify numerical parity between PyTorch and Triton decode |
-| **Decode Profiling** | `python main.py profile --decode --no-use-cache` | Benchmark prefill and decode latency / memory |
+| **Decode Profiling** | `python main.py profile --decode --no-use-cache` | Benchmark single-layer prefill and decode latency / memory |
+| **Full-Model Decode** | `python main.py profile --full-decode [--plot] [--no-use-cache]` | End-to-end 350M CUDA-Graph decoding profiling ($B=1$ & $B=4$) |
 
 ---
 
@@ -77,6 +78,7 @@ OutlierNeuronAttention/
 │   ├── benchmark_zeroshot.py
 │   ├── benchmarks_configs.py
 │   ├── profile_decode.py
+│   ├── profile_full_decode.py
 │   ├── profile_prefill.py
 │   ├── validate_kernels.py
 │   └── plotting/                                 # Plotting utilities
